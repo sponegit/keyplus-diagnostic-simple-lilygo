@@ -213,3 +213,8 @@
   1. PCIE-Series must remove the VBUS inductor/resistor to put the modem into sleep mode
 
   <img  height="480" width="480" src=./images/pcie.png>
+
+* **The SIM7600 series only has a chip in the area highlighted in red in the image below, indicating it has voice call functionality. If, as shown in the image below, the area highlighted in red is empty, then it does not have voice call functionality.**
+
+  <img  height="480" width="480" src=./images/sim7600-audio.png>
+
