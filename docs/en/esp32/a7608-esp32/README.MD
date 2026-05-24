@@ -4,6 +4,12 @@
 
 <h1 align = "center">🌟LilyGo A7608X ESP32 Version🌟</h1>
 
+<div align="center">
+
+[English](./README.MD) | [中文](../../../cn/esp32/a7608-esp32/README.MD)
+
+</div>
+
 ## Overview
 
 * This page introduces the hardware parameters related to `LilyGo A7608X ESP32 Version`
@@ -59,7 +65,7 @@
     * Open the downloaded `LilyGo-Modem-Series`
     * Open `examples`
     * Select the sample file and open the file ending with `ino`
-6. On Arduino ISelect the corresponding board in the DE tool project and click on the corresponding option in the list below to select
+6. In Arduino IDE, select the corresponding board in the tool project and click on the corresponding option in the list below to select
 
     | Name                                 | Value                                |
     | ------------------------------------ | ------------------------------------ |
@@ -181,7 +187,7 @@
 |      | Function                     |
 | ---- | ---------------------------- |
 | SIM  | LTE Main antenna interface   |
-| AUX  | LTE Tiered antenna interface |
+| AUX  | LTE Diversity antenna interface |
 | GNSS | GPS active antenna interface |
 
 * When using, you only need to connect the LTE antenna you wear to the SIM IPEX first generation interface. The AUX antenna does not need to be connected.
@@ -207,7 +213,7 @@
 * Compatible with condenser microphones and speakers, but not with digital microphones; only compatible with condenser microphones.
 
   <img src="../../../../docs/static/microphone.png" alt="microphone" width="240" style="border: 0;"/>
-  <img src="../../../../docs/static/speaker.png" alt="spekaer" width="240" style="border: 0;"/>
+  <img src="../../../../docs/static/speaker.png" alt="speaker" width="240" style="border: 0;"/>
 
 ### Resource
 

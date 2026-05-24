@@ -1,3 +1,9 @@
+<div align="center">
+
+[English](./simcom_firmware_bug.md) | [中文](./cn/simcom_firmware_bug.md)
+
+</div>
+
 
 # This page summarizes SIMCOM firmware BUG version numbers
 

@@ -1,0 +1,234 @@
+<div align="center">
+
+[English](../../../en/esp32s3/a7608x-s3/README.MD) | [中文](./README.MD)
+
+</div>
+
+<div align="center" markdown="1">
+  <img src="../../../../.github/LilyGo_logo.png" alt="LilyGo logo" width="100"/>
+</div>
+
+<h1 align = "center">🌟LilyGo A7608X ESP32S3 版本🌟</h1>
+
+## 概述
+
+* This page introduces the hardware parameters related to `LilyGo A7608X ESP32S3 版本`
+
+### 产品
+
+| Product                  | SOC              | Flash          | PSRAM    |
+| ------------------------ | ---------------- | -------------- | -------- |
+| [T-A7608E/SA ESP32S3][1] | ESP32-S3-WROOM-1 | 16MB(Quad-SPI) | 8MB(OPI) |
+
+[1]: https://lilygo.cc/products/t-a7608e-h?variant=43932699033781
+
+### 模块差异
+
+| 型号     | GPS | 电话 | SMS | Frequency band                                                                                                 |
+| --------- | --- | ---------- | --- | -------------------------------------------------------------------------------------------------------------- |
+| A7608E-H  | ✅   | ✅          | ✅   | LTE-TDD:B38/B40/B41 LTE-FDD:B1/B3/B5/B7/B8/B20 UMTS/HSPA+:B1/B8 GSM/GPRS/EDGE:900/1800 MHz                     |
+| A7608SA-H | ✅   | ✅          | ✅   | LTE-TDD:B38/B40/B41 LTE-FDD:B1/B2/B3/B4/B5/B7/B8/B20/B28/B66 UMTS/HSPA+:B1/B2/B5/B8 GSM/GPRS/EDGE:900/1800 MHz |
+
+### PlatformIO 快速入门
+
+1. 安装 [Visual Studio Code](https://code.visualstudio.com/) 和 [Python](https://www.python.org/)
+2. 在 `Visual Studio Code` 扩展中搜索 `PlatformIO` 插件并安装。
+3. 安装完成后，需要重启 `Visual Studio Code`
+4. 重启 `Visual Studio Code` 后，选择左上角的 `文件` -> `打开文件夹` -> 选择 `LilyGo-Modem-Series` 目录
+5. 等待第三方依赖库安装完成
+6. 点击 `platformio.ini` 文件，在 `platformio` 栏中
+7. Cancel the `;` symbol in front of the line `default_envs = T-A7608X-S3` and use `T-A7608X-S3` as the default environment
+8. 取消注释 `src_dir = xxxx` 中的一行，确保只有一行有效。例如，要启用 `src_dir = examples/ATdebug`，删除前面的 `;` 符号并保存文件。现在将编译 ATDebug 示例。
+9. 点击左下角的 (✔) 符号进行编译
+10. Connect the board to the computer USB-C , Micro-USB is used for module firmware upgrade
+11. 点击 (→) 上传固件
+12. 点击（插头符号）监控串口输出
+13. 如果无法写入，或 USB 设备持续闪烁，请查看下方的 **常见问题**
+
+### Arduino IDE 快速入门
+
+1. 安装 [Arduino IDE](https://www.arduino.cc/en/software)
+2. 安装 [Arduino ESP32](https://docs.espressif.com/projects/arduino-esp32/en/latest/)
+3. 将 `lib` 目录中的所有文件夹复制到 `Sketchbook location` 目录。如何找到您自己的库位置，[请查看这里](https://support.arduino.cc/hc/en-us/articles/4415103213714-Find-sketches-libraries-board-cores-and-other-files-on-your-computer)
+    * Windows: `C:\Users\%USERNAME%\Documents\Arduino\libraries`
+    * MacOS: `$HOME/Documents/Arduino/libraries`
+    * Linux: `$HOME/Arduino/libraries`
+4. 打开相应的示例
+    * 打开下载的 `LilyGo-Modem-Series`
+    * 打开 `examples`
+    * 选择示例文件并打开以 `ino` 结尾的文件
+5. 在 Arduino IDE 中，在工具项目中选择相应的开发板，点击下方列表中的相应选项进行选择
+
+    | 名称                                 | 值                               |
+    | ------------------------------------ | ----------------------------------- |
+    | Board                                | **ESP32S3 Dev Module**              |
+    | Port                                 | 您的端口                           |
+    | USB CDC On Boot                      | Enable                              |
+    | CPU Frequency                        | 240MHZ(WiFi)                        |
+    | Core Debug Level                     | None                                |
+    | USB DFU On Boot                      | Disable                             |
+    | Erase All Flash Before Sketch Upload | Disable                             |
+    | Flash Mode                           | QIO 80Mhz                           |
+    | Flash Size                           | **16MB(128Mb)**                     |
+    | Arduino Runs On                      | Core1                               |
+    | USB Firmware MSC On Boot             | Disable                             |
+    | Partition Scheme                     | **16M Flash (3MB APP/9.9MB FATFS)** |
+    | PSRAM                                | **OPI PSRAM**                       |
+    | Upload Speed                         | 921600                              |
+    | Programmer                           | **Esptool**                         |
+
+     * `Partition Scheme` 请根据实际应用选择。例如选择 **16M Flash (3MB APP/9.9MB FATFS)** , 更多分区方案请查看[这里](https://docs.espressif.com/projects/esp-idf/en/stable/esp32/api-guides/partition-tables.html)
+
+6. In the open sketch, select the `utilities.h` file and uncomment the line `// #define LILYGO_T_A7608X_S3`. Delete the `//` and save the file to use this board as the default configuration.
+
+   ![board_select](../../../static/board_select.jpg)
+
+7. 上传 sketch
+
+> \[!IMPORTANT]
+>
+> 1. 无法上传任何代码？请查看下方的常见问题
+> 2. 打开 Arduino IDE 时，会提示有新的库可以更新。请点击不更新。更新后无法保证能够编译、运行等。请确保开发板正常运行后再决定是否更新。要知道由于库的差异，更新后可能会出现问题，或者默认配置（如 TinyGSM）将被覆盖。
+> 3. 如果更新后运行异常，请按照 Arduino 快速入门第 4 条删除 libraries 中的目录，并将 lib 中的文件夹重新拖入 libraries 目录。
+
+### 📍 Pins Map
+
+| 名称            | GPIO NUM     | 可用 |
+| --------------- | ------------ | ---- |
+| Modem TX        | 17           | ❌    |
+| Modem RX        | 18           | ❌    |
+| Modem PWRKEY    | 15           | ❌    |
+| Modem RESET     | 16           | ❌    |
+| Modem RING      | 6            | ❌    |
+| Modem DTR       | 7            | ❌    |
+| 电池 ADC 引脚 | 4            | ❌    |
+| 太阳能 ADC 引脚   | 3            | ❌    |
+| SD SCK          | 21           | ❌    |
+| SD MISO         | 47           | ❌    |
+| SD MOSI         | 14           | ❌    |
+| SD CS           | 13           | ❌    |
+| GPS Enabled     | Modem AUXVDD | ❌    |
+
+> \[!TIP]
+>
+> [ESP32-S3 Consolidated Pin Overview](https://documentation.espressif.com/esp32-s3_datasheet_en.pdf)
+>
+> Input/Output: Any GPIO not listed can be used as input/output.
+>
+> ADC Pins: Only pins 1-21 are allowed as ADC inputs.
+>
+> IO0/IO3/IO45/IO46 are Strapping Pins; their use is limited. Please see the **Strapping Pins** section of the [online documentation](https://documentation.espressif.com/esp32-s3_datasheet_en.pdf) for details.
+>
+
+### ⚡ Electrical parameters
+
+| 特性                        | 详情 |
+| ------------------------------- | ------- |
+| 🔗USB-C 输入电压            | 5V      |
+| ⚡太阳能输入电压            | 5~6V    |
+| ⚡USB-C/太阳能充电最大电流 | 500mA   |
+| 🔋电池电压                | 3.7V    |
+| 📍**VBUS** ( 排针)         | 5V      |
+| 📍**VBAT** ( 排针)         | 4.2V    |
+
+> \[!TIP]
+>
+> 1. 板载 JST2.0 接口仅用于连接太阳能板为电池充电，不能通过此接口为开发板供电
+> 2. 建议使用输出电压为 6V 或 5V、功率约 5-10W 的太阳能板。太阳能只能为电池充电。没有电池时，太阳能板无法供电。
+> 请注意，这只是一个建议。不一定要使用 5-10W 的太阳能板。1W 也可以使用。
+> 太阳能板的大小决定了太阳能充电的电流和速度。请注意，根据环境不同，
+> 每天的日照时间可能不超过一小时。此时，如果太阳能板太小且光线不足，则无法充电。
+> 3. 将 VBUS 引脚连接到 USB-C 电源。如果 USB-C 存在，VBUS 电压等于 USB-C 电压。如果 USB-C 不存在，VBUS 上没有电压。
+> 4. 将 VBAT 引脚连接到电池正极。此引脚可用于直接将外部电池连接到 VBAT 引脚。使用外部电池时，除非电池参数与外部电池相似，否则最好不要将电池连接到开发板的 18650 电池座。连接到 VBAT 引脚的电池可以使用板载充电管理进行充电。
+> 5. VBUS 引脚是除电池外唯一为开发板供电的接口；没有其他方式。
+> 6. USB/VBUS 引脚输入必须能够提供至少 2A 的峰值电流，且电压不得低于 5V，否则将触发低压自动关机。
+
+### ⚡Battery Protector Description
+
+| 特性                | 详情    |
+| ----------------------- | ---------- |
+| 过压阈值  | 4.30V      |
+| 欠压阈值 | 2.4V       |
+| 过放电流  | 3A         |
+| 芯片名称                | [DW06D][2] |
+
+> \[!IMPORTANT]
+>
+> 在 USB 和电池之间切换时，开发板可能会重置并重启设备。这是正常的，因为开发板没有无缝电源切换解决方案。
+>
+> 此行为不受软件设置的影响。
+>
+
+### 按钮说明
+
+| 按钮                   | 功能                            |
+| ------------------------ | ----------------------------------- |
+| BOOT(Close to esp)       | 可自定义功能/下载模式 |
+| RST                      | 复位设备按钮                |
+| USB-BOOT(Close to modem) | 模块升级模式                  |
+
+* Press and hold the `BOOT` button before powering on. The board is now in waiting mode for downloading.
+* Before powering on, keep the `USB-BOOT` button pressed to put the modem into firmware update mode.
+* 以上命名方式以开发板丝印为准
+
+### 天线说明
+
+|      | 功能                     |
+| ---- | ---------------------------- |
+| SIM  | LTE 主天线接口   |
+| AUX  | LTE 分集天线接口 |
+| GNSS | GPS 有源天线接口 |
+
+* 使用时，只需将佩戴的 LTE 天线连接到 SIM IPEX 第一代接口。AUX 天线不需要连接。
+* 以上命名方式以开发板丝印为准
+
+### LED 说明
+
+| 功能            | 颜色                           |
+| ------------------- | ------------------------------- |
+| 模块状态        | RED   (Near the modem)          |
+| 模块网络状态 | RED   (Near the modem)          |
+| 充电 LED          | BLUE  (Near the battery switch) |
+| 充电完成 LED     | BLUE  (Near the battery switch) |
+
+* 模块状态灯和网络状态灯无法关闭
+
+### 资源
+
+* [GPS 天线](../../../../datasheet/GPS%20Antenna%20Specifications.pdf)
+* [LTE 天线](../../../../datasheet/LTE%20Antenna%20Specifications.pdf)
+* [T-A7608X 原理图](../../../../schematic/esp32/T-A7608X-V1.0.pdf)
+* [SIMCOM 官方 A7608X 全部数据手册](https://cn.simcom.com/product/A7608X-H-E_SA.html)
+* [For A7608 series documentation，请访问 datasheet 目录。](../../../../datasheet/A76XX/)
+* [开发板尺寸](../../../../dimensions/esp32s3/T-A7608-S3.dxf)
+
+### 常见问题
+
+* **升级模块固件**
+  1. [T-A76XX 升级文档](../../../../docs/update_fw.md) / [Video](https://youtu.be/AZkm-Z7mKn8)
+
+* **无法检测到 SIM 卡？**
+   1. 需要先将 SIM 卡插入开发板，然后再开机检测 SIM 卡。如果顺序颠倒，将报告无法检测到 SIM 卡。
+
+* **无法上传任何 sketch，请手动进入上传模式。**
+   1. 通过 USB 线连接开发板
+   2. Press and hold the **BOOT** button , While still pressing the **BOOT** button
+   3. Press **RST** button
+   4. Release the **RST** button
+   5. Release the **BOOT** button
+   6. 上传 sketch
+
+* **板载开关的作用**
+  1. 使用内部电池组时，开关将正常工作以控制开发板的电源开/关。但是，如果使用外部电池组并连接到 VBAT 引脚，开关将被旁路，这意味着唯一的关机方式是断开电池。
+  2. 开关仅用于电池供电，插入 USB 时无效
+
+* **关于 VBUS 引脚**
+  1. VBUS 引脚和 USB-C 在同一条线上。只有连接 USB-C 时，VBUS 才有电压
+  2. 仅连接电池时，VBUS 没有电压输出
+  3. 如果想连接外部电源而不连接 USB-C，VBUS 引脚是唯一的电压输入引脚。请注意，VBUS 引脚的最大输入为 5V，不要超过 5V
+
+* 可以使用其他 GPS 天线吗？
+  1. 外部 GPS 天线必须是 3.3V 供电的有源 GPS 天线。 For example, the [MK-76](https://www.rfmw.com/datasheets/sanav/mk-76.pdf) 支持 2.5-5.5V，兼容。大多数有源 GPS 天线支持 2.5-5.5V 供电。详情请参考 GPS 天线数据手册。
+
+[2]: https://item.szlcsc.com/datasheet/DW06D%252FJ/83278.html?spm=sc.it.pdf.fd___sc.gbn.xh1.zy.n&lcsc_vid=QgRWVldWE1dZAwECQFUMVgYHFFRdXlxWRlELVFQFTgMxVlNTT1hdUldfQ1JeXjsOAxUeFF5JWBYZEEoEHg8JSQcJGk4%3D
+

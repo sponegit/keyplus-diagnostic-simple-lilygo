@@ -4,6 +4,12 @@
 
 <h1 align = "center">🌟LilyGo T-SIM-DC-Shield Usage Guide🌟</h1>
 
+<div align="center">
+
+[English](./README.MD) | [中文](../../../cn/shield/t-sim-dc-shield/README.MD)
+
+</div>
+
 
 <!-- <div align="center" markdown="1">
   <img src="../../../../images/product/png/T-T-SIM-DC-Shield.png" alt="t-bat" width="480"/>

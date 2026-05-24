@@ -4,6 +4,12 @@
 
 <h1 align = "center">🌟LilyGo PCI-E Series ESP32 Version🌟</h1>
 
+<div align="center">
+
+[English](./README.MD) | [中文](../../../cn/esp32/pcie-series-esp32/README.MD)
+
+</div>
+
 ## Overview
 
 * This page introduces the hardware parameters related to `LilyGo PCI-E Series ESP32 Version`
@@ -52,7 +58,7 @@
     * Open the downloaded `LilyGo-Modem-Series`
     * Open `examples`
     * Select the sample file and open the file ending with `ino`
-6. On Arduino ISelect the corresponding board in the DE tool project and click on the corresponding option in the list below to select
+6. In Arduino IDE, select the corresponding board in the tool project and click on the corresponding option in the list below to select
 
     | Name                                 | Value                                |
     | ------------------------------------ | ------------------------------------ |
@@ -184,7 +190,7 @@
 
 * **Upgrade modem firmware** Please refer here
   1. [T-SIM7000G Upgrade docs](../sim7000-esp32/upgrade/sim7000_upgrade.md)
-  2. [T-SIM7670G Upgrade docs](./upgrade/sim7000_upgrade.md)
+  2. [T-SIM7670G Upgrade docs](../../upgrade/sim7670g/sim7670g_upgrade.md)
   3. [T-A7670X   Upgrade docs](../../../update_fw.md)
   4. [T-SIM7600X Upgrade docs](../sim7600-esp32/upgrade/sim7600_upgrade.md)
   5. [T-SIM7080G Upgrade docs](../../esp32s3/sim7080-s3-standard/upgrade/README.MD)

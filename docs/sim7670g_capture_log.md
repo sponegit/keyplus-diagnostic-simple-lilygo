@@ -1,3 +1,9 @@
+<div align="center">
+
+[English](./sim7670g_capture_log.md) | [中文](./cn/sim7670g_capture_log.md)
+
+</div>
+
 # SIM7670G Capture log Steps
 
 

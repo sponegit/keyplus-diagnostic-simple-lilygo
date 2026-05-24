@@ -5,6 +5,12 @@
 
 <h1 align = "center">🌟LilyGo SIM7070G Upgrade Guide🌟</h1>
 
+<div align="center">
+
+[English](./sim7070g_upgrade.md) | [中文](../../../cn/upgrade/sim7070g/sim7070g_upgrade.md)
+
+</div>
+
 ## Resources
 
 - [SIM7070G Driver](https://drive.google.com/file/d/1K-lMOBCx5dZSjUh-D9ZhNeKuxCFDA38W/view?usp=sharing)

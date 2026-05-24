@@ -4,6 +4,12 @@
 
 <h1 align = "center">🌟LilyGo A7670X ESP32 Version🌟</h1>
 
+<div align="center">
+
+[English](./README.MD) | [中文](../../../cn/esp32/a7670-esp32/README.MD)
+
+</div>
+
 ## Overview
 
 * This page introduces the hardware parameters related to `LilyGo A7670X ESP32 Version`
@@ -76,7 +82,7 @@
     * Open the downloaded `LilyGo-Modem-Series`
     * Open `examples`
     * Select the sample file and open the file ending with `ino`
-6. On Arduino ISelect the corresponding board in the DE tool project and click on the corresponding option in the list below to select
+6. In Arduino IDE, select the corresponding board in the tool project and click on the corresponding option in the list below to select
 
     | Name                                 | Value                                |
     | ------------------------------------ | ------------------------------------ |

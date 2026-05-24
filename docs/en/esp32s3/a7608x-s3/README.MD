@@ -4,6 +4,12 @@
 
 <h1 align = "center">🌟LilyGo A7608X ESP32S3 Version🌟</h1>
 
+<div align="center">
+
+[English](./README.MD) | [中文](../../../cn/esp32s3/a7608x-s3/README.MD)
+
+</div>
+
 ## Overview
 
 * This page introduces the hardware parameters related to `LilyGo A7608X ESP32S3 Version`
@@ -51,7 +57,7 @@
     * Open the downloaded `LilyGo-Modem-Series`
     * Open `examples`
     * Select the sample file and open the file ending with `ino`
-5. On Arduino ISelect the corresponding board in the DE tool project and click on the corresponding option in the list below to select
+5. In Arduino IDE, select the corresponding board in the tool project and click on the corresponding option in the list below to select
 
     | Name                                 | Value                               |
     | ------------------------------------ | ----------------------------------- |
@@ -170,7 +176,7 @@
 |      | Function                     |
 | ---- | ---------------------------- |
 | SIM  | LTE Main antenna interface   |
-| AUX  | LTE Tiered antenna interface |
+| AUX  | LTE Diversity antenna interface |
 | GNSS | GPS active antenna interface |
 
 * When using, you only need to connect the LTE antenna you wear to the SIM IPEX first generation interface. The AUX antenna does not need to be connected.

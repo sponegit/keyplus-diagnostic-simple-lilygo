@@ -1,6 +1,12 @@
 
 <h1 align = "center">🌟SIM7600 Modem Firmware Update Guide🌟</h1>
 
+<div align="center">
+
+[English](./sim7600_upgrade.md) | [中文](../../../../cn/esp32/sim7600-esp32/upgrade/sim7600_upgrade.md)
+
+</div>
+
 ### Record Video
 
 * [SIM7600G Upgrade Record](https://www.youtube.com/watch?v=7cJzjfcrFWY&t=10s)
@@ -11,7 +17,7 @@
 * [Upgrade Firmware tools](https://drive.google.com/file/d/1f02TTNoyirFPGWbob1khy9dnoBonoVe7/view?usp=sharing)
 * [Upgrade recording video](https://youtu.be/7cJzjfcrFWY)
 
-**The firmware version flashed must be consistent with the PN number of the demodulator, otherwise it will become a brick.**
+**The firmware version flashed must be consistent with the PN number of the modem, otherwise it will become a brick.**
 
 ##### SIM7600G-H
 

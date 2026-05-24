@@ -4,6 +4,12 @@
 
 <h1 align = "center">🌟Sim Shield Usage Guide🌟</h1>
 
+<div align="center">
+
+[English](./README.md) | [中文](../../cn/SimshieldUsageGuide/README.md)
+
+</div>
+
 * The SimShield is an expansion board for the Sim series that includes three-way current detection, LoRa transceiver, and wide-range DC input. It supports the full range of LilyGo T-Sim expansion boards.
 
 > \[!IMPORTANT]

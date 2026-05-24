@@ -5,6 +5,12 @@
 
 <h1 align = "center">🌟LilyGo SIM7080 Upgrade Guide🌟</h1>
 
+<div align="center">
+
+[English](./README.MD) | [中文](../../../../cn/esp32s3/sim7080-s3-standard/upgrade/README.MD)
+
+</div>
+
 ## Resources
 
 - [SIM7080G_FlashTools v1.6.7](https://drive.google.com/file/d/1nOqJuzBgE8KrMkpQUAWy3nJwqEBVABVn/view?usp=sharing)

@@ -5,6 +5,12 @@
 
 <h1 align = "center">🌟LilyGo A7670/A7608 Upgrade Guide🌟</h1>
 
+<div align="center">
+
+[English](./update_fw.md) | [中文](./cn/update_fw.md)
+
+</div>
+
 # Prerequisites
 
 ## Driver
@@ -114,7 +120,7 @@ See [LilyGo SIM7670G Upgrade Guide](./en/upgrade/sim7670g/sim7670g_upgrade.md)
 > \[!IMPORTANT]
 > Steps to enter upgrade mode
 >
-> 1. Press and hold the SBOOT button close to the Modelm and do not release it.
+> 1. Press and hold the SBOOT button close to the modem and do not release it.
 > 2. Plug in MICRO-USB
 > 3. Plug in USB-C
 > 4. Check the device manager and wait for the computer port to be generated

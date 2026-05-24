@@ -5,6 +5,12 @@
 
 <h1 align = "center">🌟LilyGo SIM7000 Upgrade Guide🌟</h1>
 
+<div align="center">
+
+[English](./sim7000_upgrade.md) | [中文](../../../../cn/esp32/sim7000-esp32/upgrade/sim7000_upgrade.md)
+
+</div>
+
 ## Resources
 
 - [SIM7000 FlashTools v1.5.8](https://drive.google.com/file/d/1BUtRWizTqEeI8x4khVRwp_ITektyUyoN/view?usp=sharing)

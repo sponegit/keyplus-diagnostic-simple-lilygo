@@ -1,3 +1,9 @@
+<div align="center">
+
+[English](./model_comparison.md) | [中文](./cn/model_comparison.md)
+
+</div>
+
 ## Model Comparison
 
 | Product                        | Module                   | QWIIC | Seamless <br> power <br> switching | GNSS<br> routing<br> to SOC | GNSS<br>PPS | eSIM<br>Pad | BMS | Camera<br>Interface | DeepSleep<br> Current | Pin<br>compatible |

@@ -6,7 +6,7 @@
 
 <div align="center">
 
-[English](./standard_series_comparison.md) | [中文](./standard_series_comparison_cn.md)
+[English](./standard_series_comparison.md) | [中文](./cn/standard_series_comparison_cn.md)
 
 </div>
 

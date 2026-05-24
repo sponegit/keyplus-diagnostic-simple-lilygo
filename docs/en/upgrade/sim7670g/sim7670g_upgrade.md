@@ -5,6 +5,12 @@
 
 <h1 align = "center">🌟LilyGo SIM7670G Upgrade Guide🌟</h1>
 
+<div align="center">
+
+[English](./sim7670g_upgrade.md) | [中文](../../../cn/upgrade/sim7670g/sim7670g_upgrade.md)
+
+</div>
+
 ## Resources
 
 ### `0` SIM7670G Firmware Update Guide Video

@@ -1,3 +1,9 @@
+<div align="center">
+
+[English](./a7670x_capture_log.md) | [中文](./cn/a7670x_capture_log.md)
+
+</div>
+
 
 # A7670X Capture log  Steps
 

@@ -6,7 +6,7 @@
 
 <div align="center">
 
-[English](./standard_series_comparison.md) | [中文](./standard_series_comparison_cn.md)
+[English](../standard_series_comparison.md) | [中文](./standard_series_comparison_cn.md)
 
 </div>
 
@@ -194,16 +194,16 @@ Standard系列是LilyGo推出的基于ESP32-S3的蜂窝物联网开发板，具�
 ## 资源链接
 
 各型号详细文档：
-- [T-A7670X-S3-Standard](./en/esp32s3/a7670x-s3-standard/README.MD)
-- [T-SIM7670G-S3-Standard](./en/esp32s3/sim7670g-s3-standard/README.MD)
-- [T-SIM7000G-S3-Standard](./en/esp32s3/sim7000g-s3-standard/README.MD)
-- [T-SIM7080G-S3-Standard](./en/esp32s3/sim7080-s3-standard/README.MD)
-- [T-SIM7600G-S3-Standard](./en/esp32s3/sim7600g-s3-standard/README.MD)
+- [T-A7670X-S3-Standard](../en/esp32s3/a7670x-s3-standard/README.MD)
+- [T-SIM7670G-S3-Standard](../en/esp32s3/sim7670g-s3-standard/README.MD)
+- [T-SIM7000G-S3-Standard](../en/esp32s3/sim7000g-s3-standard/README.MD)
+- [T-SIM7080G-S3-Standard](../en/esp32s3/sim7080-s3-standard/README.MD)
+- [T-SIM7600G-S3-Standard](../en/esp32s3/sim7600g-s3-standard/README.MD)
 
 硬件资源：
-- [原理图](./schematic/standard/)
-- [3D模型](./dimensions/Standard/)
-- [天线规格](./datasheet/)
+- [原理图](../../docs/schematic/standard/)
+- [3D模型](../../docs/dimensions/Standard/)
+- [天线规格](../../docs/datasheet/)
 
 ## 常见问题
 

@@ -220,7 +220,7 @@
 
 ## Standard 系列对比
 
-- 🔧 **[Standard 系列选型对比](./docs/standard_series_comparison_cn.md)**
+- 🔧 **[Standard 系列选型对比](./docs/cn/standard_series_comparison_cn.md)**
 
 ## 模块固件升级指南
 

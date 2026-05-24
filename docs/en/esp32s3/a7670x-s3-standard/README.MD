@@ -4,6 +4,12 @@
 
 <h1 align = "center">🌟LilyGo T-A7670X-S3-Standard🌟</h1>
 
+<div align="center">
+
+[English](./README.MD) | [中文](../../../cn/esp32s3/a7670x-s3-standard/README.MD)
+
+</div>
+
 ## Overview
 
 * This page introduces the hardware parameters related to `LilyGo T-A7670X-S3-Standard`
@@ -70,7 +76,7 @@
     * Open the downloaded `LilyGo-Modem-Series`
     * Open `examples`
     * Select the sample file and open the file ending with `ino`
-5. On Arduino ISelect the corresponding board in the DE tool project and click on the corresponding option in the list below to select
+5. In Arduino IDE, select the corresponding board in the tool project and click on the corresponding option in the list below to select
 
     | Name                                 | Value                               |
     | ------------------------------------ | ----------------------------------- |
