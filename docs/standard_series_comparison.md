@@ -195,11 +195,11 @@ When using Arduino IDE, uncomment the corresponding macro definition in the `uti
 ## Resource Links
 
 Detailed documentation for each model:
-- [T-A7670X-S3-Standard](./en/esp32s3/a7670x-s3-standard/REAMDE.MD)
-- [T-SIM7670G-S3-Standard](./en/esp32s3/sim7670g-s3-standard/REAMDE.MD)
-- [T-SIM7000G-S3-Standard](./en/esp32s3/sim7000g-s3-standard/REAMDE.MD)
-- [T-SIM7080G-S3-Standard](./en/esp32s3/sim7080-s3-standard/REAMDE.MD)
-- [T-SIM7600G-S3-Standard](./en/esp32s3/sim7600g-s3-standard/REAMDE.MD)
+- [T-A7670X-S3-Standard](./en/esp32s3/a7670x-s3-standard/README.MD)
+- [T-SIM7670G-S3-Standard](./en/esp32s3/sim7670g-s3-standard/README.MD)
+- [T-SIM7000G-S3-Standard](./en/esp32s3/sim7000g-s3-standard/README.MD)
+- [T-SIM7080G-S3-Standard](./en/esp32s3/sim7080-s3-standard/README.MD)
+- [T-SIM7600G-S3-Standard](./en/esp32s3/sim7600g-s3-standard/README.MD)
 
 Hardware Resources:
 - [Schematics](./schematic/standard/)
