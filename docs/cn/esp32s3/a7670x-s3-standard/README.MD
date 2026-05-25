@@ -20,7 +20,7 @@
 | ------------------------- | ---------------- | -------------- | ------------- |
 | [T-A7670X-S3-Standard][1] | ESP32-S3-WROOM-1 | 16MB(Quad-SPI) | 2MB(Quad-SPI) |
 
-[1]: https://www.lilygo.cc/products/
+[1]: https://lilygo.cc/products/t-sim-t-a-series-standard-edition?variant=52513685471413
 
 
 ### 模块差异
