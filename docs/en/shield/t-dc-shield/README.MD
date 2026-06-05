@@ -17,7 +17,13 @@
 
 > \[!IMPORTANT]
 > The T-SimDcShield was designed for multi-SIM motherboard compatibility. Currently, the version sold only supports direct use with Standard-Series motherboards and does not differentiate between Motherdem models. For other motherboards, the rear resistors must be modified for compatibility.
-> 
+
+### I2C
+
+| PCB Label | Standard-Series GPIO |
+| --------- | -------------------- |
+| SDA       | 3                    |
+| SCL       | 2                    |
 
 ### Grove: Analog Input
 
