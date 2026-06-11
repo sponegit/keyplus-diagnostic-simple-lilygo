@@ -30,6 +30,15 @@
 
 * The voice call version requires the purchase of an audio package; otherwise, voice calls are not possible.
 
+
+* The T-SIM7600X-S3-Standard comes with audio and modem TF card functionality by default. To use these functions, you need to purchase the T-SIM7600G-S3-Standard-ExpansionKit. The table below lists the functional changes after adding the T-SIM7600G-S3-Standard-ExpansionKit.
+
+| Function               | T-SIM7600X-S3-Standard | T-SIM7600X-S3-Standard +  ExpansionKit | Note                              |
+| ---------------------- | ---------------------- | -------------------------------------- | --------------------------------- |
+| Headphone jack         | ❌                      | ✅                                      | Mono 3.5mm                        |
+| Speaker interface      | ❌                      | ✅                                      | 2W audio power amplifier          |
+| Modem TF card function | ❌                      | ✅                                      | SIM7600G Direct Access to TF Card |
+
 ### PlatformIO Quick Start
 
 1. Install [Visual Studio Code](https://code.visualstudio.com/) and [Python](https://www.python.org/)
@@ -249,12 +258,12 @@ The power-on sequence is: power on all cameras -> power off all cameras -> delay
 
 ### LED Description
 
-| FUNCTION        | COLOR                            | STATE                                                                  |
-| --------------- | -------------------------------- | ---------------------------------------------------------------------- |
-| MODEM STATE     | RED   (Near the modem)           | Startup:ON                                                             |
-| MODEM NET       | RED   (Near the modem)           | Network status indicator                                               |
-| CHARGE LED      | RED  (Near the battery switch)   | Charging:ON  Charging complete:OFF                                     |
-| CHARGE DONE LED | GREEN  (Near the battery switch) | Charging:OFF  Charging complete:ON                                     |
+| FUNCTION        | COLOR                            | STATE                              |
+| --------------- | -------------------------------- | ---------------------------------- |
+| MODEM STATE     | RED   (Near the modem)           | Startup:ON                         |
+| MODEM NET       | RED   (Near the modem)           | Network status indicator           |
+| CHARGE LED      | RED  (Near the battery switch)   | Charging:ON  Charging complete:OFF |
+| CHARGE DONE LED | GREEN  (Near the battery switch) | Charging:OFF  Charging complete:ON |
 
 * `CHARGE DONE LED` remains on if no battery is connected
 * Modem Status light and network status led cannot be turned off
