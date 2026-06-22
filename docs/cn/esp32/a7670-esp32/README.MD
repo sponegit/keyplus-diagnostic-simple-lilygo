@@ -231,6 +231,7 @@
 * [GPS 天线](../../../../datasheet/GPS%20Antenna%20Specifications.pdf)
 * [LTE 天线](../../../../datasheet/LTE%20Antenna%20Specifications.pdf)
 * [T-A7670X 原理图](../../../../schematic/esp32/T-A7670X-V1.4.pdf)
+* [L76K GPS原理图](../../../../schematic/shield/Extern-GPS-Module.pdf)
 * [SIMCOM 官方 A7670X 全部数据手册](https://cn.simcom.com/product/A7670X.html)
 * [A7670X 系列文档，请访问 datasheet 目录。](../../../../datasheet/A7670X/)
 * [开发板尺寸](../../../../dimensions/esp32/T-A760X-ESP32.dxf)
