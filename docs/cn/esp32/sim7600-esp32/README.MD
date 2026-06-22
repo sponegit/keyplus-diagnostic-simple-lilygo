@@ -250,6 +250,7 @@
 * [SIMCOM 官方 SIM7600X 全部数据手册](https://cn.simcom.com/product/SIM7600X.html)
 * [For SIM7600 series documentation，请访问 datasheet 目录。](../../../../datasheet/SIM7600X/)
 * [开发板尺寸](../../../../dimensions/esp32/T-SIM7600-ESP32.dxf)
+* [开发板3D](../../../../dimensions/esp32/T-SIM7600-Board-3D.stp)
 * [外壳](../../../../dimensions/esp32/T-SIM7600-ESP32-Case.zip)
 
 ### 常见问题
