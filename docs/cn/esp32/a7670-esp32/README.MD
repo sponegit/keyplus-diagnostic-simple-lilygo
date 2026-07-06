@@ -279,4 +279,8 @@
 * 可以使用其他 GPS 天线吗？
   1. 外部 GPS 天线必须是 3.3V 供电的有源 GPS 天线。例如，[MK-76](https://www.rfmw.com/datasheets/sanav/mk-76.pdf) 支持 2.5-5.5V，兼容。大多数有源 GPS 天线支持 2.5-5.5V 供电。详情请参考 GPS 天线数据手册。
 
+* **如何将 LoRa 扩展板与 T-A7670 配合使用？**
+  1. [LoRa 扩展板](https://lilygo.cc/products/ttgo-accessories-shield-lora-868-915-mhz) 不能与 T-A7670G+L76K GPS 同时使用；其他版本可以。
+  2. 要与 T-A7670 配合使用，需要移除调制解调器上的 RST 电阻，请参阅 [issue/160](https://github.com/Xinyuan-LilyGO/LilyGo-Modem-Series/issues/160)。
+
 [2]: https://item.szlcsc.com/datasheet/DW06D%252FJ/83278.html?spm=sc.it.pdf.fd___sc.gbn.xh1.zy.n&lcsc_vid=QgRWVldWE1dZAwECQFUMVgYHFFRdXlxWRlELVFQFTgMxVlNTT1hdUldfQ1JeXjsOAxUeFF5JWBYZEEoEHg8JSQcJGk4%3D

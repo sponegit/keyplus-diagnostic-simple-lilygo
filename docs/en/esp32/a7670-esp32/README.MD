@@ -279,4 +279,8 @@
 * Can other GPS antennas be used?
   1. The external GPS antenna must be an active GPS antenna with a 3.3V power supply. For example, the [MK-76](https://www.rfmw.com/datasheets/sanav/mk-76.pdf) supports 2.5-5.5V and is compatible. Most active GPS antennas support 2.5-5.5V power. Please refer to the GPS antenna datasheet for details.
 
+* **How to use the LoRa expansion board with the T-A7670?**
+  1. The [Lora expansion](https://lilygo.cc/products/ttgo-accessories-shield-lora-868-915-mhz) board cannot be used simultaneously with the T-A7670G+L76K GPS; other versions can.
+  1. To use with the T-A7670, the RST resistor on the modem needs to be removed,See [issue/160](https://github.com/Xinyuan-LilyGO/LilyGo-Modem-Series/issues/160)
+
 [2]: https://item.szlcsc.com/datasheet/DW06D%252FJ/83278.html?spm=sc.it.pdf.fd___sc.gbn.xh1.zy.n&lcsc_vid=QgRWVldWE1dZAwECQFUMVgYHFFRdXlxWRlELVFQFTgMxVlNTT1hdUldfQ1JeXjsOAxUeFF5JWBYZEEoEHg8JSQcJGk4%3D
