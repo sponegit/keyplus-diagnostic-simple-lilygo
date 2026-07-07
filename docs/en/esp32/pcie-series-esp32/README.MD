@@ -145,7 +145,6 @@
 | MODEM STATUS        | RED   (On the modem)          |
 | MODEM NETWORK STATE | RED   (On the modem)          |
 | CHARGE LED          | BLUE  (Near the ON BOARD LED) |
-| ON BOARD LED        | GREEN  (Near the esp module)  |
 
 * Modem Status light and network status led cannot be turned off
 

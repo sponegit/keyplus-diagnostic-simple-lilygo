@@ -12,7 +12,7 @@
 
 ## 概述
 
-* This page introduces the hardware parameters related to `LilyGo PCI-E 系列 ESP32 版本`
+* 本页面介绍"LilyGo PCI-E 系列 ESP32 版本"
 
 ### 产品
 
@@ -35,10 +35,10 @@
 5. 重启 `Visual Studio Code` 后，选择左上角的 `文件` -> `打开文件夹` -> 选择 `LilyGo-Modem-Series` 目录
 6. 等待第三方依赖库安装完成
 7. 点击 `platformio.ini` 文件，在 `platformio` 栏中
-8. Cancel the `;` symbol in front of the line `default_envs = T-PCIE-XXXX` and use `T-PCIE-XXXX` as the default environment, Name **XXXX** Please select according to the actual version
+8. 取消 `default_envs = T-PCIE-XXXX` 行前面的分号 `;`，并将 `T-PCIE-XXXX` 用作默认环境，名称 **XXXX** 请根据实际版本选择
 9. 取消注释 `src_dir = xxxx` 中的一行，确保只有一行有效。例如，要启用 `src_dir = examples/ATdebug`，删除前面的 `;` 符号并保存文件。现在将编译 ATDebug 示例。
 10. 点击左下角的 (✔) 符号进行编译
-11. Connect the board to the computer USB-C
+11. 将开发板通过 USB-C 接口连接到电脑。
 12. 点击 (→) 上传固件
 13. 点击（插头符号）监控串口输出
 14. 如果无法写入，或 USB 设备持续闪烁，请查看下方的 **常见问题**
@@ -60,10 +60,10 @@
     * 选择示例文件并打开以 `ino` 结尾的文件
 6. 在 Arduino IDE 中，在工具项目中选择相应的开发板，点击下方列表中的相应选项进行选择
 
-    | 名称                                 | 值                                |
+    | 名称                                 | 值                                   |
     | ------------------------------------ | ------------------------------------ |
     | Board                                | **ESP32 Dev Module**                 |
-    | Port                                 | 您的端口                            |
+    | Port                                 | 您的端口                             |
     | CPU Frequency                        | 240MHZ(WiFi/BT)                      |
     | Core Debug Level                     | None                                 |
     | Erase All Flash Before Sketch Upload | Disable                              |
@@ -80,7 +80,7 @@
 
      * `Partition Scheme` 请根据实际应用选择。例如选择 **Huge APP (3MB No OTA/1MB SPIFFS)** , 更多分区方案请查看[这里](https://docs.espressif.com/projects/esp-idf/en/stable/esp32/api-guides/partition-tables.html)
 
-7. In the open sketch, select the `utilities.h` file and uncomment the line `// #define LILYGO_T_PCIE_XXXX`. Delete the `//` and save the file to use this board as the default configuration. Name **XXXX** Please select according to the actual version
+7. 在打开的ino文件中，选择 `utilities.h` 文件，取消注释 `// #define LILYGO_T_PCIE_XXXX` 这行代码。删除 `//` 并保存文件，即可将此开发板设置为默认配置。名称 **XXXX** 请根据实际版本选择
 
    ![board_select](../../../static/board_select.jpg)
 
@@ -108,31 +108,31 @@
 | PMIC SCL                | 22       | ✅️    |
 
 * ESP32 型号 GPIO33 及以上只能设置为输入，不能设置为输出
-* I2C pins are fixed and cannot be changed. They are already connected to the PMIC.
+* I2C引脚是固定的，无法更改。它们已经连接到电源管理集成电路（PMIC）。
 
 ### ⚡ Electrical parameters
 
-| 特性                  | 详情 |
-| ------------------------- | ------- |
-| 🔗USB-C 输入电压      | 5V      |
-| ⚡USB-C Charge Max Current | 1000mA  |
-| 🔋电池电压          | 3.7V    |
+| 特性                      | 详情   |
+| ------------------------- | ------ |
+| 🔗USB-C 输入电压           | 5V     |
+| ⚡USB-C Charge Max Current | 1000mA |
+| 🔋电池电压                 | 3.7V   |
 
 * 充电电流可通过 PMIC 调节，最大 1A
 
 ### 按钮说明
 
-| 按钮              | 功能                                                                                               |
-| ------------------- | ------------------------------------------------------------------------------------------------------ |
-| EN (Close to USB-C) | 复位设备按钮                                                                                   |
-| PWR                 | Press and hold for 6 seconds to turn off the device, press and hold for 1 second to turn on the device |
+| 按钮                | 功能                                       |
+| ------------------- | ------------------------------------------ |
+| EN (Close to USB-C) | 复位设备按钮                               |
+| PWR                 | 按住6秒钟可关闭设备，按住1秒钟可打开设备。 |
 
 * 以上命名方式以开发板丝印为准
 
 ### 天线说明
 
-|          | 功能                     |
-| -------- | ---------------------------- |
+|          | 功能             |
+| -------- | ---------------- |
 | SIM/MAIN | LTE 主天线接口   |
 | GPS/GNSS | GPS 有源天线接口 |
 
@@ -140,12 +140,11 @@
 
 ### LED 说明
 
-| 功能            | 颜色                         |
-| ------------------- | ----------------------------- |
-| 模块状态        | RED   (On the modem)          |
-| 模块网络状态 | RED   (On the modem)          |
-| 充电 LED          | BLUE  (Near the ON BOARD LED) |
-| 板载 LED        | GREEN  (Near the esp module)  |
+| 功能         | 颜色                          |
+| ------------ | ----------------------------- |
+| 模块状态     | RED   (On the modem)          |
+| 模块网络状态 | RED    (On the modem)          |
+| 充电 LED     | BLUE  (Near the ON BOARD LED) |
 
 * 模块状态灯和网络状态灯无法关闭
 
@@ -198,13 +197,13 @@
 * **无法检测到 SIM 卡？**
    1. 需要先将 SIM 卡插入开发板，然后再开机检测 SIM 卡。如果顺序颠倒，将报告无法检测到 SIM 卡。
 
-* **无法上传任何 sketch，请手动进入上传模式。**
+* **无法上传任何程序，请手动进入上传模式。**
    1. 通过 USB 线连接开发板
-   2. Use wires to connect GND and IO0 together
-   3. Press RST button
-   4. Release the RST button
-   5. Disconnect IO0 from GND
-   6. 上传 sketch
+   2. 用导线将 GND 和 IO0 连接起来。
+   3. 按下RST按钮
+   4. 松开RST按钮
+   5. 断开 IO0 与 GND 的连接
+   6. 上传程序
 
 * **板载开关的作用**
   1. 使用内部电池组时，开关将正常工作以控制开发板的电源开/关。但是，如果使用外部电池组并连接到 VBAT 引脚，开关将被旁路，这意味着唯一的关机方式是断开电池。
@@ -220,7 +219,6 @@
 
   <img  height="480" width="480" src=./images/pcie.png>
 
-* **The SIM7600 series only has a chip in the area highlighted in red in the image below, indicating it has voice call functionality. If, as shown in the image below, the area highlighted in red is empty, then it does not have voice call functionality.**
+* **SIM7600系列卡仅在下图红色高亮区域内有芯片，表示其具备语音通话功能。如果如下图所示，红色高亮区域为空，则表示其不具备语音通话功能。**
 
   <img  height="480" width="480" src=./images/sim7600-audio.png>
-
