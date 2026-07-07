@@ -191,13 +191,13 @@
 
 ### LED Description
 
-| FUNCTION            | COLOR                           |
-| ------------------- | ------------------------------- |
-| MODEM STATUS        | RED   (Near the modem)          |
-| MODEM NETWORK STATE | RED   (Near the modem)          |
-| CHARGE LED          | BLUE  (Near the battery switch) |
-| CHARGE DONE LED     | BLUE  (Near the battery switch) |
-| ON BOARD LED        | BLUE  (Near the RST button)     |
+| FUNCTION            | COLOR                            |
+| ------------------- | -------------------------------- |
+| MODEM STATUS        | RED   (Near the modem)           |
+| MODEM NETWORK STATE | RED   (Near the modem)           |
+| CHARGE LED          | RED   (Near the battery switch)  |
+| CHARGE DONE LED     | GREEN  (Near the battery switch) |
+| ON BOARD LED        | BLUE  (Near the RST button)      |
 
 * Modem Status light and network status led cannot be turned off
 

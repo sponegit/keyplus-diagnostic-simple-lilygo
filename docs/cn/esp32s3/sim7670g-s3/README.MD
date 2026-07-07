@@ -24,9 +24,9 @@
 
 ### 模块差异
 
-| 型号    | GPS | 电话 | SMS | Frequency band                                                                                         |
-| -------- | --- | ---------- | --- | ------------------------------------------------------------------------------------------------------ |
-| SIM7670G | ✅   | ❌          | ✅   | LTE-FDD:B1/B2/B3/B4/B5/B7/B8/B12/B13/B18/B19/B20/B25/B26/B28/B66/B71 LTE-TDD:B34/B38/B39/B40/B41 GSM:❌ |
+| 型号     | GPS | 电话 | SMS | Frequency band                                                                                         |
+| -------- | --- | ---- | --- | ------------------------------------------------------------------------------------------------------ |
+| SIM7670G | ✅   | ❌    | ✅   | LTE-FDD:B1/B2/B3/B4/B5/B7/B8/B12/B13/B18/B19/B20/B25/B26/B28/B66/B71 LTE-TDD:B34/B38/B39/B40/B41 GSM:❌ |
 
 * SMS: `SIM7670G-MNGV 2374B04` version supports SMS function,but it requires the operator base station to support SMS Over SGS service to send, otherwise it will be invalid
 
@@ -60,10 +60,10 @@
     * 选择示例文件并打开以 `ino` 结尾的文件
 5. 在 Arduino IDE 中，在工具项目中选择相应的开发板，点击下方列表中的相应选项进行选择
 
-    | 名称                                 | 值                               |
+    | 名称                                 | 值                                  |
     | ------------------------------------ | ----------------------------------- |
     | Board                                | **ESP32S3 Dev Module**              |
-    | Port                                 | 您的端口                           |
+    | Port                                 | 您的端口                            |
     | USB CDC On Boot                      | Enable                              |
     | CPU Frequency                        | 240MHZ(WiFi)                        |
     | Core Debug Level                     | None                                |
@@ -103,8 +103,8 @@
 | Modem RING      | 3        | ❌    |
 | Modem DTR       | 9        | ❌    |
 | Board LED       | 12       | ❌    |
-| 电池 ADC 引脚 | 4        | ❌    |
-| 太阳能 ADC 引脚   | 5        | ❌    |
+| 电池 ADC 引脚   | 4        | ❌    |
+| 太阳能 ADC 引脚 | 5        | ❌    |
 | SD SCK          | 21       | ❌    |
 | SD MISO         | 47       | ❌    |
 | SD MOSI         | 14       | ❌    |
@@ -123,20 +123,20 @@
 
 ### 模块引脚
 
-| 名称                 | GPIO NUM | 使能电平 | AT 命令                     |
-| -------------------- | -------- | ------------ | ------------------------------ |
-| GPS Ant Power Enable | 4        | High         | `AT+CGDRT=1,1 ; AT+CGSETV=1,1` |
+| 名称                 | GPIO NUM | 使能电平 | AT 命令                        |
+| -------------------- | -------- | -------- | ------------------------------ |
+| GPS Ant Power Enable | 4        | High     | `AT+CGDRT=1,1 ; AT+CGSETV=1,1` |
 
 ### ⚡ Electrical parameters
 
-| 特性                        | 详情 |
-| ------------------------------- | ------- |
-| 🔗USB-C 输入电压            | 5V      |
-| ⚡太阳能输入电压            | 5~6V    |
-| ⚡USB-C/太阳能充电最大电流 | 500mA   |
-| 🔋电池电压                | 3.7V    |
-| 📍**VBUS** ( 排针)         | 5V      |
-| 📍**VBAT** ( 排针)         | 4.2V    |
+| 特性                      | 详情  |
+| ------------------------- | ----- |
+| 🔗USB-C 输入电压           | 5V    |
+| ⚡太阳能输入电压           | 5~6V  |
+| ⚡USB-C/太阳能充电最大电流 | 500mA |
+| 🔋电池电压                 | 3.7V  |
+| 📍**VBUS** ( 排针)         | 5V    |
+| 📍**VBAT** ( 排针)         | 4.2V  |
 
 > \[!TIP]
 >
@@ -152,12 +152,12 @@
 
 ### ⚡Battery Protector Description
 
-| 特性                | 详情    |
-| ----------------------- | ---------- |
-| 过压阈值  | 4.30V      |
+| 特性     | 详情       |
+| -------- | ---------- |
+| 过压阈值 | 4.30V      |
 | 欠压阈值 | 2.5V       |
-| 过放电流  | 3A         |
-| 芯片名称                | [DW01V][2] |
+| 过放电流 | 3A         |
+| 芯片名称 | [DW01V][2] |
 
 > \[!IMPORTANT]
 >
@@ -168,11 +168,11 @@
 
 ### 按钮说明
 
-| 按钮                   | 功能                                                                             |
+| 按钮                     | 功能                                                                                 |
 | ------------------------ | ------------------------------------------------------------------------------------ |
 | BOOT(Close to esp)       | Customizable function/Download mode                                                  |
-| RST                      | 复位设备按钮                                                                 |
-| SIM-BOOT(Close to modem) | 模块升级模式                                                                   |
+| RST                      | 复位设备按钮                                                                         |
+| SIM-BOOT(Close to modem) | 模块升级模式                                                                         |
 | PWR(Close to modem)      | When the battery is first connected, press PWR to activate the battery power supply. |
 
 * Press and hold the `BOOT` button before powering on. The board is now in waiting mode for downloading.
@@ -181,8 +181,8 @@
 
 ### 天线说明
 
-|      | 功能                     |
-| ---- | ---------------------------- |
+|      | 功能             |
+| ---- | ---------------- |
 | SIM  | LTE 主天线接口   |
 | GNSS | GPS 有源天线接口 |
 
@@ -191,13 +191,13 @@
 
 ### LED 说明
 
-| 功能            | 颜色                           |
-| ------------------- | ------------------------------- |
-| 模块状态        | RED   (Near the modem)          |
-| 模块网络状态 | RED   (Near the modem)          |
-| 充电 LED          | BLUE  (Near the battery switch) |
-| 充电完成 LED     | BLUE  (Near the battery switch) |
-| 板载 LED        | BLUE  (Near the RST button)     |
+| 功能         | 颜色                             |
+| ------------ | -------------------------------- |
+| 模块状态     | RED   (Near the modem)           |
+| 模块网络状态 | RED   (Near the modem)           |
+| 充电 LED     | RED  (Near the battery switch)   |
+| 充电完成 LED | GREEN  (Near the battery switch) |
+| 板载 LED     | BLUE  (Near the RST button)      |
 
 * 模块状态灯和网络状态灯无法关闭
 
