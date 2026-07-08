@@ -26,3 +26,11 @@
 # T-SIM7000G-ESP32
 
 ![T-SIM7000G-ESP32](./esp32/T-SIM7000-ESP32.png)
+
+# T-SIM7000G-A7670-SIM7080-SIM7670-S3-Standard
+
+![T-SIM7000G-A7670-SIM7080-SIM7670-S3-Standard](./Standard/T-XXXXX-S3-Standard.png)
+
+# T-SIM7600G-S3-Standard
+
+![T-SIM7600G-S3-Standard](./Standard/T-SIM7600G-S3-Standard.png)
