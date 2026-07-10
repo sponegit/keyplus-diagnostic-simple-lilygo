@@ -34,3 +34,7 @@
 # T-SIM7600G-S3-Standard
 
 ![T-SIM7600G-S3-Standard](./Standard/T-SIM7600G-S3-Standard.png)
+
+# T-SIM-DC-Shield
+
+![T-SIM-DC-Shield](./T-Sim-DC-Shield/T-Sim-DC-Shield.png)
