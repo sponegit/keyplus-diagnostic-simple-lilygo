@@ -259,6 +259,10 @@ The power-on sequence is: power on all cameras -> power off all cameras -> delay
 * `JST 1.0mm MIC`: This is an external condenser microphone interface for calls. The condenser microphone is directly connected to the modem. Only condenser microphones can be used, not digital microphones.
 * `JST 1.0mm RTC`: This is the GPS backup power battery interface. If you do not connect this battery, the GPS will not have the hot start function. Connecting a battery to this interface will enable the GPS hot start function.
 
+#### Bottom JST Connecter
+
+![H799-01-T-A7670X-S3-Standard-bottom](../../../../images/product/png/H799-01-T-A7670X-S3-Standard-bottom.png)
+
 ### Button Description
 
 | Button               | Function                            | Location   |
