@@ -125,7 +125,7 @@
 
 | 名称                 | GPIO NUM | 使能电平 | AT 命令                        |
 | -------------------- | -------- | -------- | ------------------------------ |
-| GPS Ant Power Enable | 4        | High     | `AT+CGDRT=1,1 ; AT+CGSETV=1,1` |
+| GPS Ant Power Enable | 4        | High     | `AT+CGDRT=4,1 ; AT+CGSETV=4,1` |
 
 ### ⚡ Electrical parameters
 
