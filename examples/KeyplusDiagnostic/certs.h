@@ -9,10 +9,15 @@
  *                      출처 https://test.mosquitto.org/ssl/mosquitto.org.crt
  * - CA_ISRG_ROOT_X1  : Let's Encrypt 루트 (실 EMQX 서버 mqtt.keyplus.sponeinfra.com용)
  *                      출처 https://letsencrypt.org/certs/isrgrootx1.pem
+ * - CA_LOCAL_EMQX    : 로컬 EMQX 자체서명 CA (TLS 테스트 시 채움. 평문 1883이면 미사용)
  *
- * 선택은 config.h의 MQTT_USE_TEST_BROKER 토글이 담당(mqtt.cpp).
+ * 선택은 config.h의 MQTT_BROKER_SEL 토글이 담당(mqtt.cpp).
  */
 #pragma once
+
+// 로컬 EMQX(자체서명) TLS용 CA. TLS(8883) 테스트를 켤 때만 필요 —
+// EMQX 서버 CA PEM을 아래 R"EOF( ... )EOF" 안에 붙여넣는다. 평문(1883)이면 빈 값이어도 빌드 OK.
+static const char CA_LOCAL_EMQX[] = R"EOF()EOF";
 
 static const char CA_MOSQUITTO_ORG[] = R"EOF(-----BEGIN CERTIFICATE-----
 MIIEAzCCAuugAwIBAgIUBY1hlCGvdj4NhBXkZ/uLUZNILAwwDQYJKoZIhvcNAQEL

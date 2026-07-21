@@ -13,11 +13,15 @@
 
 namespace Mqtt {
 
-// 검증/실서버 CA 선택 (config.h MQTT_USE_TEST_BROKER).
-#if MQTT_USE_TEST_BROKER
+// 서버 CA 선택 (config.h MQTT_BROKER_SEL). TLS일 때만 사용.
+#if MQTT_USE_TLS
+#if   MQTT_BROKER_SEL == MQTT_BROKER_TEST
 static const char *kCaPem = CA_MOSQUITTO_ORG;
+#elif MQTT_BROKER_SEL == MQTT_BROKER_LOCAL
+static const char *kCaPem = CA_LOCAL_EMQX;
 #else
 static const char *kCaPem = CA_ISRG_ROOT_X1;
+#endif
 #endif
 
 // 계약 토픽/클라이언트ID — device_id가 런타임(NVS/콘솔)이라 접속 시 조립한다.
@@ -59,16 +63,18 @@ static uint32_t civilToEpoch(int y, int m, int d, int hh, int mi, int ss)
 static bool connectSession(TinyGsm &modem, Stream &log)
 {
     // 서버 CA 지정 → mqtt_connect가 AT+CCERTDOWN 업로드 + authMethod=1(서버검증).
-    // 포인터 저장만 하므로 매 접속 재지정해도 무해.
+    // 포인터 저장만 하므로 매 접속 재지정해도 무해. 평문(MQTT_USE_TLS=0)이면 생략.
+#if MQTT_USE_TLS
     modem.mqtt_set_certificate(kCaPem);
+#endif
 
     // LWT: 끊김 시 브로커가 {"online":false} 대행 발행 (connect 전에 등록).
     // s_topicStatus는 static String이라 c_str() 포인터가 세션 동안 안정적.
     static const char kWillOffline[] = "{\"online\":false}";
     modem.setWillMessage(s_topicStatus.c_str(), kWillOffline, 1);
 
-    // 인증: 테스트 브로커는 익명(NULL), 실 EMQX는 device_id(username) + NVS 비번(설계 01 §2).
-#if MQTT_USE_TEST_BROKER
+    // 인증: 익명(MQTT_ANON=1, 테스트 브로커)이면 NULL, 아니면 device_id + NVS 비번(설계 01 §2).
+#if MQTT_ANON
     const char *user = nullptr;
     const char *pass = nullptr;
 #else
@@ -99,9 +105,9 @@ bool begin(TinyGsm &modem, Stream &log)
     // CMQTT 서비스(CMQTTSTART)는 부팅당 1회만. 이미 시작됐으면 세션 접속만 한다.
     // (매번 mqtt_begin 호출 시 CMQTTSTOP이 살아있는 연결을 끊고 재시작에 실패한다.)
     if (!s_serviceStarted) {
-        log.printf("[MQTT] begin: ssl+sni, broker %s:%d, id=%s\n",
-                   MQTT_HOST, MQTT_PORT, s_clientId.c_str());
-        if (!modem.mqtt_begin(true, /*sni=*/true)) {
+        log.printf("[MQTT] begin: %s, broker %s:%d, id=%s\n",
+                   MQTT_USE_TLS ? "TLS+sni" : "PLAIN", MQTT_HOST, MQTT_PORT, s_clientId.c_str());
+        if (!modem.mqtt_begin(MQTT_USE_TLS, /*sni=*/MQTT_USE_TLS)) {
             log.println("[MQTT] mqtt_begin failed");
             return false;
         }

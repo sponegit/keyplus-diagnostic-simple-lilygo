@@ -63,19 +63,31 @@
 #define MQTT_RECONNECT_CAP_MS       (15000UL) // 재접속 백오프 상한 (최악도 20초 내 수렴)
 #define MQTT_CA_FILENAME            "emqx_ca.pem"
 
-// 검증 브로커 선택: EMQX 배포 전, 공개 TLS 브로커로 TLS·CA검증·publish 경로를
-// 실기기 검증. EMQX 준비되면 0으로 전환 → 호스트/CA/인증만 실서버로 교체(코드 불변).
-#define MQTT_USE_TEST_BROKER        1
-#if MQTT_USE_TEST_BROKER
-  #define MQTT_HOST                 "test.mosquitto.org"  // 공개 TLS 브로커(익명)
-  #define MQTT_PORT                 (8883)
-  #define MQTT_USERNAME             ""                    // 익명 TLS — 인증 없음
-  #define MQTT_PASSWORD             ""
-#else
-  #define MQTT_HOST                 MQTT_BROKER_HOST       // mqtt.keyplus.sponeinfra.com
-  #define MQTT_PORT                 MQTT_BROKER_PORT
-  #define MQTT_USERNAME             ""                    // TODO(provisioning): NVS 크리덴셜
-  #define MQTT_PASSWORD             ""
+// ── 브로커 선택 ─────────────────────────────────────────────────────────
+// EMQX 기동 전엔 공개 테스트 브로커로 검증. 로컬 EMQX가 뜨면 아래 MQTT_BROKER_SEL
+// 한 줄만 LOCAL로 바꾸면 호스트/포트/TLS/인증/CA가 자동 선택된다(코드 불변).
+#define MQTT_BROKER_TEST     1   // test.mosquitto.org (공개 TLS, 익명) — 검증됨
+#define MQTT_BROKER_LOCAL    2   // 로컬 EMQX (기동 중 — 아래 TODO 값 확정 필요)
+#define MQTT_BROKER_PROD     3   // 실 EMQX (mqtt.keyplus.sponeinfra.com, 상용)
+
+#define MQTT_BROKER_SEL      MQTT_BROKER_TEST   // ← 현재 선택. EMQX 뜨면 MQTT_BROKER_LOCAL
+
+#if   MQTT_BROKER_SEL == MQTT_BROKER_TEST
+  #define MQTT_HOST          "test.mosquitto.org"
+  #define MQTT_PORT          (8883)
+  #define MQTT_USE_TLS       1     // TLS 접속(서버 CA 검증)
+  #define MQTT_ANON          1     // 익명(비번 미검증)
+#elif MQTT_BROKER_SEL == MQTT_BROKER_LOCAL
+  // ⚠️ TODO(EMQX 기동 후 확정): LTE 단말이 닿는 공인IP:포워딩포트
+  #define MQTT_HOST          "61.81.117.174"  // 로컬 EMQX 공인 IP(gateway와 동일 호스트 가정)
+  #define MQTT_PORT          (1883)           // 평문=1883 / TLS=8883
+  #define MQTT_USE_TLS       0                // 평문=0 / TLS=1 (+ certs.h CA_LOCAL_EMQX 채우기)
+  #define MQTT_ANON          0                // device_id(username) + 발급 mqtt_pw 인증
+#else // MQTT_BROKER_PROD
+  #define MQTT_HOST          MQTT_BROKER_HOST // mqtt.keyplus.sponeinfra.com
+  #define MQTT_PORT          MQTT_BROKER_PORT
+  #define MQTT_USE_TLS       1
+  #define MQTT_ANON          0
 #endif
 
 // --- 자동 프로비저닝 엔드포인트 (작업1 — /internal/provision) ---
