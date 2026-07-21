@@ -11,6 +11,7 @@
  */
 #include "config.h"
 #include "utilities.h"
+#include "provisioning.h"
 
 #define TINY_GSM_RX_BUFFER  1024        // RX 버퍼 1KB
 #define SerialMon           Serial
@@ -21,6 +22,11 @@
 
 #if FEATURE_GPS
 #include "gps.h"
+#endif
+
+#if FEATURE_LTE
+#include "lte.h"
+#include "mqtt.h"
 #endif
 
 #ifdef DUMP_AT_COMMANDS
@@ -109,16 +115,23 @@ void setup()
 {
     SerialMon.begin(115200);
     delay(100);
-    SerialMon.println("\n=== Keyplus Diagnostic — phase 2 (GPS) ===");
+    SerialMon.println("\n=== Keyplus Diagnostic — GPS + LTE bring-up ===");
+
+    // 단말 신원 로드(NVS). Debug Console에서 'setid vt-...'로 설정 가능('help' 참고).
+    Prov::begin();
+    SerialMon.printf("[PROV] device_id=%s (%s)\n",
+                     Prov::deviceId().c_str(), Prov::hasValidId() ? "valid" : "INVALID");
+    Prov::printHelp(SerialMon);
 
     modemPowerOn();
     SerialAT.begin(115200, SERIAL_8N1, MODEM_RX_PIN, MODEM_TX_PIN);
     delay(3000);
 
     modemWaitReady();
-    modemCheckGpsCapable();
 
 #if FEATURE_GPS
+    modemCheckGpsCapable();
+    // GNSS를 먼저 켜서 아래 LTE 등록(최대 수십 초) 대기 동안 위성을 포착하게 한다.
     SerialMon.println("[GPS] enabling GNSS...");
     while (!Gps::begin(modem)) {
         SerialMon.println("[GPS] enable failed, retrying...");
@@ -126,15 +139,51 @@ void setup()
     }
     SerialMon.println("[GPS] GNSS enabled");
 #endif
+
+#if FEATURE_LTE
+    // SIM 상태 먼저 확인 — 미삽입/잠금이면 등록이 무의미하게 타임아웃된다.
+    SerialMon.printf("[LTE] SIM status: %d (1=ready, 2=locked)\n", modem.getSimStatus());
+    // SIM PIN이 걸려 있으면 아래 주석 해제: modem.simUnlock("0000");
+
+    // 증분 A: 등록 → PDP → 평문 HTTP GET 으로 LG U+ 유심 데이터패스 검증.
+    if (Lte::begin(modem, SerialMon)) {
+        LteStatus st;
+        Lte::status(modem, st);
+        Lte::printStatus(st, SerialMon);
+        int code = Lte::httpGetCheck(modem, SerialMon);
+        if (code == 200) {
+            SerialMon.println("[LTE] ✅ 데이터패스 검증 성공 (HTTP 200)");
+        } else {
+            SerialMon.printf("[LTE] ⚠️ HTTP 응답 %d — 데이터는 되나 응답 확인 필요\n", code);
+        }
+
+        // 증분 B: MQTT/TLS 접속(서버 CA 검증) + status online/LWT. telemetry는 loop에서 발행.
+        if (Mqtt::begin(modem, SerialMon)) {
+            SerialMon.println("[MQTT] ✅ 접속 성공 — telemetry 발행 시작");
+        } else {
+            SerialMon.println("[MQTT] ❌ 접속 실패 — 위 로그(CA/네트워크) 확인");
+        }
+    } else {
+        SerialMon.println("[LTE] ❌ 브링업 실패 — 위 로그(APN/신호/SIM) 확인");
+    }
+#endif
 }
 
 // ---------------------------------------------------------------------------
 void loop()
 {
+    uint32_t now = millis();   // millis() 오버플로우 안전 비교용
+
+    // Debug Console 입력 처리 (setid/setpw/showid/clearid/help) — 논블로킹.
+    Prov::handleSerial(SerialMon);
+
+#if (FEATURE_GPS || FEATURE_LTE)
+    // 최신 GPS fix 캐시 — telemetry가 참조. 미측위면 valid=false 유지.
+    static GpsFix g_lastFix;
+#endif
+
 #if FEATURE_GPS
     static uint32_t lastPoll = 0;
-    uint32_t now = millis();
-    // millis() 오버플로우 안전 비교
     if (now - lastPoll >= GPS_POLL_INTERVAL_MS) {
         lastPoll = now;
         GpsFix fix;
@@ -146,10 +195,57 @@ void loop()
         SerialMon.println(rawInfo.length() ? rawInfo : "(no data)");
 
         if (got) {
+            g_lastFix = fix;                // telemetry용 캐시 갱신
             Gps::print(fix, SerialMon);
-            // TODO(3단계): fix를 서버 전송 큐 / SD 오프라인 버퍼로 전달
         } else {
             SerialMon.println("[GPS] acquiring fix... (cold start may take a while)");
+        }
+    }
+#endif
+
+#if FEATURE_LTE
+    // MQTT 콜백/keepalive 펌핑 (매 틱). publish 후 +CMQTTPUB ACK URC를 비운다.
+    Mqtt::handle(modem);
+
+    static uint32_t seq = 0;
+    static bool     metaSent = false;
+    static uint32_t backoff = 0;
+    static uint32_t lastConnTry = 0;
+    static bool     wasConnected = false;
+    static uint32_t nextPubAt = 0;
+
+    bool connected = Mqtt::isConnected(modem);
+
+    // 접속 상승엣지: connectSession의 status 발행 ACK가 빠질 시간을 주려
+    // 첫 telemetry를 5초 뒤로 잡는다(발행끼리 충돌 방지 — 모뎀은 publish 1건씩).
+    if (connected && !wasConnected) {
+        nextPubAt = now + 5000;
+    }
+    wasConnected = connected;
+
+    if (!connected) {
+        // 미접속: 백오프 간격으로 (재)접속. LTE(PDP)가 죽었으면 먼저 살린다.
+        if (now - lastConnTry >= backoff) {
+            lastConnTry = now;
+            if (!Lte::isUp(modem)) {
+                SerialMon.println("[LTE] link down — 재브링업");
+                Lte::begin(modem, SerialMon);
+            }
+            if (Lte::isUp(modem) && Mqtt::begin(modem, SerialMon)) {
+                backoff = 0;   // 성공 → 백오프 리셋
+            } else {
+                backoff = backoff ? backoff * 2 : 1000;
+                if (backoff > MQTT_RECONNECT_CAP_MS) backoff = MQTT_RECONNECT_CAP_MS;
+            }
+        }
+    } else if ((int32_t)(now - nextPubAt) >= 0) {
+        // 접속됨: telemetry 주기 발행(오버플로우 안전 비교). 발행 성공 시 다음 주기 예약,
+        // 실패 시 isConnected가 false로 바뀌어 다음 루프에서 재접속 경로를 탄다.
+        nextPubAt = now + MQTT_PUBLISH_INTERVAL_MS;
+        bool withMeta = !metaSent;   // 최초 1회만 하드웨어 메타 포함
+        if (Mqtt::publishTelemetry(modem, g_lastFix, seq, withMeta, SerialMon)) {
+            if (withMeta) metaSent = true;
+            seq++;
         }
     }
 #endif
