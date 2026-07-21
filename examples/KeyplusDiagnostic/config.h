@@ -20,6 +20,7 @@
 #define FEATURE_CARKEY      0   // 5b단계: 차키 GPIO 토글
 #define FEATURE_BLE         0   // 7단계: BLE 명령/OTA
 #define FEATURE_LTE         1   // 1단계: LTE+MQTT (LG U+ 유심)     [활성 — 증분 A]
+#define FEATURE_STATUS_LED  1   // 3단계: 상태표시 LED (외장, GPIO23) [활성]
 
 // ===========================================================================
 // GPS 설정 (2단계)
@@ -77,10 +78,33 @@
   #define MQTT_PASSWORD             ""
 #endif
 
+// --- 자동 프로비저닝 엔드포인트 (작업1 — /internal/provision) ---
+// 단말이 부팅 시 device_id/pw가 없으면 {imei,mac,fw}를 POST해 발급받는다.
+// 로컬 device-gateway(포워딩된 공인 IP:포트). LTE 단말이 외부에서 닿는 공개 주소여야 함.
+// ⚠️ 현재 로컬은 평문 HTTP(TLS 아님) → PROVISION_USE_TLS=0. 상용 전환 시 도메인+443+CA로 교체.
+#define PROVISION_HOST              "61.81.117.174"
+#define PROVISION_PORT              (28081)
+#define PROVISION_PATH              "/internal/provision"
+#define PROVISION_USE_TLS           0     // 0=평문 HTTP(로컬), 1=HTTPS(상용, certs.h CA 필요)
+// 오프라인(서버 없이) 테스트용: 1이면 NVS 비었을 때 아래 DEVICE_ID로 시드(자동 발급 생략).
+// 기본 0 — NVS 비면 미프로비저닝 상태로 두고 부팅 시 /internal/provision 발급을 시도.
+#define PROVISION_SEED_FALLBACK     0
+
 // 단말 신원/버전 — TODO(provisioning): NVS 프로비저닝으로 이관. 지금은 검증용 상수.
 // 포맷 vt-YYMM-NNNN-XXX (계약 @keyplus-diagnostic/shared deviceId.ts 와 동일).
 #define DEVICE_ID                   "vt-2607-0001-x7q"
 #define FW_VERSION                  "0.1.0-incrB"
+
+// ===========================================================================
+// 상태표시 LED 핀 (3단계 — 외장 LED, active-high)  설계: phase3-firmware-provisioning-led.md §4
+//   ⚠️ bare T-A7670E는 SW 제어 가능한 온보드 LED가 없다: utilities.h의 LILYGO_T_A7670
+//      섹션에 BOARD_LED_PIN 미정의, GPIO12는 BOARD_POWERON_PIN(모뎀 전원 유지)로 점유됨.
+//      → 외장 LED를 GPIO23에 배선.  GPIO23 ──[1kΩ]──▶|── GND  (3mm 빨강, HIGH=점등)
+//   ⚠️ GPIO23은 아래 PIN_KEY_SPARE(5b단계 차키 예비)와 물리핀 공유. 차키 단계 도입 시
+//      FEATURE_STATUS_LED=0 으로 끄거나 LED 핀을 재배치할 것.
+// ===========================================================================
+#define PIN_STATUS_LED     (23)
+#define LED_ON_LEVEL       HIGH
 
 // ===========================================================================
 // 차키 제어 핀맵 (5b단계 — 확정, 4 GPIO 한정)  [현재 미사용]
