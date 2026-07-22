@@ -35,6 +35,7 @@
 #if FEATURE_LTE
 #include "lte.h"
 #include "mqtt.h"
+#include "cmd.h"
 #endif
 
 #ifdef DUMP_AT_COMMANDS
@@ -209,11 +210,15 @@ void setup()
             }
         }
 
+        // cmd 다운링크 RX 콜백 등록(부팅당 1회). 구독은 접속 성공 뒤에 한다.
+        Cmd::begin(modem);
+
         // 증분 B: MQTT/TLS 접속(서버 CA 검증) + status online/LWT. 크리덴셜 확보 시에만 시도.
         if (Prov::hasCredentials()) {
             if (Mqtt::begin(modem, SerialMon)) {
                 SerialMon.println("[MQTT] ✅ 접속 성공 — telemetry 발행 시작");
                 Led::set(Led::State::MQTT_OK);    // 정상 접속 — heartbeat
+                Cmd::subscribe(modem, SerialMon); // v1/{id}/cmd 구독
             } else {
                 SerialMon.println("[MQTT] ❌ 접속 실패 — 위 로그(CA/네트워크) 확인");
                 Led::set(Led::State::COMM_ERROR); // 통신 오류 — 3회 버스트
@@ -271,6 +276,7 @@ void loop()
 #if FEATURE_LTE
     // MQTT 콜백/keepalive 펌핑 (매 틱). publish 후 +CMQTTPUB ACK URC를 비운다.
     Mqtt::handle(modem);
+    Cmd::handle(modem, SerialMon);   // 수신 명령 처리 + ack 발행
 
     static uint32_t seq = 0;
     static bool     metaSent = false;
@@ -288,6 +294,7 @@ void loop()
     if (connected && !wasConnected) {
         nextPubAt = now + 5000;
         Led::set(Led::State::MQTT_OK);          // 재접속 성공 → 정상(heartbeat)
+        Cmd::subscribe(modem, SerialMon);       // clean_session=1 → 재접속마다 재구독
     }
     wasConnected = connected;
 
