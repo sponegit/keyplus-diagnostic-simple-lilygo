@@ -5,7 +5,8 @@
  * ISO 15765-4(CAN) 기반 SAE J1979 Mode 01 실시간 PID를 폴링한다.
  *   요청: CAN ID 0x7DF(기능 브로드캐스트), data = [02, 01, PID, 00..]
  *   응답: CAN ID 0x7E8~0x7EF, data = [len, 0x41, PID, A, B, ...]
- * 단일 프레임 PID만 다룬다(다중 프레임 ISO-TP=DTC/VIN은 후속 증분).
+ * Mode 01 실시간 PID(단일 프레임) + VIN(Mode 09 PID 02, ISO-TP 다중 프레임 재조립)을 지원.
+ * DTC(Mode 03) 등 그 외 다중 프레임은 후속 증분.
  *
  * 링크: 500kbps/11-bit(최신 차량 표준) 우선, 무응답 시 250kbps 폴백(begin에서 자동).
  * 배선: 차량 OBD2 CAN-H/L → 트랜시버(SN65HVD230) → GPIO21(RX)/22(TX), 공통 GND.
@@ -32,6 +33,8 @@ struct Data {
     bool  has_fuel = false;     float    fuel = 0;       // 0x2F  %
     bool  has_ctrlv = false;    float    ctrl_v = 0;     // 0x42  V
     bool  has_runtime = false;  uint16_t runtime = 0;    // 0x1F  s
+
+    bool  has_vin = false;      char     vin[18] = {0};  // Mode 09 PID 02 (17자, ISO-TP 다중프레임)
 };
 
 // TWAI 드라이버 설치·시작(500k→250k 폴백) + PID 0x00 지원 조회. 성공(링크+응답) 시 true.

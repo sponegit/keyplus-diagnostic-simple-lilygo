@@ -5,12 +5,15 @@
 #include "obd2.h"
 #include "config.h"
 #include "driver/twai.h"
+#include <string.h>
 
 namespace Obd2 {
 
 static bool     s_installed = false;
 static uint32_t s_supported = 0;   // PID 0x00 지원 비트마스크(0x01~0x20)
 static int      s_bitrate   = 0;   // 확립된 비트레이트(kbps)
+static char     s_vin[18]   = {0}; // VIN 캐시(차량당 불변, 링크 확립 시 1회 조회)
+static bool     s_hasVin    = false;
 
 // PID N(1~32)이 지원 마스크에 있는가. 0x20 초과 PID는 별도 마스크가 필요하므로 항상 시도(1).
 static bool supported(uint8_t pid)
@@ -49,6 +52,81 @@ void end()
         twai_driver_uninstall();
         s_installed = false;
     }
+    s_hasVin = false;   // 재확립 시 VIN 재조회(차량 교체 대비)
+}
+
+// VIN(Mode 09 PID 02) — ISO-TP 다중 프레임 재조립. 성공 시 s_vin/s_hasVin 세팅.
+//   요청 0x7DF[02,09,02] → 응답 First Frame(0x1L LL ..) → Flow Control(0x30) 송신 →
+//   Consecutive Frame(0x2N ..) 누적. 페이로드 = [49 02 01 <VIN 17>].
+static bool readVin(Stream &log)
+{
+    if (!s_installed) return false;
+    twai_message_t m;
+    while (twai_receive(&m, 0) == ESP_OK) { /* drain */ }
+
+    twai_message_t tx = {};
+    tx.identifier = 0x7DF;
+    tx.data_length_code = 8;
+    tx.data[0] = 0x02; tx.data[1] = 0x09; tx.data[2] = 0x02;   // Mode 09, PID 02
+    if (twai_transmit(&tx, pdMS_TO_TICKS(OBD2_REQ_TIMEOUT_MS)) != ESP_OK) return false;
+
+    uint8_t  payload[64];
+    int      total = 0, got = 0;
+    uint32_t responderId = 0;
+    bool     haveFF = false;
+
+    // First Frame(또는 드물게 Single Frame) 대기.
+    uint32_t start = millis();
+    while (millis() - start < (uint32_t)OBD2_REQ_TIMEOUT_MS * 3) {
+        uint32_t rem = (uint32_t)OBD2_REQ_TIMEOUT_MS * 3 - (millis() - start);
+        if (twai_receive(&m, pdMS_TO_TICKS(rem)) != ESP_OK) break;
+        if (m.extd || m.identifier < 0x7E8 || m.identifier > 0x7EF) continue;
+        uint8_t pci = m.data[0] & 0xF0;
+        if (pci == 0x00) {                       // Single Frame(짧은 응답)
+            int len = m.data[0] & 0x0F;
+            for (int i = 0; i < len && got < (int)sizeof(payload); i++) payload[got++] = m.data[1 + i];
+            total = got;
+            break;
+        } else if (pci == 0x10) {                // First Frame
+            total = ((m.data[0] & 0x0F) << 8) | m.data[1];
+            if (total > (int)sizeof(payload)) total = sizeof(payload);
+            for (int i = 0; i < 6 && got < total; i++) payload[got++] = m.data[2 + i];
+            responderId = m.identifier;
+            haveFF = true;
+            break;
+        }
+    }
+
+    if (haveFF) {
+        // Flow Control → 응답 ECU의 물리 주소(응답ID−8). CTS, BS=0, STmin=0.
+        twai_message_t fc = {};
+        fc.identifier = 0x7E0 + (responderId - 0x7E8);
+        fc.data_length_code = 8;
+        fc.data[0] = 0x30;
+        twai_transmit(&fc, pdMS_TO_TICKS(OBD2_REQ_TIMEOUT_MS));
+
+        start = millis();
+        while (got < total && millis() - start < (uint32_t)OBD2_REQ_TIMEOUT_MS * 5) {
+            uint32_t rem = (uint32_t)OBD2_REQ_TIMEOUT_MS * 5 - (millis() - start);
+            if (twai_receive(&m, pdMS_TO_TICKS(rem)) != ESP_OK) break;
+            if (m.extd || m.identifier != responderId) continue;
+            if ((m.data[0] & 0xF0) == 0x20)      // Consecutive Frame
+                for (int i = 1; i < 8 && got < total; i++) payload[got++] = m.data[i];
+        }
+    }
+
+    // 페이로드 = 49(=09+40) 02 01 <VIN...>. VIN = payload[3..].
+    if (got >= 3 + 17 && payload[0] == 0x49 && payload[1] == 0x02) {
+        int vlen = got - 3;
+        if (vlen > 17) vlen = 17;
+        for (int i = 0; i < vlen; i++) s_vin[i] = (char)payload[3 + i];
+        s_vin[vlen] = 0;
+        s_hasVin = true;
+        log.printf("[OBD2] VIN=%s\n", s_vin);
+        return true;
+    }
+    log.println("[OBD2] VIN 조회 실패(응답 없음/형식 불일치)");
+    return false;
 }
 
 // PID 1건 요청 → 매칭 응답의 데이터 바이트(A,B,..)를 resp에 채우고 개수 반환. 무응답 -1.
@@ -102,6 +180,7 @@ bool begin(Stream &log)
             s_bitrate = rates[i];
             log.printf("[OBD2] ✅ 링크 @%dkbps, 지원PID(01-20)=0x%08X\n",
                        s_bitrate, s_supported);
+            if (!s_hasVin) readVin(log);   // VIN 1회 조회(ISO-TP), 캐시
             return true;
         }
         log.printf("[OBD2] @%dkbps 무응답 — 폴백\n", rates[i]);
@@ -118,6 +197,14 @@ bool read(Data &out, Stream &log)
     out = Data();
     if (!s_installed) return false;
     out.supportedPid = s_supported;
+
+    // VIN(정적, 링크 확립 시 조회됨)을 매 폴에 실어 telemetry가 참조하게 한다.
+    if (s_hasVin) {
+        out.has_vin = true;
+        strncpy(out.vin, s_vin, sizeof(out.vin) - 1);
+        out.vin[sizeof(out.vin) - 1] = 0;
+        out.valid = true;
+    }
 
     uint8_t r[6];
     int n;

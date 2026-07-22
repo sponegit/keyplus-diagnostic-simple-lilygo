@@ -163,7 +163,7 @@ bool publishTelemetry(TinyGsm &modem, const GpsFix &fix, const Obd2::Data &obd,
     uint32_t up_s = millis() / 1000UL;
 
     // 계약 스키마(§3)대로 손 조립. gps는 fix일 때만 좌표 포함.
-    char buf[560];
+    char buf[640];
     int n = snprintf(buf, sizeof(buf),
         "{\"ts\":%u,\"seq\":%u,\"gps\":{\"fix\":%s",
         ts, seq, fix.valid ? "true" : "false");
@@ -191,6 +191,7 @@ bool publishTelemetry(TinyGsm &modem, const GpsFix &fix, const Obd2::Data &obd,
         if (obd.has_fuel)     { n += snprintf(buf+n, sizeof(buf)-n, "%s\"fuel\":%.1f",    o++?",":"", obd.fuel); }
         if (obd.has_ctrlv)    { n += snprintf(buf+n, sizeof(buf)-n, "%s\"ctrl_v\":%.2f",  o++?",":"", obd.ctrl_v); }
         if (obd.has_runtime)  { n += snprintf(buf+n, sizeof(buf)-n, "%s\"runtime\":%u",   o++?",":"", obd.runtime); }
+        if (obd.has_vin)      { n += snprintf(buf+n, sizeof(buf)-n, "%s\"vin\":\"%s\"",   o++?",":"", obd.vin); }
         n += snprintf(buf + n, sizeof(buf) - n, "}");
     }
 
