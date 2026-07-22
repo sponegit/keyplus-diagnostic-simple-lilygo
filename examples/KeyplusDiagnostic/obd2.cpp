@@ -241,6 +241,12 @@ bool read(Data &out, Stream &log)
     if ((n = requestPid(0x42, r, 6, OBD2_REQ_TIMEOUT_MS)) >= 2) {
         out.has_ctrlv = true; out.ctrl_v = ((256 * r[0]) + r[1]) / 1000.0f; out.valid = true;
     }
+    // 0xA6 총 주행거리(J1979-2, 4바이트, raw/10 km). 지원 드묾 → 항상 시도, 미지원은 자동 생략.
+    if ((n = requestPid(0xA6, r, 6, OBD2_REQ_TIMEOUT_MS)) >= 4) {
+        uint32_t raw = ((uint32_t)r[0] << 24) | ((uint32_t)r[1] << 16) |
+                       ((uint32_t)r[2] << 8) | r[3];
+        out.has_odometer = true; out.odometer = raw / 10.0f; out.valid = true;
+    }
     (void)log;
     return out.valid;
 }

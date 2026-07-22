@@ -191,6 +191,7 @@ bool publishTelemetry(TinyGsm &modem, const GpsFix &fix, const Obd2::Data &obd,
         if (obd.has_fuel)     { n += snprintf(buf+n, sizeof(buf)-n, "%s\"fuel\":%.1f",    o++?",":"", obd.fuel); }
         if (obd.has_ctrlv)    { n += snprintf(buf+n, sizeof(buf)-n, "%s\"ctrl_v\":%.2f",  o++?",":"", obd.ctrl_v); }
         if (obd.has_runtime)  { n += snprintf(buf+n, sizeof(buf)-n, "%s\"runtime\":%u",   o++?",":"", obd.runtime); }
+        if (obd.has_odometer) { n += snprintf(buf+n, sizeof(buf)-n, "%s\"odometer\":%.1f",o++?",":"", obd.odometer); }
         if (obd.has_vin)      { n += snprintf(buf+n, sizeof(buf)-n, "%s\"vin\":\"%s\"",   o++?",":"", obd.vin); }
         n += snprintf(buf + n, sizeof(buf) - n, "}");
     }

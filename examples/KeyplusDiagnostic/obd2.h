@@ -33,6 +33,7 @@ struct Data {
     bool  has_fuel = false;     float    fuel = 0;       // 0x2F  %
     bool  has_ctrlv = false;    float    ctrl_v = 0;     // 0x42  V
     bool  has_runtime = false;  uint16_t runtime = 0;    // 0x1F  s
+    bool  has_odometer = false; float    odometer = 0;   // 0xA6  총 주행거리 km (J1979-2, 지원 드묾)
 
     bool  has_vin = false;      char     vin[18] = {0};  // Mode 09 PID 02 (17자, ISO-TP 다중프레임)
 };
