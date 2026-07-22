@@ -50,6 +50,14 @@ TinyGsm modem(debugger);
 TinyGsm modem(SerialAT);
 #endif
 
+#if (FEATURE_LTE && FEATURE_OTA)
+// 하드 롤백 활성화: arduino-esp32 코어는 기본적으로 부팅 시 esp_ota_mark_app_valid_cancel_rollback()
+// 를 자동 호출해 롤백을 무력화한다(esp32-hal-misc.c). 이 weak 심볼을 true로 오버라이드하면
+// 자동 확정을 꺼서, 새 OTA 이미지가 PENDING_VERIFY로 남고 우리가 헬스체크(MQTT 접속) 통과 후
+// Ota::onHealthy()에서 직접 확정한다. 확정 전 크래시/행(부트 WDT 9s) → 부트로더 자동 롤백.
+extern "C" bool verifyRollbackLater() { return true; }
+#endif
+
 // ---------------------------------------------------------------------------
 // 모뎀 하드웨어 전원 시퀀스 (GPS_BuiltIn 예제 기준)
 // ---------------------------------------------------------------------------
@@ -312,9 +320,16 @@ void loop()
     wasConnected = connected;
 
 #if FEATURE_OTA
-    // OTA 결과 ack: MQTT 접속 상태에서 pending이 있으면 발행(성공=버전검증 done / 실패=failed).
-    // 재부팅-후-성공, 재부팅 전 실패(재접속 후) 모두 이 경로로 한 번 발행 후 소거된다.
-    if (connected && Ota::hasPending()) Ota::flushPendingAck(modem, SerialMon);
+    // 하드 롤백 期限 감시(매 틱): PENDING_VERIFY인데 접속 못 하고 期限 초과면 강제 롤백 재부팅.
+    Ota::tick(SerialMon);
+
+    if (connected) {
+        // 헬스체크 통과 → 새 이미지 확정(mark_valid, 1회). 부트로더 롤백 취소.
+        Ota::onHealthy(SerialMon);
+        // OTA 결과 ack: pending이 있으면 발행(성공=버전검증 done / 실패=failed) 후 소거.
+        // 롤백된 경우엔 구 이미지가 버전 불일치로 failed를 낸다.
+        if (Ota::hasPending()) Ota::flushPendingAck(modem, SerialMon);
+    }
 #endif
 
     if (!connected) {

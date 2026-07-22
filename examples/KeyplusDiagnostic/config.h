@@ -126,6 +126,13 @@
 // OTA 진행률 로그 간격(%).
 #define OTA_PROGRESS_STEP_PCT       (10)
 
+// --- 하드 롤백 (부트로더 레벨, CONFIG_BOOTLOADER_APP_ROLLBACK_ENABLE=y + 부트 WDT) ---
+// 새 이미지는 부팅 후 PENDING_VERIFY 상태. 헬스체크(MQTT 접속) 통과 시 mark_valid로 확정한다.
+// 확정 전 크래시/행(WDT 9s) → 부트로더가 자동으로 직전 정상 이미지로 롤백.
+// 아래 期限 내 확정(MQTT 접속) 못 하면 = 부팅은 되나 기능 불능 → 강제 롤백 재부팅.
+// (정상 부팅은 ~1~2분 내 접속하므로 넉넉히. 일시적 망 장애 오탐 방지 위해 크게 둔다.)
+#define OTA_CONFIRM_DEADLINE_MS     (600000UL)  // 10분
+
 // config_update 런타임 기본값(부팅 시 NVS "cfg"가 있으면 그 값으로 대체).
 //   telemetry_interval_ms → 즉시 적용 / keepalive_s → 다음 MQTT 접속 반영.
 #define CFG_DEFAULT_TELE_MS         MQTT_PUBLISH_INTERVAL_MS
