@@ -66,6 +66,12 @@ static bool connectSession(TinyGsm &modem, Stream &log)
     // 포인터 저장만 하므로 매 접속 재지정해도 무해. 평문(MQTT_USE_TLS=0)이면 생략.
 #if MQTT_USE_TLS
     modem.mqtt_set_certificate(kCaPem);
+  #if MQTT_TLS_RELAX
+    // 로컬 자체서명 + IP 접속(cert CN=도메인, DNS 미해석) → CN·시각 검증 완화.
+    // CA 체인 검증(authmode=1)은 유지 → 여전히 우리 CA로 서명된 서버만 신뢰.
+    modem.sendAT("+CSSLCFG=\"ignorecertCN\",0,1");    modem.waitResponse();
+    modem.sendAT("+CSSLCFG=\"ignorelocaltime\",0,1");  modem.waitResponse();
+  #endif
 #endif
 
     // LWT: 끊김 시 브로커가 {"online":false} 대행 발행 (connect 전에 등록).

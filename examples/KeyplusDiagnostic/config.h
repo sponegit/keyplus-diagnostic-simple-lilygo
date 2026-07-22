@@ -70,24 +70,30 @@
 #define MQTT_BROKER_LOCAL    2   // 로컬 EMQX (기동 중 — 아래 TODO 값 확정 필요)
 #define MQTT_BROKER_PROD     3   // 실 EMQX (mqtt.keyplus.sponeinfra.com, 상용)
 
-#define MQTT_BROKER_SEL      MQTT_BROKER_TEST   // ← 현재 선택. EMQX 뜨면 MQTT_BROKER_LOCAL
+#define MQTT_BROKER_SEL      MQTT_BROKER_LOCAL  // ← 로컬 EMQX 테스트 중(61.81.117.174:28883 TLS)
 
 #if   MQTT_BROKER_SEL == MQTT_BROKER_TEST
   #define MQTT_HOST          "test.mosquitto.org"
   #define MQTT_PORT          (8883)
   #define MQTT_USE_TLS       1     // TLS 접속(서버 CA 검증)
   #define MQTT_ANON          1     // 익명(비번 미검증)
+  #define MQTT_TLS_VERIFY    1     // 서버 인증서 CA 검증(authmode=1)
+  #define MQTT_TLS_RELAX     0     // 정식 cert(호스트명 일치) → 완화 불필요
 #elif MQTT_BROKER_SEL == MQTT_BROKER_LOCAL
-  // ⚠️ TODO(EMQX 기동 후 확정): LTE 단말이 닿는 공인IP:포워딩포트
-  #define MQTT_HOST          "61.81.117.174"  // 로컬 EMQX 공인 IP(gateway와 동일 호스트 가정)
-  #define MQTT_PORT          (1883)           // 평문=1883 / TLS=8883
-  #define MQTT_USE_TLS       0                // 평문=0 / TLS=1 (+ certs.h CA_LOCAL_EMQX 채우기)
+  // 로컬 EMQX (공인IP:포워딩포트, TLS 자체서명 = certs.h CA_LOCAL_EMQX)
+  #define MQTT_HOST          "61.81.117.174"  // 로컬 EMQX 공인 IP(gateway 28081과 동일 호스트)
+  #define MQTT_PORT          (28883)          // 내부 8883 → 포워딩 28883 (TLS)
+  #define MQTT_USE_TLS       1                // TLS 접속
   #define MQTT_ANON          0                // device_id(username) + 발급 mqtt_pw 인증
+  #define MQTT_TLS_VERIFY    1                // CA 검증(authmode=1) — 래퍼가 authmode=0 미지원
+  #define MQTT_TLS_RELAX     1                // 자체서명+IP접속: CN·시각 검증 완화(CA 검증은 유지)
 #else // MQTT_BROKER_PROD
   #define MQTT_HOST          MQTT_BROKER_HOST // mqtt.keyplus.sponeinfra.com
   #define MQTT_PORT          MQTT_BROKER_PORT
   #define MQTT_USE_TLS       1
   #define MQTT_ANON          0
+  #define MQTT_TLS_VERIFY    1     // 정식 도메인 cert(Let's Encrypt) → CA 검증
+  #define MQTT_TLS_RELAX     0     // 호스트명 일치 → 완화 불필요
 #endif
 
 // --- 자동 프로비저닝 엔드포인트 (작업1 — /internal/provision) ---
