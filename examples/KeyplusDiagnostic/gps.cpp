@@ -31,6 +31,11 @@ bool read(TinyGsm &modem, GpsFix &fix)
                             &fix.vsat, &fix.usat, &fix.accuracy,
                             &fix.year, &fix.month, &fix.day,
                             &fix.hour, &fix.minute, &fix.second);
+    // 모뎀이 속도/필드 미제공 시 -9999 센티넬을 준다(fix는 있어도 speed 필드 공란).
+    // 음수는 무효 → 0으로 정리(telemetry·표시에 -9999.0km/h 노출 방지). 실속도는 OBD 0x0D가 권위.
+    if (fix.speed < 0)    fix.speed = 0;
+    if (fix.alt < -1000)  fix.alt = 0;
+    if (fix.accuracy < 0) fix.accuracy = 0;
     // fixMode 0 = 아직 측위 못함. 좌표가 있어도 fixMode 0이면 무효 처리.
     fix.valid = got && fix.fixMode != 0;
     return fix.valid;

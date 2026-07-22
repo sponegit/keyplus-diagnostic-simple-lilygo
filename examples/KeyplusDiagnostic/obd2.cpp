@@ -16,6 +16,18 @@ static char     s_vin[18]   = {0}; // VIN 캐시(차량당 불변, 링크 확립
 static bool     s_hasVin    = false;
 static int      s_vinTries  = 0;   // VIN 재시도 횟수(미지원 차량 무한요청 방지)
 
+// 원시 CAN 프레임 헥스 덤프(디버그, OBD2_DUMP_RAW). 요청/응답을 [CAN] TX/RX로 출력.
+static void dumpFrame(const char *dir, const twai_message_t &m)
+{
+#if OBD2_DUMP_RAW
+    Serial.printf("[CAN] %s %03X [%d]", dir, (unsigned)m.identifier, m.data_length_code);
+    for (int i = 0; i < m.data_length_code; i++) Serial.printf(" %02X", m.data[i]);
+    Serial.println();
+#else
+    (void)dir; (void)m;
+#endif
+}
+
 // PID N(1~32)이 지원 마스크에 있는가. 0x20 초과 PID는 별도 마스크가 필요하므로 항상 시도(1).
 static bool supported(uint8_t pid)
 {
@@ -75,6 +87,7 @@ static bool readVin(Stream &log)
     tx.data_length_code = 8;
     tx.data[0] = 0x02; tx.data[1] = 0x09; tx.data[2] = 0x02;   // Mode 09, PID 02
     if (twai_transmit(&tx, pdMS_TO_TICKS(OBD2_REQ_TIMEOUT_MS)) != ESP_OK) return false;
+    dumpFrame("TX", tx);
 
     uint8_t  payload[64];
     int      total = 0, got = 0;
@@ -91,11 +104,13 @@ static bool readVin(Stream &log)
         uint8_t pci = m.data[0] & 0xF0;
         if (pci == 0x00 && (m.data[0] & 0x0F) >= 2 &&
             m.data[1] == 0x49 && m.data[2] == 0x02) {          // VIN Single Frame
+            dumpFrame("RX", m);
             int len = m.data[0] & 0x0F;
             for (int i = 0; i < len && got < (int)sizeof(payload); i++) payload[got++] = m.data[1 + i];
             total = got;
             break;
         } else if (pci == 0x10 && m.data[2] == 0x49 && m.data[3] == 0x02) {   // VIN First Frame
+            dumpFrame("RX", m);
             total = ((m.data[0] & 0x0F) << 8) | m.data[1];
             if (total > (int)sizeof(payload)) total = sizeof(payload);
             for (int i = 0; i < 6 && got < total; i++) payload[got++] = m.data[2 + i];
@@ -113,14 +128,17 @@ static bool readVin(Stream &log)
         fc.data_length_code = 8;
         fc.data[0] = 0x30;
         twai_transmit(&fc, pdMS_TO_TICKS(OBD2_REQ_TIMEOUT_MS));
+        dumpFrame("TX", fc);
 
         start = millis();
         while (got < total && millis() - start < (uint32_t)OBD2_REQ_TIMEOUT_MS * 5) {
             uint32_t rem = (uint32_t)OBD2_REQ_TIMEOUT_MS * 5 - (millis() - start);
             if (twai_receive(&m, pdMS_TO_TICKS(rem)) != ESP_OK) break;
             if (m.extd || m.identifier != responderId) continue;
-            if ((m.data[0] & 0xF0) == 0x20)      // Consecutive Frame
+            if ((m.data[0] & 0xF0) == 0x20) {    // Consecutive Frame
+                dumpFrame("RX", m);
                 for (int i = 1; i < 8 && got < total; i++) payload[got++] = m.data[i];
+            }
         }
     }
 
@@ -155,6 +173,7 @@ static int requestPid(uint8_t pid, uint8_t *resp, int cap, uint32_t timeoutMs)
     tx.data[1] = 0x01;                  // Mode 01
     tx.data[2] = pid;
     if (twai_transmit(&tx, pdMS_TO_TICKS(timeoutMs)) != ESP_OK) return -1;
+    dumpFrame("TX", tx);
 
     uint32_t start = millis();
     while (millis() - start < timeoutMs) {
@@ -162,6 +181,7 @@ static int requestPid(uint8_t pid, uint8_t *resp, int cap, uint32_t timeoutMs)
         if (twai_receive(&m, pdMS_TO_TICKS(rem)) != ESP_OK) break;   // 타임아웃
         if (!m.extd && m.identifier >= 0x7E8 && m.identifier <= 0x7EF &&
             m.data_length_code >= 3 && m.data[1] == 0x41 && m.data[2] == pid) {
+            dumpFrame("RX", m);
             int count = (int)m.data[0] - 2;              // len − (mode+pid)
             if (count < 0) count = 0;
             if (count > m.data_length_code - 3) count = m.data_length_code - 3;
@@ -274,7 +294,7 @@ void print(const Data &d, Stream &log)
     if (d.has_intake)   log.printf(" intake=%dC", d.intake);
     if (d.has_maf)      log.printf(" maf=%.1fg/s", d.maf);
     if (d.has_fuel)     log.printf(" fuel=%.0f%%", d.fuel);
-    if (d.has_ctrlv)    log.printf(" v=%.2f", d.ctrl_v);
+    if (d.has_ctrlv)    log.printf(" batt=%.2fV", d.ctrl_v);
     if (d.has_runtime)  log.printf(" run=%us", d.runtime);
     if (d.has_odometer) log.printf(" odo=%.1fkm", d.odometer);
     log.println();
