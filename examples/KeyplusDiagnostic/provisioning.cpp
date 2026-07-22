@@ -6,6 +6,9 @@
 #include "config.h"
 #include <Preferences.h>
 #include <ArduinoHttpClient.h>   // TinyGsmClient 위 평문 HTTP (lte.cpp와 동일 스택)
+#if PROVISION_USE_TLS
+#include "certs.h"               // CA_LOCAL_EMQX — HTTPS 서버 인증용 CA(모뎀 업로드)
+#endif
 
 #if FEATURE_CARKEY
 #include "carkey.h"              // Debug Console lock/unlock 검증 훅
@@ -76,6 +79,34 @@ static String jsonStr(const String &body, const char *key)
     return body.substring(q1 + 1, q2);
 }
 
+#if PROVISION_USE_TLS
+// 프로비저닝 HTTPS 서버 인증용 CA 를 모뎀 FS 에 업로드 + SSL 컨텍스트 0 바인딩.
+// A76xx 는 HTTPS·MQTT 가 SSL ctx0 을 공유하고, gateway-tls 가 EMQX 와 동일 cert(CA_LOCAL_EMQX 서명)를
+// 쓰므로 CA 하나로 둘 다 커버. 부팅 시(MQTT 연결 전) 1회 — mqtt_connect 의 CCERTDOWN 시퀀스와 동일.
+// authmode=1(서버 인증). 부팅 직후 모뎀 시각 미동기 대비 ignorelocaltime=1(유효기간 검증만 완화, 체인 검증 유지).
+static bool uploadProvCa(TinyGsm &modem, Stream &log)
+{
+    const char *ca = CA_LOCAL_EMQX;
+    // ① CA 파일 다운로드(모뎀 FS 저장). 이미 있으면 ">" 미수신 → 기존 파일 재사용.
+    modem.sendAT("+CCERTDOWN=\"ca_cert.pem\",", strlen(ca));
+    if (modem.waitResponse(10000UL, ">") == 1) {
+        modem.stream.write(ca);
+        if (modem.waitResponse() != 1) {
+            log.println("[PROV] CA 업로드 실패");
+            return false;
+        }
+        log.println("[PROV] CA 업로드 완료(ca_cert.pem)");
+    } else {
+        log.println("[PROV] CA 다운로드 프롬프트 없음 — 기존 ca_cert.pem 재사용 가정");
+    }
+    // ② SSL ctx0: CA 바인딩 + 서버 인증 + 부팅 시각 미동기 대비 유효기간 검증 완화.
+    modem.sendAT("+CSSLCFG=\"cacert\",0,\"ca_cert.pem\"");   modem.waitResponse();
+    modem.sendAT("+CSSLCFG=\"authmode\",0,1");               modem.waitResponse();  // 1=서버 인증
+    modem.sendAT("+CSSLCFG=\"ignorelocaltime\",0,1");        modem.waitResponse();
+    return true;
+}
+#endif
+
 ProvResult provisionOverHttp(TinyGsm &modem, Stream &log)
 {
     // 신원 원천: IMEI(모뎀) + efuse MAC(ESP32). 서버 allowlist는 IMEI로 매칭한다.
@@ -100,9 +131,11 @@ ProvResult provisionOverHttp(TinyGsm &modem, Stream &log)
 
 #if PROVISION_USE_TLS
     // TLS: 모뎀 내장 HTTPS(ota.cpp 와 동일 서비스). 응답에 mqtt_password 가 실리므로 암호화 필수.
-    // https_begin(ca=NULL) = 암호화 전용(도청 차단, 서버 인증 없음). 서버 인증까지 하려면
-    // ca.crt(certs.h CA_LOCAL_EMQX 원본)를 모뎀 FS 에 올리고 https_begin(ctx,"ca.crt") 사용.
-    // 프로비저닝은 부팅 시(MQTT 연결 전) 1회라 SSL 컨텍스트 경합 없음.
+    // CA 를 모뎀 FS 에 올려 SSL ctx0 에 바인딩(authmode=1) → 서버 인증(MITM 방지)까지 적용.
+    // A76xx 는 https_begin 에 CA 인자가 없어 CSSLCFG 로 ctx0 을 직접 설정한다(uploadProvCa).
+    // 부팅 시(MQTT 연결 전) 1회라 ctx0 경합 없음. MQTT 도 이후 같은 CA 로 ctx0 재설정(멱등).
+    uploadProvCa(modem, log);
+
     String url = String("https://") + PROVISION_HOST + ":" + PROVISION_PORT + PROVISION_PATH;
     log.printf("[PROV] provision POST %s\n", url.c_str());
     log.printf("[PROV]   body=%s\n", body.c_str());
