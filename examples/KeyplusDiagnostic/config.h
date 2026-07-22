@@ -16,7 +16,7 @@
 //   현재 = 2단계 GPS. 유심 불필요 단계만 활성화한다.
 // ===========================================================================
 #define FEATURE_GPS         1   // 2단계: 내장 GNSS 위치 조회       [활성]
-#define FEATURE_OBD2        0   // 4단계: CAN/OBD2 PID (외장 트랜시버 필요)
+#define FEATURE_OBD2        1   // 6단계: CAN/OBD2 PID (외장 트랜시버 SN65HVD230, GPIO21/22) [활성]
 #define FEATURE_CARKEY      1   // 5b단계: 차키 GPIO 토글 (열림/잠금만, 전원 제어 없음) [활성]
 #define FEATURE_BLE         0   // 9단계: BLE 명령/OTA
 #define FEATURE_LTE         1   // 1단계: LTE+MQTT (LG U+ 유심)     [활성 — 증분 A]
@@ -178,10 +178,16 @@
 #define CARKEY_DRIVE_SEL      CARKEY_DRIVE_DIRECT   // ← 현재: TR 미준비 → 직결(LOW=누름)
 
 // ===========================================================================
-// OBD2 CAN 핀맵 (4단계 — 외부 CAN 트랜시버 SN65HVD230 등 추가 필요)  [현재 미사용]
+// OBD2 CAN 핀맵/설정 (6단계 — 외부 CAN 트랜시버 SN65HVD230 등, ESP32 내장 TWAI)
+//   차량 OBD2 포트: CAN-H/CAN-L → 트랜시버 → GPIO21(RX)/22(TX). 공통 GND 필수.
+//   프로토콜: ISO 15765-4 (CAN). 요청 0x7DF, 응답 0x7E8~0x7EF. Mode 01 실시간 PID(단일 프레임).
 // ===========================================================================
 #define PIN_CAN_RX          (21)
 #define PIN_CAN_TX          (22)
+// 최신 차량(2008+) 표준 500kbps/11-bit. 응답 없으면 250kbps로 폴백 시도(begin에서 자동).
+#define OBD2_POLL_INTERVAL_MS   (5000UL)  // 실시간 PID 폴링 주기(주차 중 과폴 방지)
+#define OBD2_REQ_TIMEOUT_MS     (100)     // PID 1건 응답 대기 상한
+#define OBD2_LINK_RETRY_MS      (30000UL) // 링크 미확립(응답0) 시 재초기화 간격
 
 // ===========================================================================
 // 예약 핀 (베이스보드 정의와 중복이나 정책 명시) — 재정의 금지

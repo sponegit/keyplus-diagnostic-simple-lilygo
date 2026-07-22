@@ -17,7 +17,8 @@
 
 #include "utilities.h"
 #include <TinyGsmClient.h>
-#include "gps.h"   // GpsFix
+#include "gps.h"    // GpsFix
+#include "obd2.h"   // Obd2::Data
 
 namespace Mqtt {
 
@@ -36,8 +37,9 @@ bool ensure(TinyGsm &modem, Stream &log);
 
 // telemetry 1회 발행 (QoS 1). withMeta=true면 최초 발행용 하드웨어 메타(imei/mac/fw) 포함.
 // fix가 유효하면 gps 좌표/시각을 싣고, ts는 GPS UTC에서 epoch 계산(무효 시 0).
-bool publishTelemetry(TinyGsm &modem, const GpsFix &fix, uint32_t seq,
-                      bool withMeta, Stream &log);
+// obd.valid면 지원 PID를 obd 오브젝트로 동봉(6단계).
+bool publishTelemetry(TinyGsm &modem, const GpsFix &fix, const Obd2::Data &obd,
+                      uint32_t seq, bool withMeta, Stream &log);
 
 // MQTT 서비스(CMQTT) 완전 종료 — 모뎀 SSL 컨텍스트를 해제해 HTTP(S) 서비스와의 충돌을 막는다.
 // OTA 다운로드 진입 직전에 호출(어차피 OTA 성공 시 재부팅되므로 세션은 버린다).

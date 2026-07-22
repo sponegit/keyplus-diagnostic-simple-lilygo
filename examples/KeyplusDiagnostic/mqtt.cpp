@@ -147,8 +147,8 @@ void stopService(TinyGsm &modem)
     s_serviceStarted = false;
 }
 
-bool publishTelemetry(TinyGsm &modem, const GpsFix &fix, uint32_t seq,
-                      bool withMeta, Stream &log)
+bool publishTelemetry(TinyGsm &modem, const GpsFix &fix, const Obd2::Data &obd,
+                      uint32_t seq, bool withMeta, Stream &log)
 {
     // 네트워크 상태는 발행 시점에 신선하게 읽는다.
     int rssi = modem.getSignalQuality();
@@ -163,7 +163,7 @@ bool publishTelemetry(TinyGsm &modem, const GpsFix &fix, uint32_t seq,
     uint32_t up_s = millis() / 1000UL;
 
     // 계약 스키마(§3)대로 손 조립. gps는 fix일 때만 좌표 포함.
-    char buf[420];
+    char buf[560];
     int n = snprintf(buf, sizeof(buf),
         "{\"ts\":%u,\"seq\":%u,\"gps\":{\"fix\":%s",
         ts, seq, fix.valid ? "true" : "false");
@@ -176,6 +176,23 @@ bool publishTelemetry(TinyGsm &modem, const GpsFix &fix, uint32_t seq,
     n += snprintf(buf + n, sizeof(buf) - n,
         "},\"net\":{\"rssi\":%d,\"reg\":%d},\"sys\":{\"up_s\":%u}",
         rssi, reg, up_s);
+
+    // OBD2 실시간 PID — 링크 확립 시에만, 지원(응답 받은) 필드만 포함(6단계).
+    if (obd.valid) {
+        n += snprintf(buf + n, sizeof(buf) - n, ",\"obd\":{");
+        int o = 0;   // 콤마 제어
+        if (obd.has_rpm)      { n += snprintf(buf+n, sizeof(buf)-n, "%s\"rpm\":%.0f",     o++?",":"", obd.rpm); }
+        if (obd.has_speed)    { n += snprintf(buf+n, sizeof(buf)-n, "%s\"speed\":%d",     o++?",":"", obd.speed); }
+        if (obd.has_coolant)  { n += snprintf(buf+n, sizeof(buf)-n, "%s\"coolant\":%d",   o++?",":"", obd.coolant); }
+        if (obd.has_load)     { n += snprintf(buf+n, sizeof(buf)-n, "%s\"load\":%.1f",    o++?",":"", obd.load); }
+        if (obd.has_throttle) { n += snprintf(buf+n, sizeof(buf)-n, "%s\"throttle\":%.1f",o++?",":"", obd.throttle); }
+        if (obd.has_intake)   { n += snprintf(buf+n, sizeof(buf)-n, "%s\"intake\":%d",    o++?",":"", obd.intake); }
+        if (obd.has_maf)      { n += snprintf(buf+n, sizeof(buf)-n, "%s\"maf\":%.2f",     o++?",":"", obd.maf); }
+        if (obd.has_fuel)     { n += snprintf(buf+n, sizeof(buf)-n, "%s\"fuel\":%.1f",    o++?",":"", obd.fuel); }
+        if (obd.has_ctrlv)    { n += snprintf(buf+n, sizeof(buf)-n, "%s\"ctrl_v\":%.2f",  o++?",":"", obd.ctrl_v); }
+        if (obd.has_runtime)  { n += snprintf(buf+n, sizeof(buf)-n, "%s\"runtime\":%u",   o++?",":"", obd.runtime); }
+        n += snprintf(buf + n, sizeof(buf) - n, "}");
+    }
 
     if (withMeta) {
         // 최초 발행: device_id ↔ 하드웨어 매핑용 메타. imei/mac은 신원 아님.

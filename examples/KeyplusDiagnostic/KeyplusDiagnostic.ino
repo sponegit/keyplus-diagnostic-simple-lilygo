@@ -33,6 +33,8 @@
 #include "gps.h"
 #endif
 
+#include "obd2.h"   // 항상 컴파일(Obd2::Data). 폴링은 FEATURE_OBD2일 때만.
+
 #if FEATURE_LTE
 #include "lte.h"
 #include "mqtt.h"
@@ -165,6 +167,12 @@ void setup()
     Carkey::begin();
 #endif
 
+#if FEATURE_OBD2
+    // OBD2/CAN 링크 초기화(모뎀 무관, TWAI). 차량 미연결/시동 꺼짐이면 실패 → loop 재시도.
+    SerialMon.println("[OBD2] CAN 링크 초기화...");
+    Obd2::begin(SerialMon);
+#endif
+
     // 런타임 설정 로드(NVS "cfg") — config_update로 변경된 telemetry 주기/keepalive 복원.
     Cfg::begin();
 
@@ -273,6 +281,35 @@ void loop()
     static GpsFix g_lastFix;
 #endif
 
+    // 최신 OBD2 샘플 캐시 — telemetry가 참조. 링크 없으면 valid=false 유지(항상 존재).
+    static Obd2::Data g_obd;
+
+#if FEATURE_OBD2
+    // OBD2 폴링: 링크 있으면 주기 수집, 없으면 주기 재확립 시도.
+    static uint32_t lastObdPoll = 0, lastObdRetry = 0;
+    if (Obd2::isInstalled()) {
+        if (now - lastObdPoll >= OBD2_POLL_INTERVAL_MS) {
+            lastObdPoll = now;
+            if (Obd2::read(g_obd, SerialMon)) {
+                SerialMon.printf("[OBD2] rpm=%s spd=%s cool=%s load=%s\n",
+                    g_obd.has_rpm ? String((int)g_obd.rpm).c_str() : "-",
+                    g_obd.has_speed ? String(g_obd.speed).c_str() : "-",
+                    g_obd.has_coolant ? String(g_obd.coolant).c_str() : "-",
+                    g_obd.has_load ? String((int)g_obd.load).c_str() : "-");
+            } else {
+                // 폴 전체 무응답 → 링크 끊김(시동 off 등) → 재확립 경로로.
+                SerialMon.println("[OBD2] 폴 무응답 — 링크 재확인");
+                Obd2::end();
+                g_obd = Obd2::Data();   // valid=false → telemetry에서 obd 생략
+                lastObdRetry = now;
+            }
+        }
+    } else if (now - lastObdRetry >= OBD2_LINK_RETRY_MS) {
+        lastObdRetry = now;
+        Obd2::begin(SerialMon);   // 링크 재확립 시도(성공 시 다음 틱부터 폴링)
+    }
+#endif
+
 #if FEATURE_GPS
     static uint32_t lastPoll = 0;
     if (now - lastPoll >= GPS_POLL_INTERVAL_MS) {
@@ -370,7 +407,7 @@ void loop()
         // 주기는 config_update로 런타임 변경 가능(Cfg::telemetryIntervalMs).
         nextPubAt = now + Cfg::telemetryIntervalMs();
         bool withMeta = !metaSent;   // 최초 1회만 하드웨어 메타 포함
-        if (Mqtt::publishTelemetry(modem, g_lastFix, seq, withMeta, SerialMon)) {
+        if (Mqtt::publishTelemetry(modem, g_lastFix, g_obd, seq, withMeta, SerialMon)) {
             if (withMeta) metaSent = true;
             seq++;
         }
