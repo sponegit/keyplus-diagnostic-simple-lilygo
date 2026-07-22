@@ -59,6 +59,19 @@ static uint32_t civilToEpoch(int y, int m, int d, int hh, int mi, int ss)
     return (uint32_t)(days * 86400L + hh * 3600L + mi * 60L + ss);
 }
 
+// 모뎀 NITZ/NTP(CCLK) → UTC epoch. GPS fix 없을 때 telemetry ts 폴백용.
+// 미동기/무효 시 0(그럼 서버가 수신시각 스탬프). cmd.cpp nowEpoch와 동일 규약.
+static uint32_t modemEpoch(TinyGsm &modem)
+{
+    int y = 0, mo = 0, d = 0, h = 0, mi = 0, s = 0;
+    float tz = 0;
+    if (!modem.getNetworkTime(&y, &mo, &d, &h, &mi, &s, &tz)) return 0;
+    if (y < 2024 || y > 2060) return 0;         // 미동기 시 1970/2070 등 엉뚱값 방어
+    uint32_t e = civilToEpoch(y, mo, d, h, mi, s);
+    e -= (int32_t)tz * 15 * 60;                  // 로컬(tz 15분 단위) → UTC
+    return e;
+}
+
 // 세션 (재)접속 — CMQTT 서비스(mqtt_begin)는 건드리지 않는다.
 // 인증서 지정 → LWT → connect → status online(retained). 재접속도 이 경로만 탄다.
 static bool connectSession(TinyGsm &modem, Stream &log)
@@ -154,11 +167,14 @@ bool publishTelemetry(TinyGsm &modem, const GpsFix &fix, const Obd2::Data &obd,
     int rssi = modem.getSignalQuality();
     int reg  = (int)modem.getRegistrationStatus();
 
-    // ts: GPS UTC fix가 유효하면 epoch, 아니면 0(서버가 수신시각 스탬프).
+    // ts: GPS UTC fix 우선, 없으면 모뎀 UTC 폴백, 그것도 없으면 0(서버가 수신시각 스탬프).
+    // ⚠️ ts=0이 계속 오면 서버 PK (device_id,ts) 중복제거로 1행만 쌓임 → 모뎀 시각 폴백으로 회피.
     uint32_t ts = 0;
     if (fix.valid && fix.year >= 2020) {
         ts = civilToEpoch(fix.year, fix.month, fix.day,
                           fix.hour, fix.minute, fix.second);
+    } else {
+        ts = modemEpoch(modem);   // GPS fix 없어도(실내/음영) 실시각 확보 → 서버 누적 정상화
     }
     uint32_t up_s = millis() / 1000UL;
 
