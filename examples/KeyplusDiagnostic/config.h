@@ -17,7 +17,7 @@
 // ===========================================================================
 #define FEATURE_GPS         1   // 2단계: 내장 GNSS 위치 조회       [활성]
 #define FEATURE_OBD2        0   // 4단계: CAN/OBD2 PID (외장 트랜시버 필요)
-#define FEATURE_CARKEY      0   // 5b단계: 차키 GPIO 토글
+#define FEATURE_CARKEY      1   // 5b단계: 차키 GPIO 토글 (열림/잠금만, 전원 제어 없음) [활성]
 #define FEATURE_BLE         0   // 7단계: BLE 명령/OTA
 #define FEATURE_LTE         1   // 1단계: LTE+MQTT (LG U+ 유심)     [활성 — 증분 A]
 #define FEATURE_STATUS_LED  1   // 3단계: 상태표시 LED (외장, GPIO23) [활성]
@@ -122,10 +122,13 @@
 // 차키 제어 핀맵 (5b단계 — 확정, 4 GPIO 한정)  [현재 미사용]
 //   전원=스위처블 LDO(MIC5504-3.3 EN, active-high), 버튼=2N7002 오픈드레인(active-low)
 // ===========================================================================
-#define PIN_KEY_PWR_EN      (32)  // fob 전용 LDO EN (active-high)
-#define PIN_KEY_LOCK        (18)  // 잠금  (2N7002 게이트, active-low)
-#define PIN_KEY_UNLOCK      (19)  // 열림  (2N7002 게이트, active-low)
-#define PIN_KEY_SPARE       (23)  // 예비/원격시동 (2N7002 게이트, active-low)
+#define PIN_KEY_PWR_EN      (32)  // fob 전용 LDO EN (active-high) [현 단계 미제어 — fob 상시급전]
+#define PIN_KEY_LOCK        (18)  // 잠금  (2N7002 게이트 → GPIO HIGH=누름, 패드 active-low)
+#define PIN_KEY_UNLOCK      (19)  // 열림  (2N7002 게이트 → GPIO HIGH=누름, 패드 active-low)
+#define PIN_KEY_SPARE       (23)  // 예비/원격시동 (2N7002 게이트) [현 단계 미사용 — LED와 공유]
+
+// 버튼 1회 누름 유지시간(ms). fob가 인식하는 최소 펄스 폭 이상으로 둔다.
+#define CARKEY_PRESS_MS    (120)
 
 // ===========================================================================
 // OBD2 CAN 핀맵 (4단계 — 외부 CAN 트랜시버 SN65HVD230 등 추가 필요)  [현재 미사용]

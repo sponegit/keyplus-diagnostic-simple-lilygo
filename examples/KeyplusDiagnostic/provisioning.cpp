@@ -7,6 +7,10 @@
 #include <Preferences.h>
 #include <ArduinoHttpClient.h>   // TinyGsmClient 위 평문 HTTP (lte.cpp와 동일 스택)
 
+#if FEATURE_CARKEY
+#include "carkey.h"              // Debug Console lock/unlock 검증 훅
+#endif
+
 namespace Prov {
 
 static Preferences s_nvs;
@@ -145,6 +149,9 @@ ProvResult provisionOverHttp(TinyGsm &modem, Stream &log)
 void printHelp(Stream &io)
 {
     io.println("[PROV] 명령: setid vt-YYMM-NNNN-XXX | setpw <pw> | showid | clearid | help");
+#if FEATURE_CARKEY
+    io.println("[KEY]  명령: lock [ms] | unlock [ms]   (ms 생략 시 기본 펄스폭)");
+#endif
 }
 
 static void printState(Stream &io)
@@ -187,6 +194,10 @@ static void processLine(const String &raw, Stream &io)
     } else if (cmd == "help") {
         printHelp(io);
     } else {
+#if FEATURE_CARKEY
+        // 차키 검증 명령(lock/unlock [holdMs])을 이 단일 시리얼 소유자에서 위임.
+        if (Carkey::tryConsole(cmd, arg, io)) return;
+#endif
         io.printf("[PROV] 알 수 없는 명령: '%s'\n", cmd.c_str());
         printHelp(io);
     }

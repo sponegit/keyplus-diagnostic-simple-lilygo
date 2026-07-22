@@ -24,6 +24,10 @@
 #include "provisioning.h"
 #include "led.h"
 
+#if FEATURE_CARKEY
+#include "carkey.h"
+#endif
+
 #if FEATURE_GPS
 #include "gps.h"
 #endif
@@ -141,6 +145,12 @@ void setup()
 
     // 상태표시 LED — 부팅 진입 즉시 solid ON(살아있음 표시).
     Led::begin();
+
+#if FEATURE_CARKEY
+    // 차키 게이트를 즉시 OUTPUT LOW(버튼 뗌)로 확정 — 부팅 초기 플로팅/오동작 방지.
+    // 콘솔 'lock'/'unlock'으로 검증(Prov 콘솔 미지명령 분기에서 Carkey::tryConsole 호출).
+    Carkey::begin();
+#endif
 
     // 단말 신원 로드(NVS). Debug Console에서 'setid vt-...'로 설정 가능('help' 참고).
     Prov::begin();
