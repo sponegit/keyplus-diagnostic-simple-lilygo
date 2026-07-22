@@ -71,7 +71,7 @@
 #define MQTT_BROKER_LOCAL    2   // 로컬 EMQX (기동 중 — 아래 TODO 값 확정 필요)
 #define MQTT_BROKER_PROD     3   // 실 EMQX (mqtt.keyplus.sponeinfra.com, 상용)
 
-#define MQTT_BROKER_SEL      MQTT_BROKER_LOCAL  // ← 로컬 EMQX 테스트 중(61.81.117.174:28883 TLS)
+#define MQTT_BROKER_SEL      MQTT_BROKER_LOCAL  // ← office/dev EMQX (mqtt-dev.keyplus.sponeinfra.com:40102 TLS)
 
 #if   MQTT_BROKER_SEL == MQTT_BROKER_TEST
   #define MQTT_HOST          "test.mosquitto.org"
@@ -81,13 +81,13 @@
   #define MQTT_TLS_VERIFY    1     // 서버 인증서 CA 검증(authmode=1)
   #define MQTT_TLS_RELAX     0     // 정식 cert(호스트명 일치) → 완화 불필요
 #elif MQTT_BROKER_SEL == MQTT_BROKER_LOCAL
-  // 로컬 EMQX (공인IP:포워딩포트, TLS 자체서명 = certs.h CA_LOCAL_EMQX)
-  #define MQTT_HOST          "61.81.117.174"  // 로컬 EMQX 공인 IP(gateway 28081과 동일 호스트)
-  #define MQTT_PORT          (28883)          // 내부 8883 → 포워딩 28883 (TLS)
+  // office/dev EMQX (도메인:포워딩포트, TLS 자체서명 = certs.h CA_LOCAL_EMQX)
+  #define MQTT_HOST          "mqtt-dev.keyplus.sponeinfra.com"  // dev 도메인(DDNS, gateway 40101과 동일 호스트)
+  #define MQTT_PORT          (40102)          // 내부 8883 → 포워딩 40102 (TLS)
   #define MQTT_USE_TLS       1                // TLS 접속
   #define MQTT_ANON          0                // device_id(username) + 발급 mqtt_pw 인증
   #define MQTT_TLS_VERIFY    1                // CA 검증(authmode=1) — 래퍼가 authmode=0 미지원
-  #define MQTT_TLS_RELAX     1                // 자체서명+IP접속: CN·시각 검증 완화(CA 검증은 유지)
+  #define MQTT_TLS_RELAX     1                // 도메인 접속이라 cert CN 일치 → 0으로 낮춰도 됨(CA 검증은 유지)
 #else // MQTT_BROKER_PROD
   #define MQTT_HOST          MQTT_BROKER_HOST // mqtt.keyplus.sponeinfra.com
   #define MQTT_PORT          MQTT_BROKER_PORT
@@ -99,10 +99,10 @@
 
 // --- 자동 프로비저닝 엔드포인트 (작업1 — /internal/provision) ---
 // 단말이 부팅 시 device_id/pw가 없으면 {imei,mac,fw}를 POST해 발급받는다.
-// 로컬 device-gateway(포워딩된 공인 IP:포트). LTE 단말이 외부에서 닿는 공개 주소여야 함.
-// ⚠️ 현재 로컬은 평문 HTTP(TLS 아님) → PROVISION_USE_TLS=0. 상용 전환 시 도메인+443+CA로 교체.
-#define PROVISION_HOST              "61.81.117.174"
-#define PROVISION_PORT              (28081)
+// office/dev device-gateway(도메인:포워딩포트). LTE 단말이 외부에서 닿는 공개 주소여야 함.
+// ⚠️ 현재 office/dev 는 평문 HTTP(TLS 아님) → PROVISION_USE_TLS=0. 상용 전환 시 도메인+443+CA로 교체.
+#define PROVISION_HOST              "mqtt-dev.keyplus.sponeinfra.com"
+#define PROVISION_PORT              (40101)
 #define PROVISION_PATH              "/internal/provision"
 #define PROVISION_USE_TLS           0     // 0=평문 HTTP(로컬), 1=HTTPS(상용, certs.h CA 필요)
 // 오프라인(서버 없이) 테스트용: 1이면 NVS 비었을 때 아래 DEVICE_ID로 시드(자동 발급 생략).
