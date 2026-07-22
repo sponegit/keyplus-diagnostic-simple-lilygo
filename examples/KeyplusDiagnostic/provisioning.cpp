@@ -80,13 +80,22 @@ static String jsonStr(const String &body, const char *key)
 }
 
 #if PROVISION_USE_TLS
-// 프로비저닝 HTTPS 서버 인증용 CA 를 모뎀 FS 에 업로드 + SSL 컨텍스트 0 바인딩.
-// A76xx 는 HTTPS·MQTT 가 SSL ctx0 을 공유하고, gateway-tls 가 EMQX 와 동일 cert(CA_LOCAL_EMQX 서명)를
-// 쓰므로 CA 하나로 둘 다 커버. 부팅 시(MQTT 연결 전) 1회 — mqtt_connect 의 CCERTDOWN 시퀀스와 동일.
+// 프로비저닝 HTTPS 서버 CA — gateway-tls 는 EMQX 와 동일 cert 를 쓰므로 CA 선택도 mqtt.cpp 의
+// kCaPem 과 동일하게 config.h MQTT_BROKER_SEL 토글을 따른다(프로파일 전환 시 자동 일치).
+#if   MQTT_BROKER_SEL == MQTT_BROKER_TEST
+static const char *kProvCaPem = CA_MOSQUITTO_ORG;
+#elif MQTT_BROKER_SEL == MQTT_BROKER_LOCAL
+static const char *kProvCaPem = CA_LOCAL_EMQX;
+#else
+static const char *kProvCaPem = CA_ISRG_ROOT_X1;
+#endif
+
+// CA 를 모뎀 FS 에 업로드(+CCERTDOWN) + SSL 컨텍스트 0 바인딩. A76xx 는 HTTPS·MQTT 가 ctx0 을
+// 공유하므로 CA 하나로 둘 다 커버. 부팅 시(MQTT 연결 전) 1회 — mqtt_connect 의 CCERTDOWN 시퀀스와 동일.
 // authmode=1(서버 인증). 부팅 직후 모뎀 시각 미동기 대비 ignorelocaltime=1(유효기간 검증만 완화, 체인 검증 유지).
 static bool uploadProvCa(TinyGsm &modem, Stream &log)
 {
-    const char *ca = CA_LOCAL_EMQX;
+    const char *ca = kProvCaPem;
     // ① CA 파일 다운로드(모뎀 FS 저장). 이미 있으면 ">" 미수신 → 기존 파일 재사용.
     modem.sendAT("+CCERTDOWN=\"ca_cert.pem\",", strlen(ca));
     if (modem.waitResponse(10000UL, ">") == 1) {
