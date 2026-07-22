@@ -112,7 +112,7 @@
 // 단말 신원/버전 — TODO(provisioning): NVS 프로비저닝으로 이관. 지금은 검증용 상수.
 // 포맷 vt-YYMM-NNNN-XXX (계약 @keyplus-diagnostic/shared deviceId.ts 와 동일).
 #define DEVICE_ID                   "vt-2607-0001-x7q"
-#define FW_VERSION                  "0.1.0-incrB"
+#define FW_VERSION                  "0.2.0-ota"
 
 // ===========================================================================
 // OTA / config_update 설정 (8단계)   설계: phase8-firmware-ota-lte.md
