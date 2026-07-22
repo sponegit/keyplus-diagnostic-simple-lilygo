@@ -100,11 +100,11 @@
 // --- 자동 프로비저닝 엔드포인트 (작업1 — /internal/provision) ---
 // 단말이 부팅 시 device_id/pw가 없으면 {imei,mac,fw}를 POST해 발급받는다.
 // office/dev device-gateway(도메인:포워딩포트). LTE 단말이 외부에서 닿는 공개 주소여야 함.
-// ⚠️ 현재 office/dev 는 평문 HTTP(TLS 아님) → PROVISION_USE_TLS=0. 상용 전환 시 도메인+443+CA로 교체.
+// gateway-tls(Caddy)가 40101 에서 TLS 종단 → device-gateway:8081. 응답에 mqtt_password 실림 → HTTPS.
 #define PROVISION_HOST              "mqtt-dev.keyplus.sponeinfra.com"
 #define PROVISION_PORT              (40101)
 #define PROVISION_PATH              "/internal/provision"
-#define PROVISION_USE_TLS           0     // 0=평문 HTTP(로컬), 1=HTTPS(상용, certs.h CA 필요)
+#define PROVISION_USE_TLS           1     // 0=평문 HTTP, 1=HTTPS(모뎀 내장 HTTPS, OTA와 동일 경로)
 // 오프라인(서버 없이) 테스트용: 1이면 NVS 비었을 때 아래 DEVICE_ID로 시드(자동 발급 생략).
 // 기본 0 — NVS 비면 미프로비저닝 상태로 두고 부팅 시 /internal/provision 발급을 시도.
 #define PROVISION_SEED_FALLBACK     0

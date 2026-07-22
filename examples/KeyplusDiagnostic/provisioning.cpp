@@ -95,11 +95,38 @@ ProvResult provisionOverHttp(TinyGsm &modem, Stream &log)
                   "\",\"mac\":\""        + macBuf +
                   "\",\"fw\":\""         + FW_VERSION + "\"}";
 
+    int    status = -1;
+    String resp;
+
+#if PROVISION_USE_TLS
+    // TLS: 모뎀 내장 HTTPS(ota.cpp 와 동일 서비스). 응답에 mqtt_password 가 실리므로 암호화 필수.
+    // https_begin(ca=NULL) = 암호화 전용(도청 차단, 서버 인증 없음). 서버 인증까지 하려면
+    // ca.crt(certs.h CA_LOCAL_EMQX 원본)를 모뎀 FS 에 올리고 https_begin(ctx,"ca.crt") 사용.
+    // 프로비저닝은 부팅 시(MQTT 연결 전) 1회라 SSL 컨텍스트 경합 없음.
+    String url = String("https://") + PROVISION_HOST + ":" + PROVISION_PORT + PROVISION_PATH;
+    log.printf("[PROV] provision POST %s\n", url.c_str());
+    log.printf("[PROV]   body=%s\n", body.c_str());
+
+    modem.https_begin();
+    if (!modem.https_set_url(url)) {
+        log.println("[PROV] https_set_url 실패 — 네트워크 오류");
+        modem.https_end();
+        return ProvResult::NETWORK_ERROR;
+    }
+    modem.https_set_content_type("application/json");
+    status = modem.https_post(body);     // HTTP 상태코드 반환(<0=연결/전송 실패)
+    resp   = modem.https_body();
+    modem.https_end();
+    if (status < 0) {
+        log.printf("[PROV] HTTPS POST 실패 (code=%d) — 네트워크 오류\n", status);
+        return ProvResult::NETWORK_ERROR;
+    }
+#else
+    // 평문 HTTP POST (lte.cpp httpGetCheck와 동일 스택).
     log.printf("[PROV] provision POST http://%s:%d%s\n",
                PROVISION_HOST, PROVISION_PORT, PROVISION_PATH);
     log.printf("[PROV]   body=%s\n", body.c_str());
 
-    // LTE 데이터 세션 위 평문 HTTP POST (lte.cpp httpGetCheck와 동일 스택).
     TinyGsmClient client(modem);
     HttpClient    http(client, PROVISION_HOST, PROVISION_PORT);
     http.setHttpResponseTimeout(20000);   // 응답 대기 상한(ms)
@@ -110,10 +137,10 @@ ProvResult provisionOverHttp(TinyGsm &modem, Stream &log)
         http.stop();
         return ProvResult::NETWORK_ERROR;
     }
-
-    int    status = http.responseStatusCode();
-    String resp   = http.responseBody();
+    status = http.responseStatusCode();
+    resp   = http.responseBody();
     http.stop();
+#endif
     log.printf("[PROV] status=%d body=%s\n", status, resp.c_str());
 
     if (status == 403) {
