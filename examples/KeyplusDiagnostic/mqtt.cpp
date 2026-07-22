@@ -10,6 +10,7 @@
 #include "config.h"
 #include "certs.h"
 #include "provisioning.h"
+#include "cfg.h"
 
 namespace Mqtt {
 
@@ -88,8 +89,9 @@ static bool connectSession(TinyGsm &modem, Stream &log)
     const char *pass = orNull(Prov::mqttPassword().c_str()); // 프로비저닝 발급 비번(NVS)
 #endif
 
+    // keepalive는 config_update로 런타임 변경 가능(Cfg). 접속 시점 값 반영.
     if (!modem.mqtt_connect(kClientIdx, MQTT_HOST, MQTT_PORT, s_clientId.c_str(),
-                            user, pass, MQTT_KEEPALIVE_S)) {
+                            user, pass, Cfg::keepaliveS())) {
         log.println("[MQTT] connect failed (CA 검증/인증/네트워크 확인)");
         s_connected = false;
         return false;
@@ -134,6 +136,15 @@ bool ensure(TinyGsm &modem, Stream &log)
 {
     if (s_connected) return true;
     return begin(modem, log);   // begin이 서비스 시작 여부를 알아서 가드
+}
+
+void stopService(TinyGsm &modem)
+{
+    // 세션 해제 + CMQTTSTOP(래퍼 mqtt_disconnect가 둘 다 수행). 서비스 플래그도 내려
+    // 이후 재접속 시 mqtt_begin(CMQTTSTART)부터 다시 타게 한다(OTA 후엔 재부팅이라 무의미하나 안전).
+    modem.mqtt_disconnect(kClientIdx);
+    s_connected = false;
+    s_serviceStarted = false;
 }
 
 bool publishTelemetry(TinyGsm &modem, const GpsFix &fix, uint32_t seq,

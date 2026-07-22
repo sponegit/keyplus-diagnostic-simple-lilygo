@@ -6,6 +6,10 @@
 #include "config.h"
 #include "provisioning.h"
 #include "carkey.h"
+#include "cfg.h"
+#if FEATURE_OTA
+#include "ota.h"
+#endif
 #include <string.h>
 #include <stdlib.h>
 
@@ -16,8 +20,7 @@ static const uint8_t kClientIdx = 0;
 // --- 콜백 수신 버퍼 (mqtt_handle 내부에서 채워짐: 복사 + 플래그만) --------------
 static volatile bool s_pending = false;
 static char     s_payload[256];   // 명령 JSON(작음). null 종단.
-static String   s_cmdTopic;       // v1/{id}/cmd
-static String   s_ackTopic;       // v1/{id}/cmd/ack
+static String   s_cmdTopic;       // v1/{id}/cmd (구독용. ack 토픽은 sendAck가 매번 조립)
 
 // 단일 cmd 토픽만 구독하므로 topic은 무시하고 payload만 사용.
 static void onMessage(const char * /*topic*/, const uint8_t *payload, uint32_t len)
@@ -90,9 +93,23 @@ void begin(TinyGsm &modem)
 void subscribe(TinyGsm &modem, Stream &log)
 {
     s_cmdTopic = "v1/" + Prov::deviceId() + "/cmd";
-    s_ackTopic = "v1/" + Prov::deviceId() + "/cmd/ack";
     bool ok = modem.mqtt_subscribe(kClientIdx, s_cmdTopic.c_str(), /*qos=*/1);
     log.printf("[CMD] subscribe %s -> %s\n", s_cmdTopic.c_str(), ok ? "ok" : "FAIL");
+}
+
+void sendAck(TinyGsm &modem, Stream &log, const String &cmdId, const char *result)
+{
+    // device_id는 런타임(NVS)이라 매번 조립(재부팅 후 지연 ack도 구독 전에 발행 가능).
+    String ackTopic = "v1/" + Prov::deviceId() + "/cmd/ack";
+    uint32_t now = nowEpoch(modem);
+    char ack[160];
+    int n = snprintf(ack, sizeof(ack),
+        "{\"command_id\":\"%s\",\"result\":\"%s\",\"ts\":%u}",
+        cmdId.c_str(), result, (unsigned)now);
+    bool ok = (n > 0 && n < (int)sizeof(ack)) &&
+              modem.mqtt_publish(kClientIdx, ackTopic.c_str(), ack, /*qos=*/1);
+    log.printf("[CMD] ack id=%s result=%s %s\n", cmdId.c_str(), result,
+               ok ? "published" : "FAILED");
 }
 
 void handle(TinyGsm &modem, Stream &log)
@@ -111,37 +128,45 @@ void handle(TinyGsm &modem, Stream &log)
     }
 
     uint32_t now = nowEpoch(modem);
-    const char *result;
-
     if (now > 0 && expA > 0 && now > (uint32_t)expA) {   // uint 비교(32bit signed 오버플로우 회피)
-        result = "expired_on_device";     // 수신 시 이미 만료 → 미실행
         log.println("[CMD] 만료됨 — 미실행");
-    } else if (type == "door_lock") {
+        sendAck(modem, log, cmdId, "expired_on_device");
+        return;
+    }
+
+    if (type == "door_lock") {
 #if FEATURE_CARKEY
-        Carkey::lock();  result = "done";
+        Carkey::lock();  sendAck(modem, log, cmdId, "done");
 #else
-        result = "failed";
+        sendAck(modem, log, cmdId, "failed");
 #endif
     } else if (type == "door_unlock") {
 #if FEATURE_CARKEY
-        Carkey::unlock(); result = "done";
+        Carkey::unlock(); sendAck(modem, log, cmdId, "done");
 #else
-        result = "failed";
+        sendAck(modem, log, cmdId, "failed");
 #endif
+    } else if (type == "ota_start") {
+#if FEATURE_OTA
+        String url = jStr(s_payload, "url");
+        String md5 = jStr(s_payload, "md5");
+        String ver = jStr(s_payload, "version");
+        // Ota::start는 성공 시 재부팅(반환 안 함), 실패 시 NVS에 failed 기록 후 false.
+        // ⚠️ 어느 경우든 ack는 여기서 발행하지 않는다 — MQTT (재)접속 후 loop의
+        //    Ota::flushPendingAck()가 발행(다운로드 중 MQTT 단절로 즉시 ack 유실 방지).
+        Ota::start(modem, log, cmdId, url, md5, ver);
+#else
+        sendAck(modem, log, cmdId, "failed");
+#endif
+    } else if (type == "config_update") {
+        // 알려진 키(telemetry_interval_ms 즉시 / keepalive_s 다음 접속) 반영. ≥1이면 done.
+        int applied = Cfg::applyUpdate(s_payload, log);
+        sendAck(modem, log, cmdId, applied > 0 ? "done" : "failed");
     } else {
-        // remote_start / config_update / ota_start 미구현
-        result = "failed";
+        // remote_start(예비 IO 없음) 등 미지원.
         log.printf("[CMD] 미지원 type=%s\n", type.c_str());
+        sendAck(modem, log, cmdId, "failed");
     }
-
-    char ack[160];
-    int n = snprintf(ack, sizeof(ack),
-        "{\"command_id\":\"%s\",\"result\":\"%s\",\"ts\":%u}",
-        cmdId.c_str(), result, (unsigned)now);
-    bool ok = (n > 0 && n < (int)sizeof(ack)) &&
-              modem.mqtt_publish(kClientIdx, s_ackTopic.c_str(), ack, /*qos=*/1);
-    log.printf("[CMD] ack id=%s result=%s %s\n", cmdId.c_str(), result,
-               ok ? "published" : "FAILED");
 }
 
 } // namespace Cmd

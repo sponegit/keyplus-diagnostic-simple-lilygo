@@ -30,4 +30,8 @@ void subscribe(TinyGsm &modem, Stream &log);
 // loop 매틱: 수신된 명령이 있으면 파싱→실행→ack 발행 (논블로킹 진입, 실행은 짧게 블로킹).
 void handle(TinyGsm &modem, Stream &log);
 
+// cmd/ack 1건 발행 (QoS1). ts는 내부에서 모뎀 시각(epoch)으로 채운다.
+// handle() 내부 + OTA 재부팅 후 지연 ack(Ota::flushPendingAck)에서 공용으로 쓴다.
+void sendAck(TinyGsm &modem, Stream &log, const String &cmdId, const char *result);
+
 } // namespace Cmd

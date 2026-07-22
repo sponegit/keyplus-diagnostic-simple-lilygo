@@ -39,4 +39,8 @@ bool ensure(TinyGsm &modem, Stream &log);
 bool publishTelemetry(TinyGsm &modem, const GpsFix &fix, uint32_t seq,
                       bool withMeta, Stream &log);
 
+// MQTT 서비스(CMQTT) 완전 종료 — 모뎀 SSL 컨텍스트를 해제해 HTTP(S) 서비스와의 충돌을 막는다.
+// OTA 다운로드 진입 직전에 호출(어차피 OTA 성공 시 재부팅되므로 세션은 버린다).
+void stopService(TinyGsm &modem);
+
 } // namespace Mqtt

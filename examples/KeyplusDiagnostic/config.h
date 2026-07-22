@@ -18,9 +18,10 @@
 #define FEATURE_GPS         1   // 2단계: 내장 GNSS 위치 조회       [활성]
 #define FEATURE_OBD2        0   // 4단계: CAN/OBD2 PID (외장 트랜시버 필요)
 #define FEATURE_CARKEY      1   // 5b단계: 차키 GPIO 토글 (열림/잠금만, 전원 제어 없음) [활성]
-#define FEATURE_BLE         0   // 7단계: BLE 명령/OTA
+#define FEATURE_BLE         0   // 9단계: BLE 명령/OTA
 #define FEATURE_LTE         1   // 1단계: LTE+MQTT (LG U+ 유심)     [활성 — 증분 A]
 #define FEATURE_STATUS_LED  1   // 3단계: 상태표시 LED (외장, GPIO23) [활성]
+#define FEATURE_OTA         1   // 8단계: LTE OTA(ota_start) + config_update [활성]
 
 // ===========================================================================
 // GPS 설정 (2단계)
@@ -112,6 +113,28 @@
 // 포맷 vt-YYMM-NNNN-XXX (계약 @keyplus-diagnostic/shared deviceId.ts 와 동일).
 #define DEVICE_ID                   "vt-2607-0001-x7q"
 #define FW_VERSION                  "0.1.0-incrB"
+
+// ===========================================================================
+// OTA / config_update 설정 (8단계)   설계: phase8-firmware-ota-lte.md
+//   ota_start: 모뎀 HTTP(S) GET 스트리밍 → Update.h(듀얼 OTA 파티션) → 재부팅.
+//   2단계 ack(NVS 지속): 재부팅 전 command_id·기대버전 저장 → 부팅 후 검증하여 done/failed.
+// ===========================================================================
+// 다운로드 스트리밍 청크 크기(모뎀 https_body 1회 read). 예제와 동일 1KB.
+#define OTA_CHUNK_SIZE              (1024)
+// 다운로드 무진전(타임아웃) 상한 — 이 시간 내 바이트 진전 없으면 실패 처리.
+#define OTA_STALL_TIMEOUT_MS        (60000UL)
+// OTA 진행률 로그 간격(%).
+#define OTA_PROGRESS_STEP_PCT       (10)
+
+// config_update 런타임 기본값(부팅 시 NVS "cfg"가 있으면 그 값으로 대체).
+//   telemetry_interval_ms → 즉시 적용 / keepalive_s → 다음 MQTT 접속 반영.
+#define CFG_DEFAULT_TELE_MS         MQTT_PUBLISH_INTERVAL_MS
+#define CFG_DEFAULT_KEEPALIVE_S     MQTT_KEEPALIVE_S
+// 안전 가드(원격 오설정 방지). 범위 밖 값은 명령 무시.
+#define CFG_TELE_MS_MIN             (5000UL)
+#define CFG_TELE_MS_MAX             (600000UL)
+#define CFG_KEEPALIVE_S_MIN         (30)
+#define CFG_KEEPALIVE_S_MAX         (1800)
 
 // ===========================================================================
 // 상태표시 LED 핀 (3단계 — 외장 LED, active-high)  설계: phase3-firmware-provisioning-led.md §4

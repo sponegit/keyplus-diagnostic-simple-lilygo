@@ -23,6 +23,7 @@
 // — provisioning.h가 HTTP 자동 프로비저닝에 TinyGsm 타입을 참조하기 때문.
 #include "provisioning.h"
 #include "led.h"
+#include "cfg.h"
 
 #if FEATURE_CARKEY
 #include "carkey.h"
@@ -36,6 +37,9 @@
 #include "lte.h"
 #include "mqtt.h"
 #include "cmd.h"
+#if FEATURE_OTA
+#include "ota.h"
+#endif
 #endif
 
 #ifdef DUMP_AT_COMMANDS
@@ -153,6 +157,14 @@ void setup()
     Carkey::begin();
 #endif
 
+    // 런타임 설정 로드(NVS "cfg") — config_update로 변경된 telemetry 주기/keepalive 복원.
+    Cfg::begin();
+
+#if (FEATURE_LTE && FEATURE_OTA)
+    // OTA pending 플래그 로드 — 재부팅-후-성공/실패면 접속 후 loop가 ack를 flush.
+    Ota::begin();
+#endif
+
     // 단말 신원 로드(NVS). Debug Console에서 'setid vt-...'로 설정 가능('help' 참고).
     Prov::begin();
     SerialMon.printf("[PROV] device_id=%s (%s)\n",
@@ -219,6 +231,7 @@ void setup()
                 SerialMon.println("[MQTT] ✅ 접속 성공 — telemetry 발행 시작");
                 Led::set(Led::State::MQTT_OK);    // 정상 접속 — heartbeat
                 Cmd::subscribe(modem, SerialMon); // v1/{id}/cmd 구독
+                // OTA pending ack는 loop에서 hasPending() 가드로 flush(접속 확인 후).
             } else {
                 SerialMon.println("[MQTT] ❌ 접속 실패 — 위 로그(CA/네트워크) 확인");
                 Led::set(Led::State::COMM_ERROR); // 통신 오류 — 3회 버스트
@@ -298,6 +311,12 @@ void loop()
     }
     wasConnected = connected;
 
+#if FEATURE_OTA
+    // OTA 결과 ack: MQTT 접속 상태에서 pending이 있으면 발행(성공=버전검증 done / 실패=failed).
+    // 재부팅-후-성공, 재부팅 전 실패(재접속 후) 모두 이 경로로 한 번 발행 후 소거된다.
+    if (connected && Ota::hasPending()) Ota::flushPendingAck(modem, SerialMon);
+#endif
+
     if (!connected) {
         // 미접속: 백오프 간격으로 (재)접속. LTE(PDP)가 죽었으면 먼저 살린다.
         if (now - lastConnTry >= backoff) {
@@ -333,7 +352,8 @@ void loop()
     } else if ((int32_t)(now - nextPubAt) >= 0) {
         // 접속됨: telemetry 주기 발행(오버플로우 안전 비교). 발행 성공 시 다음 주기 예약,
         // 실패 시 isConnected가 false로 바뀌어 다음 루프에서 재접속 경로를 탄다.
-        nextPubAt = now + MQTT_PUBLISH_INTERVAL_MS;
+        // 주기는 config_update로 런타임 변경 가능(Cfg::telemetryIntervalMs).
+        nextPubAt = now + Cfg::telemetryIntervalMs();
         bool withMeta = !metaSent;   // 최초 1회만 하드웨어 메타 포함
         if (Mqtt::publishTelemetry(modem, g_lastFix, seq, withMeta, SerialMon)) {
             if (withMeta) metaSent = true;
