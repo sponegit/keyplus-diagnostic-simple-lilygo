@@ -14,6 +14,7 @@ static uint32_t s_supported = 0;   // PID 0x00 지원 비트마스크(0x01~0x20)
 static int      s_bitrate   = 0;   // 확립된 비트레이트(kbps)
 static char     s_vin[18]   = {0}; // VIN 캐시(차량당 불변, 링크 확립 시 1회 조회)
 static bool     s_hasVin    = false;
+static int      s_vinTries  = 0;   // VIN 재시도 횟수(미지원 차량 무한요청 방지)
 
 // PID N(1~32)이 지원 마스크에 있는가. 0x20 초과 PID는 별도 마스크가 필요하므로 항상 시도(1).
 static bool supported(uint8_t pid)
@@ -27,6 +28,10 @@ static bool install(int kbps, Stream &log)
 {
     twai_general_config_t g = TWAI_GENERAL_CONFIG_DEFAULT(
         (gpio_num_t)PIN_CAN_TX, (gpio_num_t)PIN_CAN_RX, TWAI_MODE_NORMAL);
+    // 실차 버스는 프레임이 폭주(수백/초) → 기본 RX 큐(5)로는 VIN ISO-TP 다중프레임
+    // 재조립 중 큐 오버플로로 CF를 놓친다. 큐를 키워 멀티프레임 수신을 보장한다.
+    g.rx_queue_len = 32;
+    g.tx_queue_len = 10;
     // 매크로는 브레이스 이니셜라이저라 삼항 피연산자로 못 씀 → 변수에 담아 복사.
     twai_timing_config_t t500 = TWAI_TIMING_CONFIG_500KBITS();
     twai_timing_config_t t250 = TWAI_TIMING_CONFIG_250KBITS();
@@ -53,6 +58,7 @@ void end()
         s_installed = false;
     }
     s_hasVin = false;   // 재확립 시 VIN 재조회(차량 교체 대비)
+    s_vinTries = 0;
 }
 
 // VIN(Mode 09 PID 02) — ISO-TP 다중 프레임 재조립. 성공 시 s_vin/s_hasVin 세팅.
@@ -75,19 +81,21 @@ static bool readVin(Stream &log)
     uint32_t responderId = 0;
     bool     haveFF = false;
 
-    // First Frame(또는 드물게 Single Frame) 대기.
+    // First Frame(또는 드물게 Single Frame) 대기. VIN 헤더(49 02)로 검증 →
+    // 폴링 중 섞이는 스테일 PID 응답(0x00 41 ..)이나 타 멀티프레임을 배제한다.
     uint32_t start = millis();
-    while (millis() - start < (uint32_t)OBD2_REQ_TIMEOUT_MS * 3) {
-        uint32_t rem = (uint32_t)OBD2_REQ_TIMEOUT_MS * 3 - (millis() - start);
+    while (millis() - start < (uint32_t)OBD2_REQ_TIMEOUT_MS * 4) {
+        uint32_t rem = (uint32_t)OBD2_REQ_TIMEOUT_MS * 4 - (millis() - start);
         if (twai_receive(&m, pdMS_TO_TICKS(rem)) != ESP_OK) break;
         if (m.extd || m.identifier < 0x7E8 || m.identifier > 0x7EF) continue;
         uint8_t pci = m.data[0] & 0xF0;
-        if (pci == 0x00) {                       // Single Frame(짧은 응답)
+        if (pci == 0x00 && (m.data[0] & 0x0F) >= 2 &&
+            m.data[1] == 0x49 && m.data[2] == 0x02) {          // VIN Single Frame
             int len = m.data[0] & 0x0F;
             for (int i = 0; i < len && got < (int)sizeof(payload); i++) payload[got++] = m.data[1 + i];
             total = got;
             break;
-        } else if (pci == 0x10) {                // First Frame
+        } else if (pci == 0x10 && m.data[2] == 0x49 && m.data[3] == 0x02) {   // VIN First Frame
             total = ((m.data[0] & 0x0F) << 8) | m.data[1];
             if (total > (int)sizeof(payload)) total = sizeof(payload);
             for (int i = 0; i < 6 && got < total; i++) payload[got++] = m.data[2 + i];
@@ -95,6 +103,7 @@ static bool readVin(Stream &log)
             haveFF = true;
             break;
         }
+        // 그 외(스테일 PID 응답 / 타 멀티프레임) → 무시하고 계속
     }
 
     if (haveFF) {
@@ -125,7 +134,7 @@ static bool readVin(Stream &log)
         log.printf("[OBD2] VIN=%s\n", s_vin);
         return true;
     }
-    log.println("[OBD2] VIN 조회 실패(응답 없음/형식 불일치)");
+    log.printf("[OBD2] VIN 조회 실패 (FF=%d got=%d/%d) — 재시도\n", haveFF ? 1 : 0, got, total);
     return false;
 }
 
@@ -198,7 +207,9 @@ bool read(Data &out, Stream &log)
     if (!s_installed) return false;
     out.supportedPid = s_supported;
 
-    // VIN(정적, 링크 확립 시 조회됨)을 매 폴에 실어 telemetry가 참조하게 한다.
+    // VIN 미획득이면 폴 때 재시도(begin 실패 복구). 상한까지만 시도(미지원 차량 무한요청 방지).
+    if (!s_hasVin && s_vinTries < 5) { readVin(log); s_vinTries++; }
+    // VIN(정적)을 매 폴에 실어 telemetry가 참조하게 한다.
     if (s_hasVin) {
         out.has_vin = true;
         strncpy(out.vin, s_vin, sizeof(out.vin) - 1);
@@ -249,6 +260,25 @@ bool read(Data &out, Stream &log)
     }
     (void)log;
     return out.valid;
+}
+
+void print(const Data &d, Stream &log)
+{
+    if (!d.valid) { log.println("[OBD2] (링크 없음/무응답)"); return; }
+    log.print("[OBD2]");
+    if (d.has_rpm)      log.printf(" rpm=%.0f", d.rpm);
+    if (d.has_speed)    log.printf(" spd=%d", d.speed);
+    if (d.has_coolant)  log.printf(" cool=%dC", d.coolant);
+    if (d.has_load)     log.printf(" load=%.0f%%", d.load);
+    if (d.has_throttle) log.printf(" thr=%.0f%%", d.throttle);
+    if (d.has_intake)   log.printf(" intake=%dC", d.intake);
+    if (d.has_maf)      log.printf(" maf=%.1fg/s", d.maf);
+    if (d.has_fuel)     log.printf(" fuel=%.0f%%", d.fuel);
+    if (d.has_ctrlv)    log.printf(" v=%.2f", d.ctrl_v);
+    if (d.has_runtime)  log.printf(" run=%us", d.runtime);
+    if (d.has_odometer) log.printf(" odo=%.1fkm", d.odometer);
+    log.println();
+    if (d.has_vin)      log.printf("[OBD2] VIN=%s\n", d.vin);
 }
 
 } // namespace Obd2

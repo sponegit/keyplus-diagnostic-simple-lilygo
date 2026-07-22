@@ -291,11 +291,7 @@ void loop()
         if (now - lastObdPoll >= OBD2_POLL_INTERVAL_MS) {
             lastObdPoll = now;
             if (Obd2::read(g_obd, SerialMon)) {
-                SerialMon.printf("[OBD2] rpm=%s spd=%s cool=%s load=%s\n",
-                    g_obd.has_rpm ? String((int)g_obd.rpm).c_str() : "-",
-                    g_obd.has_speed ? String(g_obd.speed).c_str() : "-",
-                    g_obd.has_coolant ? String(g_obd.coolant).c_str() : "-",
-                    g_obd.has_load ? String((int)g_obd.load).c_str() : "-");
+                Obd2::print(g_obd, SerialMon);   // 응답받은 전체 항목 + VIN 출력
             } else {
                 // 폴 전체 무응답 → 링크 끊김(시동 off 등) → 재확립 경로로.
                 SerialMon.println("[OBD2] 폴 무응답 — 링크 재확인");

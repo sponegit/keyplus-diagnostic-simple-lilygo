@@ -52,4 +52,7 @@ bool read(Data &out, Stream &log);
 // 드라이버 정지·제거(재초기화/비트레이트 변경 시).
 void end();
 
+// 수집 결과를 시리얼에 한 줄로 출력(응답받은 필드만 + VIN). 필드 진단용.
+void print(const Data &d, Stream &log);
+
 } // namespace Obd2
