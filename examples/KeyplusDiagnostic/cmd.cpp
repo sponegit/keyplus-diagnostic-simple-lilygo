@@ -73,9 +73,11 @@ static uint32_t nowEpoch(TinyGsm &modem)
     int y = 0, mo = 0, d = 0, h = 0, mi = 0, s = 0;
     float tz = 0;
     if (!modem.getNetworkTime(&y, &mo, &d, &h, &mi, &s, &tz)) return 0;
-    if (y < 2020) return 0;
+    // 유효성 경계: NITZ/NTP 미동기 시 CCLK가 1970→(+2000)→2070 같은 엉뚱한 값이 됨.
+    // 그럴 땐 0을 반환해 ts=0(서버가 수신시각 스탬프)·만료판정 스킵으로 처리한다.
+    if (y < 2024 || y > 2060) return 0;
     uint32_t e = civilToEpoch(y, mo, d, h, mi, s);
-    // CCLK 시각은 로컬(tz, 15분 단위) → UTC = local - tz*15min.
+    // CCLK 시각은 로컬(tz, 15분 단위) → UTC = local - tz*15min. (NTP를 TZ=0로 동기하면 tz=0)
     e -= (int32_t)tz * 15 * 60;
     return e;
 }
@@ -111,7 +113,7 @@ void handle(TinyGsm &modem, Stream &log)
     uint32_t now = nowEpoch(modem);
     const char *result;
 
-    if (now > 0 && expA > 0 && (long)now > expA) {
+    if (now > 0 && expA > 0 && now > (uint32_t)expA) {   // uint 비교(32bit signed 오버플로우 회피)
         result = "expired_on_device";     // 수신 시 이미 만료 → 미실행
         log.println("[CMD] 만료됨 — 미실행");
     } else if (type == "door_lock") {

@@ -73,6 +73,13 @@ bool begin(TinyGsm &modem, Stream &log)
         log.println("[LTE] gprs not connected after activate");
         return false;
     }
+
+    // 모뎀 시계 UTC(TZ=0) NTP 동기 — cmd 만료판정/ack ts, telemetry ts용.
+    // LG U+가 NITZ 시각을 안 줘서 CCLK가 기본값(1970→+2000=2070)이 되는 문제 보정.
+    // 데이터패스(PDP) 위에서 best-effort(실패해도 브링업은 성공 처리).
+    modem.NTPServerSync("pool.ntp.org", 0);
+    log.println("[LTE] NTP 시계 동기 시도(UTC)");
+
     return true;
 }
 
