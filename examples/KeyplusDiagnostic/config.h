@@ -175,7 +175,16 @@
 //   전환은 아래 CARKEY_DRIVE_SEL 한 줄만 바꾸면 됨(핀맵·로직 자동 선택, 코드 불변).
 #define CARKEY_DRIVE_DIRECT   1
 #define CARKEY_DRIVE_MOSFET   2
-#define CARKEY_DRIVE_SEL      CARKEY_DRIVE_DIRECT   // ← 현재: TR 미준비 → 직결(LOW=누름)
+#define CARKEY_DRIVE_SEL      CARKEY_DRIVE_DIRECT   // ← 현재: TR 미준비 → 직결
+
+// ── 버튼 "누름" 활성 레벨 오버라이드 ──────────────────────────────────────
+//   1 = GPIO HIGH가 누름 / 0 = GPIO LOW가 누름.  (뗌은 항상 반대 레벨)
+//   기본값은 위 CARKEY_DRIVE_SEL 이 함의하는 극성(DIRECT=0, MOSFET=1)이지만,
+//   실물 배선이 반대로 나온 경우 코드 수정 없이 이 한 줄로 뒤집는다.
+//   ⚠️ 1이면 핀모드는 자동으로 푸시풀 OUTPUT이 된다 — 오픈드레인은 HIGH를 source 못함.
+//   ⚠️ 1 + 직결 배선이면 fob가 꺼져 있을 때 역급전(back-feed) 경로가 생긴다.
+//      TR(2N7002) 구동이거나 fob 상시급전(3.3V 점퍼)이 확실할 때만 1로 둘 것.
+#define CARKEY_ACTIVE_HIGH    (1)   // ← 현재: HIGH=누름
 
 // ===========================================================================
 // OBD2 CAN 핀맵/설정 (6단계 — 외부 CAN 트랜시버 SN65HVD230 등, ESP32 내장 TWAI)

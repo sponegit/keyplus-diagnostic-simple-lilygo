@@ -7,19 +7,26 @@
 
 namespace Carkey {
 
-// 구동 방식별 핀모드/극성 (config.h CARKEY_DRIVE_SEL). carkey.h 극성 주석 참조.
-#if CARKEY_DRIVE_SEL == CARKEY_DRIVE_DIRECT
+// 누름 극성/핀모드 (config.h CARKEY_ACTIVE_HIGH, CARKEY_DRIVE_SEL). carkey.h 주석 참조.
+//   ACTIVE_HIGH=1 : HIGH가 누름 → 반드시 푸시풀 OUTPUT (오픈드레인은 HIGH를 source 못함).
+//   ACTIVE_HIGH=0 : LOW가 누름 → 직결이면 오픈드레인(HIGH=Hi-Z로 fob 풀업 복귀).
+#if CARKEY_ACTIVE_HIGH
+static const int PIN_MODE_SEL  = OUTPUT;
+static const int PRESS_LEVEL   = HIGH;
+static const int RELEASE_LEVEL = LOW;
+static const char *DRIVE_NAME  = "push-pull (HIGH=press)";
+#elif CARKEY_DRIVE_SEL == CARKEY_DRIVE_DIRECT
 // GPIO 직결(오픈드레인): LOW=라인을 GND로 당김(누름) / HIGH=Hi-Z(fob 풀업 복귀=뗌).
 static const int PIN_MODE_SEL  = OUTPUT_OPEN_DRAIN;
 static const int PRESS_LEVEL   = LOW;
 static const int RELEASE_LEVEL = HIGH;
 static const char *DRIVE_NAME  = "DIRECT/open-drain (LOW=press)";
 #else
-// 2N7002 게이트(푸시풀): HIGH=게이트 ON(누름) / LOW=OFF(뗌).
+// 2N7002 드레인 반전 배선 등 LOW=누름인 푸시풀 구동.
 static const int PIN_MODE_SEL  = OUTPUT;
-static const int PRESS_LEVEL   = HIGH;
-static const int RELEASE_LEVEL = LOW;
-static const char *DRIVE_NAME  = "MOSFET/push-pull (HIGH=press)";
+static const int PRESS_LEVEL   = LOW;
+static const int RELEASE_LEVEL = HIGH;
+static const char *DRIVE_NAME  = "push-pull (LOW=press)";
 #endif
 
 static int pinFor(Button b) {
@@ -32,7 +39,7 @@ static const char *nameFor(Button b) {
 void begin()
 {
     // 두 라인을 즉시 뗌(release) 상태로 확정 — 부팅 초기 플로팅/오동작 방지.
-    // DIRECT면 오픈드레인 HIGH(Hi-Z), MOSFET면 OUTPUT LOW(게이트 OFF).
+    // ACTIVE_HIGH=1이면 OUTPUT LOW, 직결(오픈드레인)이면 HIGH(Hi-Z).
     pinMode(PIN_KEY_LOCK,   PIN_MODE_SEL);
     digitalWrite(PIN_KEY_LOCK,   RELEASE_LEVEL);
     pinMode(PIN_KEY_UNLOCK, PIN_MODE_SEL);
