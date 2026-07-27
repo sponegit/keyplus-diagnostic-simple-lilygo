@@ -11,6 +11,7 @@
  */
 #include "config.h"
 #include "utilities.h"
+#include <esp_system.h>   // esp_reset_reason() — 부팅 원인 진단
 
 #define TINY_GSM_RX_BUFFER  1024        // RX 버퍼 1KB
 #define SerialMon           Serial
@@ -59,6 +60,30 @@ TinyGsm modem(SerialAT);
 // Ota::onHealthy()에서 직접 확정한다. 확정 전 크래시/행(부트 WDT 9s) → 부트로더 자동 롤백.
 extern "C" bool verifyRollbackLater() { return true; }
 #endif
+
+// ---------------------------------------------------------------------------
+// 부팅 원인 진단 — 차량 상시 5V에서 일정시간 후 LED 1/2번(=재부팅) 증상 추적용.
+//   BROWNOUT = 전원 마진 부족(LTE TX 버스트 ~2A 딥). PANIC/WDT = 펌웨어 행/크래시.
+//   POWERON/SW = 정상 전원인가/소프트리셋. 매 부팅 첫 줄로 남겨 재부팅 이력을 판별한다.
+// ---------------------------------------------------------------------------
+static void printResetReason(Stream &out)
+{
+    esp_reset_reason_t r = esp_reset_reason();
+    const char *name;
+    switch (r) {
+        case ESP_RST_POWERON:  name = "POWERON(정상 전원인가)";       break;
+        case ESP_RST_SW:       name = "SW(소프트 리셋/재부팅)";        break;
+        case ESP_RST_PANIC:    name = "PANIC(예외/크래시)";           break;
+        case ESP_RST_INT_WDT:  name = "INT_WDT(인터럽트 워치독)";      break;
+        case ESP_RST_TASK_WDT: name = "TASK_WDT(태스크 워치독)";       break;
+        case ESP_RST_WDT:      name = "WDT(기타 워치독)";             break;
+        case ESP_RST_BROWNOUT: name = "BROWNOUT(전원 딥 — 전원 마진 부족)"; break;
+        case ESP_RST_DEEPSLEEP: name = "DEEPSLEEP(딥슬립 복귀)";       break;
+        case ESP_RST_EXT:      name = "EXT(외부 리셋핀)";             break;
+        default:               name = "UNKNOWN";                     break;
+    }
+    out.printf("[BOOT] reset_reason=%d %s\n", (int)r, name);
+}
 
 // ---------------------------------------------------------------------------
 // 모뎀 하드웨어 전원 시퀀스 (GPS_BuiltIn 예제 기준)
@@ -157,6 +182,8 @@ void setup()
     SerialMon.begin(115200);
     delay(100);
     SerialMon.println("\n=== Keyplus Diagnostic — GPS + LTE bring-up ===");
+    // 부팅 첫 줄로 리셋 원인 기록 — 차량 5V 재부팅(BROWNOUT/WDT) 판별용.
+    printResetReason(SerialMon);
 
     // 상태표시 LED — 부팅 진입 즉시 solid ON(살아있음 표시).
     Led::begin();
