@@ -179,7 +179,7 @@ static const char *resetReasonStr()
 }
 
 // ---------------------------------------------------------------------------
-// 부팅 배너 — 로그 레벨과 무관하게 항상 출력한다.
+// 부팅 배너 — 로그 레벨과 무관하게 항상 출력한다. 콘솔 'info' 명령도 이걸 재사용한다.
 // "지금 무슨 펌웨어가, 어떤 신원으로, 어떤 설정으로 돌고 있는가"는 ERROR 레벨로
 // 조여놓은 단말에서도 알아야 진단이 시작된다.
 //
@@ -700,6 +700,10 @@ static void appPrintHelp(Stream &io)
 static bool appConsole(const String &cmd, const String &arg, Stream &io)
 {
     if (cmd == "info") {
+        // 펌웨어 버전·빌드시각·리셋 원인(배너) + 단말 정보 표를 함께 낸다.
+        // 부팅 로그를 놓쳤거나 한참 뒤에 붙었을 때, 'info' 한 번으로
+        // "무슨 펌웨어가 어떤 신원으로 왜 재부팅해서 돌고 있는가"를 다 볼 수 있어야 한다.
+        printBootHeader();
         printDeviceInfo(modem, g_modemName.c_str());
         return true;
     }
