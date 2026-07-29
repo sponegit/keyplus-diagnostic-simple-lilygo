@@ -20,7 +20,9 @@ static const uint8_t kClientIdx = 0;
 
 // --- 콜백 수신 버퍼 (mqtt_handle 내부에서 채워짐: 복사 + 플래그만) --------------
 static volatile bool s_pending = false;
-static char     s_payload[256];   // 명령 JSON(작음). null 종단.
+static char     s_payload[CMD_PAYLOAD_MAX];   // 명령 JSON. null 종단.
+// ⚠️ 넘치면 경고 없이 잘리고, 잘린 JSON 은 뒤쪽 필드를 못 찾아 조용히 오동작한다
+//    (ota_start 라면 url 이 빈 값이 되어 "잘못된 URL"로 실패). 크기는 config.h 참고.
 static String   s_cmdTopic;       // v1/{id}/cmd (구독용. ack 토픽은 sendAck가 매번 조립)
 static bool     s_subscribed = false;   // 마지막 subscribe 성공 여부(콘솔 진단용)
 

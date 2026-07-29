@@ -467,6 +467,11 @@ public:
                         bufferOffset += plyloadSize;
                         recvSize += packetSize;
 
+                    } else {
+                        // URC 가 끊기면 recvSize 가 영영 payload_total_len 에 닿지 못해
+                        // do-while 이 무한 루프가 된다(→ 워치독 리셋). 끊기면 중단한다.
+                        DBG("### CMQTTRXPAYLOAD 누락 — 수신 중단");
+                        break;
                     }
                 } while (recvSize != payload_total_len);
 

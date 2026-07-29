@@ -5,9 +5,9 @@
 | 버전 | **0.2.1** (`FW_VERSION`, `config.h`) |
 | 보드 | LILYGO T-A7670E (ESP32-WROVER, Flash 4MB) |
 | 파일 | `keyplus-diagnostic-0.2.1.bin` |
-| 크기 | **383,920 bytes** |
-| MD5 | `64fb30e80e34e706b933c25943baf857` |
-| SHA-256 | `0869013deb0ae1ecc05ba2b2e55025faa8d665867a4bfb4b3cc8486ba7a6ad46` |
+| 크기 | **384,096 bytes** |
+| MD5 | `a8f83c14a8604385a468c2b0e792eaad` |
+| SHA-256 | `a4a09d2090918db51c54ab20f921ed0df6f5c0ca8bbc6a14d2526f02bd37880b` |
 | OTA 슬롯 | 1,966,080 bytes (min_spiffs.csv, **19.5% 사용**) |
 
 단말은 **MD5만** 검증합니다(`Update.setMD5`). SHA-256은 배포 경로 무결성 확인용입니다.
@@ -42,18 +42,25 @@ ota_start.json                     MQTT 명령 템플릿 — url/command_id 채�
 
 ## ⚠️ 반드시 지킬 제약
 
-### 1. 명령 JSON은 **255 바이트 미만**이어야 한다
+### 1. 명령 JSON은 **약 1,000 바이트 미만**이어야 한다
 
-수신 버퍼가 `char s_payload[256]`이고, 넘치면 **경고 없이 잘립니다**
-(`cmd.cpp` `onMessage`). 잘리면 뒤쪽 필드(보통 `version`, `expires_at`)를 못 찾아
-`url`이 빈 값이 되고 `[OTA] 잘못된 URL`로 실패합니다.
+0.2.1에서 상한을 크게 올렸습니다. 그래도 무제한은 아닙니다.
 
-`ota_start.json` 템플릿은 URL을 뺀 뼈대만 **약 150 바이트**입니다.
-→ **URL은 100자 이내**로 유지하세요. 짧은 경로(`/fw/kpd-0.2.1.bin`)를 권장합니다.
+| 버전 | 실효 상한 | 근거 |
+|---|---|---|
+| ~0.2.0 | **231 B** | 래퍼 RX 버퍼 256B에 토픽(24B)까지 함께 담김 |
+| 0.2.1 | **약 1,000 B** | RX 버퍼 1024B − 토픽 24B |
+
+래퍼(`TinyGsmMqttA76xx`)가 토픽과 페이로드를 **하나의 버퍼에** 나눠 담기 때문에,
+토픽 길이만큼 페이로드 여유가 줄어듭니다. 넘치면 **경고 없이 잘리고**, 잘린 JSON은
+뒤쪽 필드를 못 찾아 `url`이 빈 값이 되어 `[OTA] 잘못된 URL`로 실패합니다.
+
+실제 URL+UUID를 넣은 `ota_start` 예시가 218 B이므로 여유는 충분합니다
+(0.2.0에서는 231 B 상한에 13 B 여유뿐이었습니다).
 
 발행 전 확인:
 ```bash
-python3 -c "import json,sys;d=open('ota_start.json','rb').read();print(len(json.dumps(json.loads(d),separators=(',',':'))),'bytes')"
+python3 -c "import json;print(len(json.dumps(json.load(open('ota_start.json')),separators=(',',':'))),'bytes')"
 ```
 
 ### 2. `version`은 `0.2.1`과 **정확히** 일치해야 한다
@@ -98,9 +105,9 @@ USB-C 또는 보조 UART(TX=GPIO13 / RX=GPIO34, 115200)에서:
 ```
 [OTA] 시작 cmd=... ver=0.2.1
   url=https://.../kpd-0.2.1.bin
-  md5=64fb30e80e34e706b933c25943baf857
-[OTA] 펌웨어 크기 383920 bytes — 플래시 시작
-[OTA] 10% (38392/383920)
+  md5=a8f83c14a8604385a468c2b0e792eaad
+[OTA] 펌웨어 크기 384096 bytes — 플래시 시작
+[OTA] 10% (38409/384096)
 ...
 [OTA] 플래시 완료·검증 통과 — 재부팅 예약
 ```
@@ -124,7 +131,7 @@ USB-C 또는 보조 UART(TX=GPIO13 / RX=GPIO34, 115200)에서:
 
 - [ ] 업로드한 파일의 MD5가 위 값과 일치 (`md5 -q <file>`)
 - [ ] URL이 단말에서 접근 가능 (사설망/방화벽 확인)
-- [ ] `ota_start.json` 직렬화 길이 **< 255 bytes**
+- [ ] `ota_start.json` 직렬화 길이 **< 1,000 bytes** (0.2.1 기준)
 - [ ] `version` 필드가 `0.2.1`
 - [ ] 대상 단말이 **`cmd` 구독 성공** 상태 — `status server`에서 `[ok]` 확인
       (0.2.1 이전 이미지는 구독 실패 버그가 있어 명령 자체를 못 받습니다)

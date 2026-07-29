@@ -133,6 +133,12 @@ bool begin(TinyGsm &modem, Stream &log)
     if (!s_serviceStarted) {
         LOGD(log, "[MQTT] begin: %s, broker %s:%d, id=%s\n",
              MQTT_USE_TLS ? "TLS+sni" : "PLAIN", MQTT_HOST, MQTT_PORT, s_clientId.c_str());
+        // 래퍼 RX 버퍼는 토픽과 페이로드를 함께 담는다 — 기본 256B 로는 긴 명령이
+        // 잘린다(config.h MQTT_RX_BUFFER_SIZE 주석). 서비스 시작 전에 키운다.
+        if (!modem.mqtt_set_rx_buffer_size(MQTT_RX_BUFFER_SIZE)) {
+            LOGE(log, "[MQTT] RX 버퍼 확장 실패(%dB) — 긴 명령이 잘릴 수 있음\n",
+                 MQTT_RX_BUFFER_SIZE);
+        }
         if (!modem.mqtt_begin(MQTT_USE_TLS, /*sni=*/MQTT_USE_TLS)) {
             LOGE(log, "[MQTT] mqtt_begin 실패\n");
             return false;

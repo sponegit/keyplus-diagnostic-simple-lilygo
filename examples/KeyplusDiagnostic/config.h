@@ -86,6 +86,16 @@
 #define MQTT_HANDLE_TIMEOUT_MS      (100)
 #define MQTT_CA_FILENAME            "emqx_ca.pem"
 
+// --- MQTT 수신 버퍼 ---------------------------------------------------------
+// ⚠️ 래퍼(TinyGsmMqttA76xx)는 토픽과 페이로드를 이 버퍼 "하나"에 나눠 담는다
+//    (topic + '\0' + payload). 기본 256B 로는 토픽 v1/{device_id}/cmd (24B) 를 빼면
+//    페이로드가 231B 밖에 안 남아 ota_start 명령이 경고 없이 잘렸다.
+//    Mqtt::begin 이 서비스 시작 전에 mqtt_set_rx_buffer_size() 로 이 값을 적용한다.
+#define MQTT_RX_BUFFER_SIZE         (1024)
+// cmd.cpp 가 RX 콜백에서 복사해 두는 명령 JSON 버퍼. 위 버퍼에서 토픽을 뺀 만큼이
+// 실제 상한이므로 같은 크기로 둔다(실효 상한 ≈ 1000B).
+#define CMD_PAYLOAD_MAX             (1024)
+
 // --- cmd 구독 페이싱 --------------------------------------------------------
 // 접속 직후 첫 구독을 미루는 이유: connectSession이 status online을 발행하고 나면
 // 그 ACK(+CMQTTPUB URC)가 URC 스트림에 떠 있는데, 그 상태로 SUBACK을 기다리면

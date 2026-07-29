@@ -3,7 +3,7 @@
   "type": "ota_start",
   "payload": {
     "url": "https://REPLACE-ME/fw/kpd-0.2.1.bin",
-    "md5": "64fb30e80e34e706b933c25943baf857",
+    "md5": "a8f83c14a8604385a468c2b0e792eaad",
     "version": "0.2.1"
   },
   "expires_at": 0
