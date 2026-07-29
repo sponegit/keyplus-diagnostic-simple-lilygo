@@ -7,27 +7,39 @@
 
 namespace Carkey {
 
-// 누름 극성/핀모드 (config.h CARKEY_ACTIVE_HIGH, CARKEY_DRIVE_SEL). carkey.h 주석 참조.
-//   ACTIVE_HIGH=1 : HIGH가 누름 → 반드시 푸시풀 OUTPUT (오픈드레인은 HIGH를 source 못함).
-//   ACTIVE_HIGH=0 : LOW가 누름 → 직결이면 오픈드레인(HIGH=Hi-Z로 fob 풀업 복귀).
-#if CARKEY_ACTIVE_HIGH
+// 누름 극성/핀모드 결정 (config.h). 배선이 곧 극성이므로 CARKEY_DRIVE_SEL 이 기본을 정하고,
+// CARKEY_ACTIVE_HIGH 는 AUTO 가 아닐 때만 극성을 강제 오버라이드한다(푸시풀 고정).
+#if CARKEY_ACTIVE_HIGH == CARKEY_ACTIVE_AUTO
+  #if CARKEY_DRIVE_SEL == CARKEY_DRIVE_DIRECT
+    #define CK_PRESS_HIGH  0    // fob 패드 active-low 직결 → LOW 가 누름
+    #define CK_OPEN_DRAIN  1    // 뗌은 Hi-Z 로 놓아 fob 내부 풀업이 복귀시킨다
+  #else
+    #define CK_PRESS_HIGH  1    // 2N7002 게이트 → HIGH 가 누름
+    #define CK_OPEN_DRAIN  0
+  #endif
+#else
+  #define CK_PRESS_HIGH  (CARKEY_ACTIVE_HIGH)
+  #define CK_OPEN_DRAIN  0      // 극성 강제 시엔 양쪽 레벨을 실제로 구동해야 하므로 푸시풀
+  #if CK_PRESS_HIGH && (CARKEY_DRIVE_SEL == CARKEY_DRIVE_DIRECT)
+    #warning "CARKEY: 직결(DIRECT) 배선에 HIGH=누름 강제 — 뗌 상태가 GND 고정(버튼 상시 눌림) + fob 역급전 위험. 배선을 다시 확인할 것."
+  #endif
+#endif
+
+#if CK_OPEN_DRAIN
+static const int PIN_MODE_SEL  = OUTPUT_OPEN_DRAIN;
+#else
 static const int PIN_MODE_SEL  = OUTPUT;
+#endif
+#if CK_PRESS_HIGH
 static const int PRESS_LEVEL   = HIGH;
 static const int RELEASE_LEVEL = LOW;
-static const char *DRIVE_NAME  = "push-pull (HIGH=press)";
-#elif CARKEY_DRIVE_SEL == CARKEY_DRIVE_DIRECT
-// GPIO 직결(오픈드레인): LOW=라인을 GND로 당김(누름) / HIGH=Hi-Z(fob 풀업 복귀=뗌).
-static const int PIN_MODE_SEL  = OUTPUT_OPEN_DRAIN;
-static const int PRESS_LEVEL   = LOW;
-static const int RELEASE_LEVEL = HIGH;
-static const char *DRIVE_NAME  = "DIRECT/open-drain (LOW=press)";
 #else
-// 2N7002 드레인 반전 배선 등 LOW=누름인 푸시풀 구동.
-static const int PIN_MODE_SEL  = OUTPUT;
 static const int PRESS_LEVEL   = LOW;
 static const int RELEASE_LEVEL = HIGH;
-static const char *DRIVE_NAME  = "push-pull (LOW=press)";
 #endif
+static const char *DRIVE_NAME =
+    CK_OPEN_DRAIN ? "open-drain (LOW=press, release=Hi-Z)"
+                  : (CK_PRESS_HIGH ? "push-pull (HIGH=press)" : "push-pull (LOW=press)");
 
 static int pinFor(Button b) {
     return (b == Button::LOCK) ? PIN_KEY_LOCK : PIN_KEY_UNLOCK;

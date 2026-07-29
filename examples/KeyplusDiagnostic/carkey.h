@@ -4,14 +4,17 @@
  *
  * 하드웨어: 잠금 = GPIO18, 열림 = GPIO19. fob 버튼패드는 active-low(내부 풀업, 누르면 GND).
  *
- * ⚠️ 누름 극성은 배선 방식에 따라 반대다 — config.h CARKEY_ACTIVE_HIGH 한 줄로 정한다:
- *   CARKEY_ACTIVE_HIGH=1 (현재): GPIO HIGH → "버튼 눌림" / LOW → "뗌". 핀모드 푸시풀 OUTPUT.
- *     2N7002 게이트 구동(드레인=패드, 소스=GND)이 이 극성이다: HIGH → 게이트 ON → 패드 GND.
- *     ⚠️ 직결 배선인데 이 값이면 꺼진 fob에 역급전(back-feed) 경로가 생긴다.
- *   CARKEY_ACTIVE_HIGH=0 + DRIVE_SEL=DIRECT: GPIO를 fob 패드에 직결(오픈드레인).
+ * ⚠️ 누름 극성은 배선이 정한다 — config.h CARKEY_DRIVE_SEL 한 줄만 바꾸면 된다:
+ *   DIRECT (현재): GPIO를 fob 패드에 직결(오픈드레인).
  *     GPIO LOW → 라인을 GND로 당김 → "눌림" / HIGH → Hi-Z → fob 풀업 복귀 → "뗌"
+ *     ⚠️ 반드시 오픈드레인. HIGH를 push하면 꺼진 fob에 역급전(back-feed) 위험.
  *     ⚠️ 공통 GND + fob Vcc=3.3V(상시급전 점퍼) 전제 → 로직 레벨 일치.
+ *   MOSFET: GPIO가 2N7002 게이트 구동(드레인=패드, 소스=GND). 핀모드 푸시풀 OUTPUT.
+ *     GPIO HIGH → 게이트 ON → 패드를 GND로 → "눌림" / LOW → OFF → "뗌" (직결과 반대)
  *   (car-key-control.md 원리 해설 참조. 직결=LOW누름 / 2N7002=HIGH누름 — 혼동 주의.)
+ *
+ * config.h CARKEY_ACTIVE_HIGH 는 기본 AUTO(=위 DRIVE_SEL 따름). 실물 배선이 위 가정과
+ *   반대로 나온 예외에만 0/1 로 극성을 강제하며, 그때 핀모드는 푸시풀로 고정된다.
  *
  * ⚠️ 부팅 초기: 라인에 외부 풀다운이 없어 begin() 전까지 플로팅될 수 있다.
  *   → setup 초반(가능한 한 빨리) begin()을 호출해 두 핀을 뗌(release) 상태로 확정.
