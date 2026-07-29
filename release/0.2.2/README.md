@@ -1,30 +1,34 @@
-> # ⚠️ 이 릴리즈는 사용하지 마세요 — 0.2.2로 대체됨
->
-> 배포 전 실기 테스트에서 결함이 발견됐습니다. 모뎀 리셋(전원 마진 부족 시 발생)
-> 이후 CMQTT 서비스 플래그가 모뎀 상태와 어긋나 **MQTT에 영영 재접속하지 못합니다.**
-> `release/0.2.2/` 를 사용하세요.
-
-# Keyplus Diagnostic 펌웨어 0.2.1 — OTA 배포 패키지
+# Keyplus Diagnostic 펌웨어 0.2.2 — OTA 배포 패키지
 
 | 항목 | 값 |
 |---|---|
-| 버전 | **0.2.1** (`FW_VERSION`, `config.h`) |
+| 버전 | **0.2.2** (`FW_VERSION`, `config.h`) |
 | 보드 | LILYGO T-A7670E (ESP32-WROVER, Flash 4MB) |
-| 파일 | `keyplus-diagnostic-0.2.1.bin` |
-| 크기 | **384,096 bytes** |
-| MD5 | `a8f83c14a8604385a468c2b0e792eaad` |
-| SHA-256 | `a4a09d2090918db51c54ab20f921ed0df6f5c0ca8bbc6a14d2526f02bd37880b` |
+| 파일 | `keyplus-diagnostic-0.2.2.bin` |
+| 크기 | **384,352 bytes** |
+| MD5 | `5f087cd96e82512d15949746f98ecd2a` |
+| SHA-256 | `2b7d851cddd9cab01b4ee3f6fe929efd14bcc435ea2be25bc4e542db703b67ef` |
 | OTA 슬롯 | 1,966,080 bytes (min_spiffs.csv, **19.5% 사용**) |
 
 단말은 **MD5만** 검증합니다(`Update.setMD5`). SHA-256은 배포 경로 무결성 확인용입니다.
+
+## 0.2.1 대비 변경 (실기에서 확인된 버그 수정)
+
+- **모뎀 리셋 후 MQTT 영구 접속불가 수정** — 모뎀을 리셋하면 CMQTT 서비스와 구독이
+  모뎀 쪽에서 사라지는데 펌웨어 플래그가 그대로 남아, `mqtt_begin()`(CMQTTSTART)을
+  건너뛴 채 접속만 시도해 영영 실패했습니다. 실기에서 8분 넘게 재현됐습니다.
+- **재접속 시 재구독 누락 수정** — `clean_session=1`이라 세션마다 브로커 쪽 구독이
+  사라지는데, 구독 플래그가 남아 재구독을 건너뛰었습니다(모뎀 리셋과 무관한 별개 결함).
+- **`[STAT]`의 rssi** — 미접속 구간에서 끊길 당시의 값(99=측정불가)으로 굳어,
+  실제로는 회복됐는데도 전파가 없는 것처럼 보이던 문제를 고쳤습니다.
 
 ---
 
 ## 파일 구성
 
 ```
-keyplus-diagnostic-0.2.1.bin       OTA로 내려보낼 이미지 (app 파티션 전용)
-keyplus-diagnostic-0.2.1.bin.md5   MD5 한 줄 (배포 서버 검증용)
+keyplus-diagnostic-0.2.2.bin       OTA로 내려보낼 이미지 (app 파티션 전용)
+keyplus-diagnostic-0.2.2.bin.md5   MD5 한 줄 (배포 서버 검증용)
 ota-manifest.json                  배포 메타 (버전/크기/해시/변경점) — url 채워서 사용
 ota_start.json                     MQTT 명령 템플릿 — url/command_id 채워서 발행
 ```
@@ -36,7 +40,7 @@ ota_start.json                     MQTT 명령 템플릿 — url/command_id 채�
 
 ## 배포 절차
 
-1. `keyplus-diagnostic-0.2.1.bin`을 HTTP(S)로 접근 가능한 곳에 올린다.
+1. `keyplus-diagnostic-0.2.2.bin`을 HTTP(S)로 접근 가능한 곳에 올린다.
 2. `ota-manifest.json`의 `url`을 실제 주소로 채워 배포 기록으로 남긴다.
 3. `ota_start.json`의 `command_id`(UUID)와 `url`을 채운다.
 4. 대상 단말의 **`v1/{device_id}/cmd`** 토픽으로 발행한다 (QoS 1).
@@ -50,12 +54,12 @@ ota_start.json                     MQTT 명령 템플릿 — url/command_id 채�
 
 ### 1. 명령 JSON은 **약 1,000 바이트 미만**이어야 한다
 
-0.2.1에서 상한을 크게 올렸습니다. 그래도 무제한은 아닙니다.
+0.2.2에서 상한을 크게 올렸습니다. 그래도 무제한은 아닙니다.
 
 | 버전 | 실효 상한 | 근거 |
 |---|---|---|
 | ~0.2.0 | **231 B** | 래퍼 RX 버퍼 256B에 토픽(24B)까지 함께 담김 |
-| 0.2.1 | **약 1,000 B** | RX 버퍼 1024B − 토픽 24B |
+| 0.2.1+ | **약 1,000 B** | RX 버퍼 1024B − 토픽 24B |
 
 래퍼(`TinyGsmMqttA76xx`)가 토픽과 페이로드를 **하나의 버퍼에** 나눠 담기 때문에,
 토픽 길이만큼 페이로드 여유가 줄어듭니다. 넘치면 **경고 없이 잘리고**, 잘린 JSON은
@@ -69,7 +73,7 @@ ota_start.json                     MQTT 명령 템플릿 — url/command_id 채�
 python3 -c "import json;print(len(json.dumps(json.load(open('ota_start.json')),separators=(',',':'))),'bytes')"
 ```
 
-### 2. `version`은 `0.2.1`과 **정확히** 일치해야 한다
+### 2. `version`은 `0.2.2`과 **정확히** 일치해야 한다
 
 재부팅 후 실행 이미지의 `FW_VERSION`과 대조해 ack를 결정합니다(`ota.cpp`).
 불일치하면 실제로는 성공했어도 **`failed`로 ack**가 나갑니다.
@@ -90,7 +94,7 @@ python3 -c "import json;print(len(json.dumps(json.load(open('ota_start.json')),s
 `OTA_CONFIRM_DEADLINE_MS`(10분) 안에 못 붙으면 **자동 롤백 재부팅**됩니다.
 
 → 전파가 약한 곳이나 **전원이 불안정한 차량에서는 OTA를 피하세요.**
-0.2.1에서 브라운아웃이 관측된 개체라면 전원 보강 후에 진행하는 게 안전합니다.
+0.2.2에서 브라운아웃이 관측된 개체라면 전원 보강 후에 진행하는 게 안전합니다.
 
 ---
 
@@ -109,11 +113,11 @@ mosquitto_pub -h mqtt-dev.keyplus.sponeinfra.com -p 40102 \
 USB-C 또는 보조 UART(TX=GPIO13 / RX=GPIO34, 115200)에서:
 
 ```
-[OTA] 시작 cmd=... ver=0.2.1
-  url=https://.../kpd-0.2.1.bin
-  md5=a8f83c14a8604385a468c2b0e792eaad
-[OTA] 펌웨어 크기 384096 bytes — 플래시 시작
-[OTA] 10% (38409/384096)
+[OTA] 시작 cmd=... ver=0.2.2
+  url=https://.../kpd-0.2.2.bin
+  md5=5f087cd96e82512d15949746f98ecd2a
+[OTA] 펌웨어 크기 384352 bytes — 플래시 시작
+[OTA] 10% (38435/384352)
 ...
 [OTA] 플래시 완료·검증 통과 — 재부팅 예약
 ```
@@ -122,11 +126,11 @@ USB-C 또는 보조 UART(TX=GPIO13 / RX=GPIO34, 115200)에서:
 
 ```
 ============================================================
-  Keyplus Diagnostic   fw 0.2.1
+  Keyplus Diagnostic   fw 0.2.2
   reset      : SW(소프트 리셋/재부팅)
 ============================================================
 [OTA] 새 이미지 확정(mark_valid) ... — 롤백 취소
-[OTA] pending ack: cmd=... 기대=0.2.1 실행=0.2.1 → done
+[OTA] pending ack: cmd=... 기대=0.2.2 실행=0.2.2 → done
 ```
 
 `info` 명령으로도 버전을 바로 확인할 수 있습니다.
@@ -137,13 +141,16 @@ USB-C 또는 보조 UART(TX=GPIO13 / RX=GPIO34, 115200)에서:
 
 - [ ] 업로드한 파일의 MD5가 위 값과 일치 (`md5 -q <file>`)
 - [ ] URL이 단말에서 접근 가능 (사설망/방화벽 확인)
-- [ ] `ota_start.json` 직렬화 길이 **< 1,000 bytes** (0.2.1 기준)
-- [ ] `version` 필드가 `0.2.1`
+- [ ] `ota_start.json` 직렬화 길이 **< 1,000 bytes** (0.2.2 기준)
+- [ ] `version` 필드가 `0.2.2`
 - [ ] 대상 단말이 **`cmd` 구독 성공** 상태 — `status server`에서 `[ok]` 확인
-      (0.2.1 이전 이미지는 구독 실패 버그가 있어 명령 자체를 못 받습니다)
+      (0.2.2 이전 이미지는 구독 실패 버그가 있어 명령 자체를 못 받습니다)
 - [ ] 단말 전원 안정 (브라운아웃 이력 없음 — `info`의 `reset` 확인)
 - [ ] 1대 선행 배포 후 확대
 
-> **0.2.0 → 0.2.1 OTA 주의**: 0.2.0에는 cmd 구독 실패 버그가 있어
+> **0.2.1은 사용하지 마세요.** 배포 전 실기 테스트에서 결함이 발견되어 0.2.2로 대체했습니다
+> — 모뎀 리셋 후 CMQTT 서비스 플래그가 모뎀 상태와 어긋나 MQTT에 영영 재접속하지 못했습니다.
+>
+> **0.2.0 → 0.2.2 OTA 주의**: 0.2.0에는 cmd 구독이 간헐적으로 실패하는 버그가 있어
 > `ota_start` 명령이 단말에 **도달하지 않을 수 있습니다.** 구독이 안 되는 개체는
-> 시리얼로 0.2.1을 먼저 구운 뒤, 이후 버전부터 OTA를 사용하세요.
+> 시리얼로 0.2.2를 먼저 구운 뒤, 이후 버전부터 OTA를 사용하세요.
