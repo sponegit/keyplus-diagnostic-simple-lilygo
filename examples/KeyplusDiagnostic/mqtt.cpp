@@ -11,6 +11,7 @@
 #include "certs.h"
 #include "provisioning.h"
 #include "cfg.h"
+#include "log.h"
 
 namespace Mqtt {
 
@@ -43,6 +44,10 @@ static const uint8_t kClientIdx = 0;
 // publish 직후의 +CMQTTPUB URC와 간섭해 오탐(false)을 내므로 쓰지 않는다.
 static bool s_serviceStarted = false;   // mqtt_begin(CMQTTSTART) 완료 — 부팅당 1회만
 static bool s_connected      = false;   // 세션 접속 여부
+
+// 마지막 발행 시점의 망 상태. [STAT] 한 줄이 이 값을 재사용해 AT 왕복을 늘리지 않는다.
+static int s_lastRssi = 0;
+static int s_lastReg  = 0;
 
 // 사용자/비번이 빈 문자열이면 NULL(익명)로 넘긴다.
 static const char *orNull(const char *s) { return (s && s[0]) ? s : nullptr; }
@@ -105,7 +110,7 @@ static bool connectSession(TinyGsm &modem, Stream &log)
     // keepalive는 config_update로 런타임 변경 가능(Cfg). 접속 시점 값 반영.
     if (!modem.mqtt_connect(kClientIdx, MQTT_HOST, MQTT_PORT, s_clientId.c_str(),
                             user, pass, Cfg::keepaliveS())) {
-        log.println("[MQTT] connect failed (CA 검증/인증/네트워크 확인)");
+        LOGW(log, "[MQTT] 접속 실패 (CA 검증/인증/네트워크 확인)\n");
         s_connected = false;
         return false;
     }
@@ -126,22 +131,25 @@ bool begin(TinyGsm &modem, Stream &log)
     // CMQTT 서비스(CMQTTSTART)는 부팅당 1회만. 이미 시작됐으면 세션 접속만 한다.
     // (매번 mqtt_begin 호출 시 CMQTTSTOP이 살아있는 연결을 끊고 재시작에 실패한다.)
     if (!s_serviceStarted) {
-        log.printf("[MQTT] begin: %s, broker %s:%d, id=%s\n",
-                   MQTT_USE_TLS ? "TLS+sni" : "PLAIN", MQTT_HOST, MQTT_PORT, s_clientId.c_str());
+        LOGD(log, "[MQTT] begin: %s, broker %s:%d, id=%s\n",
+             MQTT_USE_TLS ? "TLS+sni" : "PLAIN", MQTT_HOST, MQTT_PORT, s_clientId.c_str());
         if (!modem.mqtt_begin(MQTT_USE_TLS, /*sni=*/MQTT_USE_TLS)) {
-            log.println("[MQTT] mqtt_begin failed");
+            LOGE(log, "[MQTT] mqtt_begin 실패\n");
             return false;
         }
         s_serviceStarted = true;
     }
 
     bool ok = connectSession(modem, log);
-    if (ok) log.println("[MQTT] connected (TLS + server CA verified)");
+    if (ok) LOGI(log, "[MQTT] 접속됨 (%s)\n", MQTT_USE_TLS ? "TLS, 서버 CA 검증" : "평문");
     return ok;
 }
 
 // 자체 추적값 반환 (플래키한 AT+CMQTTDISC? 폴링 회피).
 bool isConnected(TinyGsm & /*modem*/) { return s_connected; }
+
+int lastRssi() { return s_lastRssi; }
+int lastReg()  { return s_lastReg; }
 
 // 콜백/URC 펌핑. 매 틱 호출되므로 "URC 없을 때 0ms"가 되어야 한다.
 //   래퍼 mqtt_handle(timeout)은 내부에서 waitResponse(timeout, "+CMQTTRXSTART:")를 하는데,
@@ -176,6 +184,8 @@ bool publishTelemetry(TinyGsm &modem, const GpsFix &fix, const Obd2::Data &obd,
     // 네트워크 상태는 발행 시점에 신선하게 읽는다.
     int rssi = modem.getSignalQuality();
     int reg  = (int)modem.getRegistrationStatus();
+    s_lastRssi = rssi;   // [STAT] 한 줄이 재사용(추가 AT 왕복 방지)
+    s_lastReg  = reg;
 
     // ts: GPS UTC fix 우선, 없으면 모뎀 UTC 폴백, 그것도 없으면 0(서버가 수신시각 스탬프).
     // ⚠️ ts=0이 계속 오면 서버 PK (device_id,ts) 중복제거로 1행만 쌓임 → 모뎀 시각 폴백으로 회피.
@@ -235,13 +245,14 @@ bool publishTelemetry(TinyGsm &modem, const GpsFix &fix, const Obd2::Data &obd,
     n += snprintf(buf + n, sizeof(buf) - n, "}");
 
     if (n <= 0 || n >= (int)sizeof(buf)) {
-        log.println("[MQTT] telemetry payload overflow");
+        LOGE(log, "[MQTT] telemetry 페이로드 오버플로\n");
         return false;
     }
 
     bool ok = modem.mqtt_publish(kClientIdx, s_topicTelemetry.c_str(), buf, /*qos=*/1);
     if (!ok) s_connected = false;   // 발행 실패 = 세션 끊김 → 다음 루프서 재접속
-    log.printf("[MQTT] telemetry seq=%u %s (%d B)\n", seq, ok ? "published" : "FAILED", n);
+    // 발행 1건마다의 상세는 DEBUG. 평상시 발행 결과는 loop의 [STAT] 한 줄에 실린다.
+    LOGD(log, "[MQTT] telemetry seq=%u %s (%d B)\n", seq, ok ? "published" : "FAILED", n);
     return ok;
 }
 

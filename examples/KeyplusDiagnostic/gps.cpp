@@ -5,6 +5,7 @@
 #include "gps.h"
 #include "utilities.h"
 #include "config.h"
+#include "log.h"
 
 namespace Gps {
 
@@ -46,16 +47,18 @@ void end(TinyGsm &modem)
     modem.disableGPS(MODEM_GPS_ENABLE_GPIO, !MODEM_GPS_ENABLE_LEVEL);
 }
 
+// 폴 1회분 좌표 덤프 — DEBUG 전용. 평상시 위치는 loop의 [STAT] 한 줄로 충분하고,
+// 측위 획득/상실 같은 상태 전이는 호출측이 INFO로 따로 남긴다.
 void print(const GpsFix &fix, Stream &out)
 {
     if (!fix.valid) {
-        out.println("[GPS] no fix yet");
+        LOGD(out, "[GPS] no fix yet\n");
         return;
     }
-    out.printf("[GPS] fix=%d  lat=%.6f lon=%.6f  spd=%.1fkm/h alt=%.1fm  acc=%.1f  vsat=%d\n",
-               fix.fixMode, fix.lat, fix.lon, fix.speed, fix.alt, fix.accuracy, fix.vsat);
-    out.printf("[GPS] UTC %04d-%02d-%02d %02d:%02d:%02d\n",
-               fix.year, fix.month, fix.day, fix.hour, fix.minute, fix.second);
+    LOGD(out, "[GPS] fix=%d  lat=%.6f lon=%.6f  spd=%.1fkm/h alt=%.1fm  acc=%.1f  vsat=%d\n",
+         fix.fixMode, fix.lat, fix.lon, fix.speed, fix.alt, fix.accuracy, fix.vsat);
+    LOGD(out, "[GPS] UTC %04d-%02d-%02d %02d:%02d:%02d\n",
+         fix.year, fix.month, fix.day, fix.hour, fix.minute, fix.second);
 }
 
 String raw(TinyGsm &modem)

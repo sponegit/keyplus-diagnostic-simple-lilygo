@@ -4,6 +4,7 @@
  */
 #include "cfg.h"
 #include "config.h"
+#include "log.h"
 #include <Preferences.h>
 #include <stdlib.h>
 #include <string.h>
@@ -67,11 +68,11 @@ int applyUpdate(const char *jsonBody, Stream &log)
             teleMs = (uint32_t)tele;
             teleReq = true;
         } else {
-            log.printf("[CFG] telemetry_interval_ms=%ld 범위밖(%lu~%lu) — 무시\n",
+            LOGW(log, "[CFG] telemetry_interval_ms=%ld 범위밖(%lu~%lu) — 무시\n",
                        tele, (unsigned long)CFG_TELE_MS_MIN, (unsigned long)CFG_TELE_MS_MAX);
             if (tele > (long)CFG_TELE_MS_MAX) {
                 // 상한이 자의적 값이 아니라 물리 제약이라는 걸 로그로 남긴다.
-                log.printf("[CFG]   ⚠️ publish가 유일한 연결유지 수단(모뎀 PINGREQ 미발송) — "
+                LOGW(log, "[CFG]   ⚠️ publish가 유일한 연결유지 수단(모뎀 PINGREQ 미발송) — "
                            "캐리어 NAT 유휴 드롭 %lums 보다 짧아야 함\n",
                            (unsigned long)MQTT_NAT_IDLE_TIMEOUT_MS);
             }
@@ -84,7 +85,7 @@ int applyUpdate(const char *jsonBody, Stream &log)
             kaS = (int)ka;
             kaReq = true;
         } else {
-            log.printf("[CFG] keepalive_s=%ld 범위밖(%d~%d) — 무시\n",
+            LOGW(log, "[CFG] keepalive_s=%ld 범위밖(%d~%d) — 무시\n",
                        ka, CFG_KEEPALIVE_S_MIN, CFG_KEEPALIVE_S_MAX);
         }
     }
@@ -95,7 +96,7 @@ int applyUpdate(const char *jsonBody, Stream &log)
     // 먼저 세션을 끊어(MQTT 규격상 keepalive의 1.5배) 재접속 루프가 된다. 한쪽만 바꾸는
     // 명령도 결과 조합으로 검사하므로, 부분 반영으로 관계가 깨지는 일이 없다.
     if ((uint32_t)kaS * 1000UL < teleMs * CFG_KEEPALIVE_TELE_RATIO) {
-        log.printf("[CFG] 조합 거부 — keepalive_s=%d 는 telemetry %lums 의 %d배 미만\n",
+        LOGW(log, "[CFG] 조합 거부 — keepalive_s=%d 는 telemetry %lums 의 %d배 미만\n",
                    kaS, (unsigned long)teleMs, CFG_KEEPALIVE_TELE_RATIO);
         return 0;
     }
@@ -106,13 +107,13 @@ int applyUpdate(const char *jsonBody, Stream &log)
     if (teleReq) {
         s_teleMs = teleMs;                          // 즉시 적용
         p.putULong("tele_ms", s_teleMs);
-        log.printf("[CFG] telemetry_interval_ms=%lu (즉시 적용)\n", (unsigned long)s_teleMs);
+        LOGI(log, "[CFG] telemetry_interval_ms=%lu (즉시 적용)\n", (unsigned long)s_teleMs);
         applied++;
     }
     if (kaReq) {
         s_keepaliveS = kaS;                         // 다음 접속 반영
         p.putInt("ka_s", s_keepaliveS);
-        log.printf("[CFG] keepalive_s=%d (다음 MQTT 접속 반영)\n", s_keepaliveS);
+        LOGI(log, "[CFG] keepalive_s=%d (다음 MQTT 접속 반영)\n", s_keepaliveS);
         applied++;
     }
     p.end();

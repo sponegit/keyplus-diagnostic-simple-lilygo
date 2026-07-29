@@ -3,6 +3,7 @@
  * @brief     MQTT cmd 다운링크 구현 — 수신 콜백(복사만) + loop 처리(실행/ack).
  */
 #include "cmd.h"
+#include "log.h"
 #include "config.h"
 #include "provisioning.h"
 #include "carkey.h"
@@ -94,7 +95,8 @@ void subscribe(TinyGsm &modem, Stream &log)
 {
     s_cmdTopic = "v1/" + Prov::deviceId() + "/cmd";
     bool ok = modem.mqtt_subscribe(kClientIdx, s_cmdTopic.c_str(), /*qos=*/1);
-    log.printf("[CMD] subscribe %s -> %s\n", s_cmdTopic.c_str(), ok ? "ok" : "FAIL");
+    if (ok) LOGD(log, "[CMD] subscribe %s ok\n", s_cmdTopic.c_str());
+    else    LOGW(log, "[CMD] subscribe %s 실패 — 다운링크 수신 불가\n", s_cmdTopic.c_str());
 }
 
 void sendAck(TinyGsm &modem, Stream &log, const String &cmdId, const char *result)
@@ -108,7 +110,7 @@ void sendAck(TinyGsm &modem, Stream &log, const String &cmdId, const char *resul
         cmdId.c_str(), result, (unsigned)now);
     bool ok = (n > 0 && n < (int)sizeof(ack)) &&
               modem.mqtt_publish(kClientIdx, ackTopic.c_str(), ack, /*qos=*/1);
-    log.printf("[CMD] ack id=%s result=%s %s\n", cmdId.c_str(), result,
+    LOGI(log, "[CMD] ack id=%s result=%s %s\n", cmdId.c_str(), result,
                ok ? "published" : "FAILED");
 }
 
@@ -120,16 +122,16 @@ void handle(TinyGsm &modem, Stream &log)
     String cmdId = jStr(s_payload, "command_id");
     String type  = jStr(s_payload, "type");
     long   expA  = jNum(s_payload, "expires_at");
-    log.printf("[CMD] recv id=%s type=%s exp=%ld\n", cmdId.c_str(), type.c_str(), expA);
+    LOGI(log, "[CMD] 수신 id=%s type=%s exp=%ld\n", cmdId.c_str(), type.c_str(), expA);
 
     if (cmdId.isEmpty() || type.isEmpty()) {
-        log.println("[CMD] 파싱 실패 — 드롭(ack 없음)");
+        LOGW(log, "[CMD] 파싱 실패 — 드롭(ack 없음)\n");
         return;
     }
 
     uint32_t now = nowEpoch(modem);
     if (now > 0 && expA > 0 && now > (uint32_t)expA) {   // uint 비교(32bit signed 오버플로우 회피)
-        log.println("[CMD] 만료됨 — 미실행");
+        LOGW(log, "[CMD] 만료됨 — 미실행\n");
         sendAck(modem, log, cmdId, "expired_on_device");
         return;
     }
@@ -164,7 +166,7 @@ void handle(TinyGsm &modem, Stream &log)
         sendAck(modem, log, cmdId, applied > 0 ? "done" : "failed");
     } else {
         // remote_start(예비 IO 없음) 등 미지원.
-        log.printf("[CMD] 미지원 type=%s\n", type.c_str());
+        LOGW(log, "[CMD] 미지원 type=%s\n", type.c_str());
         sendAck(modem, log, cmdId, "failed");
     }
 }

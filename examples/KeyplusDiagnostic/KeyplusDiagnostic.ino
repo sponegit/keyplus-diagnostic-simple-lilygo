@@ -25,6 +25,7 @@
 #include "provisioning.h"
 #include "led.h"
 #include "cfg.h"
+#include "log.h"
 
 #if FEATURE_CARKEY
 #include "carkey.h"
@@ -71,6 +72,10 @@ static Obd2::Data g_obd;
 
 #if FEATURE_GPS
 static uint32_t g_lastGpsPoll = 0;   // 마지막 GPS 폴 시각(주기 폴 / 발행 직전 갱신 공용)
+// 직전 폴의 측위 성공 여부 — 획득/상실 전이만 INFO로 남기기 위한 것.
+// g_lastFix는 측위 실패해도 마지막 유효 좌표를 유지하므로(telemetry가 계속 참조)
+// 전이 판정에 g_lastFix.valid를 쓸 수 없다.
+static bool g_gpsFixNow = false;
 
 // GPS 1회 폴 → g_lastFix 갱신. 폴 시각도 같이 갱신하므로, 발행 직전에 호출하면
 // 바로 뒤따르는 주기 폴이 중복 실행되지 않는다.
@@ -78,14 +83,24 @@ static void pollGps(uint32_t now)
 {
     g_lastGpsPoll = now;
     GpsFix fix;
-    if (Gps::read(modem, fix)) {
+    bool got = Gps::read(modem, fix);
+
+    // 상태 전이만 INFO. 좌표 자체는 [STAT] 한 줄과 DEBUG의 Gps::print에서 본다.
+    if (got != g_gpsFixNow) {
+        if (got) LOGI(SerialMon, "[GPS] 측위 획득 (fix=%d, %d위성)\n", fix.fixMode, fix.vsat);
+        else     LOGI(SerialMon, "[GPS] 측위 상실 — 마지막 좌표 유지\n");
+        g_gpsFixNow = got;
+    }
+
+    if (got) {
         g_lastFix = fix;                // telemetry용 캐시 갱신
-        Gps::print(fix, SerialMon);
-    } else {
+        Gps::print(fix, SerialMon);     // 전체 좌표 덤프는 DEBUG에서만
+    } else if (LOG_ON(Log::L_DEBUG)) {
         // 원시 GNSS 정보(+CGNSSINFO)는 미측위일 때만 — 위성 포착 진행상황 확인용이다.
         // fix 확보 후엔 진단 가치가 없는데 모뎀 AT 왕복만 2배가 된다(getGPS + getGPSraw).
+        // DEBUG가 아니면 왕복 자체를 생략한다(로그만 끄는 게 아니라 AT도 안 보낸다).
         String rawInfo = Gps::raw(modem);
-        SerialMon.print("[GPS] acquiring fix... (cold start may take a while) raw: ");
+        SerialMon.print("[GPS] acquiring fix... raw: ");
         SerialMon.println(rawInfo.length() ? rawInfo : "(no data)");
     }
 }
@@ -113,23 +128,150 @@ static bool vehicleMoving(const Obd2::Data &d)
 //   BROWNOUT = 전원 마진 부족(LTE TX 버스트 ~2A 딥). PANIC/WDT = 펌웨어 행/크래시.
 //   POWERON/SW = 정상 전원인가/소프트리셋. 매 부팅 첫 줄로 남겨 재부팅 이력을 판별한다.
 // ---------------------------------------------------------------------------
-static void printResetReason(Stream &out)
+static const char *resetReasonStr()
 {
-    esp_reset_reason_t r = esp_reset_reason();
-    const char *name;
-    switch (r) {
-        case ESP_RST_POWERON:  name = "POWERON(정상 전원인가)";       break;
-        case ESP_RST_SW:       name = "SW(소프트 리셋/재부팅)";        break;
-        case ESP_RST_PANIC:    name = "PANIC(예외/크래시)";           break;
-        case ESP_RST_INT_WDT:  name = "INT_WDT(인터럽트 워치독)";      break;
-        case ESP_RST_TASK_WDT: name = "TASK_WDT(태스크 워치독)";       break;
-        case ESP_RST_WDT:      name = "WDT(기타 워치독)";             break;
-        case ESP_RST_BROWNOUT: name = "BROWNOUT(전원 딥 — 전원 마진 부족)"; break;
-        case ESP_RST_DEEPSLEEP: name = "DEEPSLEEP(딥슬립 복귀)";       break;
-        case ESP_RST_EXT:      name = "EXT(외부 리셋핀)";             break;
-        default:               name = "UNKNOWN";                     break;
+    switch (esp_reset_reason()) {
+        case ESP_RST_POWERON:   return "POWERON(정상 전원인가)";
+        case ESP_RST_SW:        return "SW(소프트 리셋/재부팅)";
+        case ESP_RST_PANIC:     return "PANIC(예외/크래시)";
+        case ESP_RST_INT_WDT:   return "INT_WDT(인터럽트 워치독)";
+        case ESP_RST_TASK_WDT:  return "TASK_WDT(태스크 워치독)";
+        case ESP_RST_WDT:       return "WDT(기타 워치독)";
+        case ESP_RST_BROWNOUT:  return "BROWNOUT(전원 딥 — 전원 마진 부족)";
+        case ESP_RST_DEEPSLEEP: return "DEEPSLEEP(딥슬립 복귀)";
+        case ESP_RST_EXT:       return "EXT(외부 리셋핀)";
+        default:                return "UNKNOWN";
     }
-    out.printf("[BOOT] reset_reason=%d %s\n", (int)r, name);
+}
+
+// ---------------------------------------------------------------------------
+// 부팅 배너 — 로그 레벨과 무관하게 항상 출력한다.
+// "지금 무슨 펌웨어가, 어떤 신원으로, 어떤 설정으로 돌고 있는가"는 ERROR 레벨로
+// 조여놓은 단말에서도 알아야 진단이 시작된다.
+//
+// 2부로 나눈 이유: 모뎀 초기화가 수십 초 걸리거나 아예 실패할 수 있어서,
+// 펌웨어 버전/리셋 원인은 모뎀을 건드리기 전에 먼저 남긴다.
+// ---------------------------------------------------------------------------
+static void printBootHeader()
+{
+    SerialMon.println();
+    SerialMon.println("============================================================");
+    SerialMon.printf ("  Keyplus Diagnostic   fw %s\n", FW_VERSION);
+    SerialMon.printf ("  build      : %s %s\n", __DATE__, __TIME__);
+    SerialMon.printf ("  reset      : %s\n", resetReasonStr());
+    SerialMon.println("============================================================");
+}
+
+static void printFeatureLine()
+{
+    SerialMon.print("  기능       :");
+#if FEATURE_GPS
+    SerialMon.print(" GPS");
+#endif
+#if FEATURE_OBD2
+    SerialMon.print(" OBD2");
+#endif
+#if FEATURE_CARKEY
+    SerialMon.print(" CARKEY");
+#endif
+#if FEATURE_LTE
+    SerialMon.print(" LTE");
+#endif
+#if FEATURE_STATUS_LED
+    SerialMon.print(" LED");
+#endif
+#if FEATURE_OTA
+    SerialMon.print(" OTA");
+#endif
+#if FEATURE_BLE
+    SerialMon.print(" BLE");
+#endif
+    SerialMon.println();
+}
+
+// 모뎀 준비 + 프로비저닝 이후 호출. 하드웨어 신원 + 접속 대상 + 주기 설정 요약.
+static void printDeviceInfo(TinyGsm &modem, const char *modemName)
+{
+    String imei = modem.getIMEI(); imei.trim();
+    char mac[13];
+    snprintf(mac, sizeof(mac), "%012llX", (unsigned long long)ESP.getEfuseMac());
+
+    SerialMon.println("------------------ 단말 정보 -------------------------------");
+    SerialMon.printf("  device_id  : %s (%s)\n", Prov::deviceId().c_str(),
+                     Prov::hasValidId() ? "valid" : "none/invalid");
+    // 비밀번호 원문은 DEBUG에서만 — 평상시 로그에 크리덴셜을 남기지 않는다.
+    if (LOG_ON(Log::L_DEBUG)) {
+        SerialMon.printf("  mqtt_pw    : %s\n",
+                         Prov::mqttPassword().isEmpty() ? "(none)" : Prov::mqttPassword().c_str());
+    } else {
+        SerialMon.printf("  mqtt_pw    : %s\n",
+                         Prov::mqttPassword().isEmpty() ? "(none)" : "(set)");
+    }
+    SerialMon.printf("  imei       : %s\n", imei.length() ? imei.c_str() : "(조회 실패)");
+    SerialMon.printf("  mac        : %s\n", mac);
+    SerialMon.printf("  modem      : %s\n", modemName);
+#if FEATURE_LTE
+    SerialMon.printf("  sim        : %d (1=ready 2=locked)\n", modem.getSimStatus());
+    SerialMon.printf("  broker     : %s:%d (%s)\n", MQTT_HOST, MQTT_PORT,
+                     MQTT_USE_TLS ? "TLS" : "평문");
+    SerialMon.printf("  telemetry  : %lums   keepalive %ds\n",
+                     (unsigned long)Cfg::telemetryIntervalMs(), Cfg::keepaliveS());
+#endif
+#if FEATURE_OBD2
+    SerialMon.printf("  obd poll   : %lums (링크실패 시 %lus부터 백오프)\n",
+                     (unsigned long)OBD2_POLL_INTERVAL_MS,
+                     (unsigned long)(OBD2_LINK_RETRY_MS / 1000));
+#endif
+#if FEATURE_GPS
+    SerialMon.printf("  gps poll   : %lums(주행) / %lums(정차)\n",
+                     (unsigned long)GPS_POLL_INTERVAL_MS, (unsigned long)GPS_POLL_IDLE_MS);
+#endif
+    printFeatureLine();
+    SerialMon.printf("  log level  : %s — 'log debug' 로 상세 출력\n",
+                     Log::levelName(Log::level()));
+    SerialMon.println("------------------------------------------------------------");
+}
+
+// ---------------------------------------------------------------------------
+// 주기 상태 한 줄 — INFO 레벨의 기본 출력.
+// 모듈별 폴 덤프를 DEBUG로 내린 대신, 이 한 줄만 보고 "지금 정상인가"를 판단할 수 있게 한다.
+// ---------------------------------------------------------------------------
+static void printStatusLine(bool connected, uint32_t seq, const char *pubResult)
+{
+    if (!LOG_ON(Log::L_INFO)) return;
+
+    char gpsBuf[24];
+#if FEATURE_GPS
+    // 측위 중이면 위성수, 놓쳤지만 캐시가 있으면 그 사실까지 구분해 보여준다
+    // (telemetry에는 캐시 좌표가 실리므로 "왜 좌표가 안 변하나"를 여기서 알 수 있어야 한다).
+    if (g_gpsFixNow)          snprintf(gpsBuf, sizeof(gpsBuf), "fix/%dsat", g_lastFix.vsat);
+    else if (g_lastFix.valid) snprintf(gpsBuf, sizeof(gpsBuf), "nofix(캐시)");
+    else                      snprintf(gpsBuf, sizeof(gpsBuf), "nofix");
+#else
+    snprintf(gpsBuf, sizeof(gpsBuf), "off");
+#endif
+
+    char obdBuf[40];
+    if (!g_obd.valid) {
+        snprintf(obdBuf, sizeof(obdBuf), "down");
+    } else {
+        int n = snprintf(obdBuf, sizeof(obdBuf), "up");
+        if (g_obd.has_rpm)   n += snprintf(obdBuf + n, sizeof(obdBuf) - n, " rpm=%.0f", g_obd.rpm);
+        if (g_obd.has_speed) n += snprintf(obdBuf + n, sizeof(obdBuf) - n, " spd=%d", g_obd.speed);
+    }
+
+#if FEATURE_LTE
+    // rssi는 마지막 발행 때 읽어둔 값 — 상태 출력 때문에 AT 왕복이 늘지 않게 한다.
+    SerialMon.printf("[STAT] up=%lus mqtt=%s rssi=%d gps=%s obd=%s seq=%lu %s\n",
+                     (unsigned long)(millis() / 1000UL),
+                     connected ? "on" : "OFF",
+                     Mqtt::lastRssi(), gpsBuf, obdBuf,
+                     (unsigned long)seq, pubResult);
+#else
+    (void)connected; (void)seq; (void)pubResult;
+    SerialMon.printf("[STAT] up=%lus gps=%s obd=%s\n",
+                     (unsigned long)(millis() / 1000UL), gpsBuf, obdBuf);
+#endif
 }
 
 // ---------------------------------------------------------------------------
@@ -166,10 +308,10 @@ static void modemPowerOn()
 // AT 응답이 올 때까지 대기. 30회 실패 시 PWRKEY 재펄스.
 static void modemWaitReady()
 {
-    SerialMon.println("[MODEM] waiting for AT...");
+    LOGI(SerialMon, "[MODEM] AT 응답 대기...\n");
     int retry = 0;
     while (!modem.testAT(1000)) {
-        SerialMon.print(".");
+        LOGD(SerialMon, ".");
         if (retry++ > 30) {
             digitalWrite(BOARD_PWRKEY_PIN, LOW);  delay(100);
             digitalWrite(BOARD_PWRKEY_PIN, HIGH); delay(MODEM_POWERON_PULSE_WIDTH_MS);
@@ -177,50 +319,35 @@ static void modemWaitReady()
             retry = 0;
         }
     }
-    SerialMon.println("\n[MODEM] AT ready");
+    LOGI(SerialMon, "\n[MODEM] AT 준비됨\n");
 }
 
 // 모뎀이 내장 GPS 지원 모델인지 확인. A7670G(GPS 미지원)면 정지.
+static String g_modemName = "UNKNOWN";   // 부팅 배너에 실을 모뎀 모델명
+
 static void modemCheckGpsCapable()
 {
     String name = "UNKNOWN";
     while (true) {
         name = modem.getModemName();
         if (name == "UNKNOWN") {
-            SerialMon.println("[MODEM] name unavailable, retrying");
+            LOGD(SerialMon, "[MODEM] 모델명 조회 실패 — 재시도\n");
             delay(1000);
             continue;
         }
         // A7670G 계열은 내장 측위 미지원 → 외장 GPS 예제 필요.
         if (name.startsWith("A7670G")) {
             while (true) {
-                SerialMon.println("[MODEM] this modem has NO built-in GPS (A7670G). "
-                                  "Use ExternalGPS_A7670G_Only. Halting.");
+                // 하드웨어 자체가 요구사항을 못 맞추는 상황 → 레벨과 무관하게 계속 알린다.
+                SerialMon.println("[MODEM] 이 모뎀은 내장 GPS가 없습니다(A7670G). "
+                                  "ExternalGPS_A7670G_Only 예제를 쓰세요. 정지.");
                 delay(5000);
             }
         }
-        SerialMon.print("[MODEM] model: ");
-        SerialMon.println(name);
+        g_modemName = name;
+        LOGD(SerialMon, "[MODEM] model: %s\n", name.c_str());
         break;
     }
-}
-
-// 단말 신원 요약 출력: imei/mac(하드웨어) + device_id/mqtt_pw(NVS). 모뎀 준비 후 호출.
-static void printIdentity(TinyGsm &modem, const char *when)
-{
-    String imei = modem.getIMEI(); imei.trim();
-    uint64_t efuse = ESP.getEfuseMac();
-    char mac[13];
-    snprintf(mac, sizeof(mac), "%012llX", (unsigned long long)efuse);
-    SerialMon.println("---------------- 단말 신원 ----------------");
-    SerialMon.printf("  시점       : %s\n", when);
-    SerialMon.printf("  imei       : %s\n", imei.length() ? imei.c_str() : "(조회 실패)");
-    SerialMon.printf("  mac        : %s\n", mac);
-    SerialMon.printf("  device_id  : %s (%s)\n", Prov::deviceId().c_str(),
-                     Prov::hasValidId() ? "valid" : "none/invalid");
-    SerialMon.printf("  mqtt_pw    : %s\n",
-                     Prov::mqttPassword().isEmpty() ? "(none)" : Prov::mqttPassword().c_str());
-    SerialMon.println("-------------------------------------------");
 }
 
 // ---------------------------------------------------------------------------
@@ -228,9 +355,11 @@ void setup()
 {
     SerialMon.begin(115200);
     delay(100);
-    SerialMon.println("\n=== Keyplus Diagnostic — GPS + LTE bring-up ===");
-    // 부팅 첫 줄로 리셋 원인 기록 — 차량 5V 재부팅(BROWNOUT/WDT) 판별용.
-    printResetReason(SerialMon);
+    // 로그 레벨을 먼저 로드해야 이후 LOGx 호출이 의도한 레벨로 걸러진다.
+    Log::begin();
+    // 펌웨어 버전과 리셋 원인은 모뎀을 건드리기 전에 남긴다 — 모뎀 초기화에서 멈춰도
+    // "무엇이 왜 재부팅했는가"는 알 수 있어야 한다(차량 5V BROWNOUT/WDT 추적).
+    printBootHeader();
 
     // 상태표시 LED — 부팅 진입 즉시 solid ON(살아있음 표시).
     Led::begin();
@@ -243,7 +372,7 @@ void setup()
 
 #if FEATURE_OBD2
     // OBD2/CAN 링크 초기화(모뎀 무관, TWAI). 차량 미연결/시동 꺼짐이면 실패 → loop 재시도.
-    SerialMon.println("[OBD2] CAN 링크 초기화...");
+    LOGD(SerialMon, "[OBD2] CAN 링크 초기화...\n");
     Obd2::begin(SerialMon);
 #endif
 
@@ -257,8 +386,6 @@ void setup()
 
     // 단말 신원 로드(NVS). Debug Console에서 'setid vt-...'로 설정 가능('help' 참고).
     Prov::begin();
-    SerialMon.printf("[PROV] device_id=%s (%s)\n",
-                     Prov::deviceId().c_str(), Prov::hasValidId() ? "valid" : "INVALID");
     Prov::printHelp(SerialMon);
     // 크리덴셜 미확보(device_id/pw 없음) → 미프로비저닝 표시. LTE up 이후 자동 발급(아래).
     if (!Prov::hasCredentials()) Led::set(Led::State::UNPROVISIONED);
@@ -269,24 +396,23 @@ void setup()
 
     modemWaitReady();
 
-    // 부팅 신원 스냅샷: imei/mac + 현재 NVS의 device_id/pw(발급 전이면 none).
-    printIdentity(modem, "부팅");
-
 #if FEATURE_GPS
-    modemCheckGpsCapable();
+    modemCheckGpsCapable();   // 모델명 확보(배너에 실림) + A7670G(GPS 미지원) 차단
     // GNSS를 먼저 켜서 아래 LTE 등록(최대 수십 초) 대기 동안 위성을 포착하게 한다.
-    SerialMon.println("[GPS] enabling GNSS...");
+    LOGD(SerialMon, "[GPS] GNSS 활성화...\n");
     while (!Gps::begin(modem)) {
-        SerialMon.println("[GPS] enable failed, retrying...");
+        LOGW(SerialMon, "[GPS] GNSS 활성화 실패 — 재시도\n");
         delay(1000);
     }
-    SerialMon.println("[GPS] GNSS enabled");
+    LOGI(SerialMon, "[GPS] GNSS 활성화됨\n");
 #endif
 
+    // 하드웨어 신원 + 접속 대상 + 주기 설정 요약. 레벨과 무관하게 항상 출력한다.
+    printDeviceInfo(modem, g_modemName.c_str());
+
 #if FEATURE_LTE
-    // SIM 상태 먼저 확인 — 미삽입/잠금이면 등록이 무의미하게 타임아웃된다.
-    SerialMon.printf("[LTE] SIM status: %d (1=ready, 2=locked)\n", modem.getSimStatus());
-    // SIM PIN이 걸려 있으면 아래 주석 해제: modem.simUnlock("0000");
+    // SIM 상태는 위 배너에 이미 실렸다. SIM PIN이 걸려 있으면 아래 주석 해제:
+    // modem.simUnlock("0000");
 
     // 증분 A: 등록 → PDP → 평문 HTTP GET 으로 LG U+ 유심 데이터패스 검증.
     Led::set(Led::State::PROVISIONING);   // 망 등록/접속 시도 중 — 느린 점멸
@@ -296,14 +422,14 @@ void setup()
         Lte::printStatus(st, SerialMon);
         int code = Lte::httpGetCheck(modem, SerialMon);
         if (code == 200) {
-            SerialMon.println("[LTE] ✅ 데이터패스 검증 성공 (HTTP 200)");
+            LOGI(SerialMon, "[LTE] 데이터패스 검증 성공 (HTTP 200)\n");
         } else {
-            SerialMon.printf("[LTE] ⚠️ HTTP 응답 %d — 데이터는 되나 응답 확인 필요\n", code);
+            LOGW(SerialMon, "[LTE] HTTP 응답 %d — 데이터는 되나 응답 확인 필요\n", code);
         }
 
         // 작업1: 크리덴셜 없으면 서버에서 device_id/pw 자동 발급(/internal/provision).
         if (!Prov::hasCredentials()) {
-            SerialMon.println("[PROV] 크리덴셜 없음 → 자동 프로비저닝 시도");
+            LOGI(SerialMon, "[PROV] 크리덴셜 없음 → 자동 프로비저닝 시도\n");
             Prov::ProvResult pr = Prov::provisionOverHttp(modem, SerialMon);
             if (pr == Prov::ProvResult::REJECTED) {
                 Led::set(Led::State::REJECTED);   // 403 — allowlist 문제, 재시도 안 함
@@ -318,24 +444,25 @@ void setup()
         // 증분 B: MQTT/TLS 접속(서버 CA 검증) + status online/LWT. 크리덴셜 확보 시에만 시도.
         if (Prov::hasCredentials()) {
             if (Mqtt::begin(modem, SerialMon)) {
-                SerialMon.println("[MQTT] ✅ 접속 성공 — telemetry 발행 시작");
+                LOGI(SerialMon, "[MQTT] telemetry 발행 시작\n");
                 Led::set(Led::State::MQTT_OK);    // 정상 접속 — heartbeat
                 Cmd::subscribe(modem, SerialMon); // v1/{id}/cmd 구독
                 // OTA pending ack는 loop에서 hasPending() 가드로 flush(접속 확인 후).
             } else {
-                SerialMon.println("[MQTT] ❌ 접속 실패 — 위 로그(CA/네트워크) 확인");
+                LOGW(SerialMon, "[MQTT] 접속 실패 — 위 로그(CA/네트워크) 확인\n");
                 Led::set(Led::State::COMM_ERROR); // 통신 오류 — 3회 버스트
             }
         } else {
-            SerialMon.println("[MQTT] ⏸ 크리덴셜 없음 → MQTT 보류(프로비저닝 후 loop에서 접속)");
+            LOGI(SerialMon, "[MQTT] 크리덴셜 없음 → 보류(프로비저닝 후 loop에서 접속)\n");
         }
     } else {
-        SerialMon.println("[LTE] ❌ 브링업 실패 — 위 로그(APN/신호/SIM) 확인");
+        LOGE(SerialMon, "[LTE] 브링업 실패 — 위 로그(APN/신호/SIM) 확인\n");
         Led::set(Led::State::COMM_ERROR);     // 통신 오류 — 3회 버스트
     }
 
-    // 프로비저닝/접속 이후 최종 신원(발급된 device_id/pw 확인).
-    printIdentity(modem, "프로비저닝 후");
+    // 발급이 일어났으면 최종 device_id를 한 줄로 확인(전체 표는 위 배너에 이미 있음).
+    LOGI(SerialMon, "[PROV] device_id=%s (%s)\n", Prov::deviceId().c_str(),
+         Prov::hasValidId() ? "valid" : "INVALID");
 #endif
 }
 
@@ -364,7 +491,7 @@ void loop()
                 Obd2::print(g_obd, SerialMon);   // 응답받은 전체 항목 + VIN 출력
             } else {
                 // 폴 전체 무응답 → 링크 끊김(시동 off 등) → 재확립 경로로.
-                SerialMon.println("[OBD2] 폴 무응답 — 링크 재확인");
+                LOGI(SerialMon, "[OBD2] 링크 끊김(폴 무응답) — 재확립 대기\n");
                 Obd2::end();
                 g_obd = Obd2::Data();   // valid=false → telemetry에서 obd 생략
                 lastObdRetry = now;
@@ -379,7 +506,7 @@ void loop()
         } else {
             obdRetryDelay *= 2;
             if (obdRetryDelay > OBD2_LINK_RETRY_CAP_MS) obdRetryDelay = OBD2_LINK_RETRY_CAP_MS;
-            SerialMon.printf("[OBD2] 다음 재시도 %lus 후\n", (unsigned long)(obdRetryDelay / 1000));
+            LOGD(SerialMon, "[OBD2] 다음 재시도 %lus 후\n", (unsigned long)(obdRetryDelay / 1000));
         }
     }
 #endif
@@ -403,6 +530,7 @@ void loop()
     static uint32_t lastConnTry = 0;
     static bool     wasConnected = false;
     static uint32_t nextPubAt = 0;
+    static uint32_t lastStatAt = 0;   // [STAT] 마지막 출력 시각(유휴 주기 출력용)
 
     bool connected = Mqtt::isConnected(modem);
 
@@ -412,8 +540,13 @@ void loop()
     // 첫 telemetry를 5초 뒤로 잡는다(발행끼리 충돌 방지 — 모뎀은 publish 1건씩).
     if (connected && !wasConnected) {
         nextPubAt = now + 5000;
+        LOGI(SerialMon, "[MQTT] 재접속됨\n");
         Led::set(Led::State::MQTT_OK);          // 재접속 성공 → 정상(heartbeat)
         Cmd::subscribe(modem, SerialMon);       // clean_session=1 → 재접속마다 재구독
+    }
+    if (!connected && wasConnected) {
+        // 끊김은 상태 전이 — 조용히 백오프에 들어가면 로그만 보고는 멈춘 것과 구분이 안 된다.
+        LOGW(SerialMon, "[MQTT] 연결 끊김 — 백오프 재접속 시작\n");
     }
     wasConnected = connected;
 
@@ -441,7 +574,7 @@ void loop()
             } else {
                 Led::set(Led::State::PROVISIONING); // 접속/발급 시도 중 → 느린 점멸
                 if (!Lte::isUp(modem)) {
-                    SerialMon.println("[LTE] link down — 재브링업");
+                    LOGW(SerialMon, "[LTE] 링크 다운 — 재브링업\n");
                     Lte::begin(modem, SerialMon);
                 }
                 // 크리덴셜 없으면 MQTT 전에 먼저 발급받는다(LTE up 상태에서).
@@ -473,10 +606,20 @@ void loop()
         pollGps(now);
 #endif
         bool withMeta = !metaSent;   // 최초 1회만 하드웨어 메타 포함
-        if (Mqtt::publishTelemetry(modem, g_lastFix, g_obd, seq, withMeta, SerialMon)) {
+        bool pubOk = Mqtt::publishTelemetry(modem, g_lastFix, g_obd, seq, withMeta, SerialMon);
+        if (pubOk) {
             if (withMeta) metaSent = true;
             seq++;
         }
+        // 주기 상태 한 줄 — 모듈별 폴 덤프를 DEBUG로 내린 대신 여기서 전체 상태를 요약한다.
+        printStatusLine(true, seq, pubOk ? "pub-ok" : "pub-FAIL");
+        lastStatAt = now;
+    }
+
+    // 미접속이 길어지면 [STAT]가 아예 안 나와 멈춘 것처럼 보인다 → 유휴에도 주기적으로 남긴다.
+    if (!connected && now - lastStatAt >= STATUS_LINE_IDLE_MS) {
+        lastStatAt = now;
+        printStatusLine(false, seq, "-");
     }
 #endif
 

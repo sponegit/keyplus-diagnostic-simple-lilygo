@@ -4,6 +4,7 @@
  */
 #include "obd2.h"
 #include "config.h"
+#include "log.h"
 #include "driver/twai.h"
 #include <string.h>
 
@@ -46,6 +47,7 @@ static bool isExtPid(uint8_t pid) { return pid > 0x20; }
 static void dumpFrame(const char *dir, const twai_message_t &m)
 {
 #if OBD2_DUMP_RAW
+    if (!LOG_ON(Log::L_DEBUG)) return;
     Serial.printf("[CAN] %s %03X [%d]", dir, (unsigned)m.identifier, m.data_length_code);
     for (int i = 0; i < m.data_length_code; i++) Serial.printf(" %02X", m.data[i]);
     Serial.println();
@@ -76,11 +78,11 @@ static bool install(int kbps, Stream &log)
     twai_timing_config_t t = (kbps == 250) ? t250 : t500;
     twai_filter_config_t f = TWAI_FILTER_CONFIG_ACCEPT_ALL();  // ID 필터는 소프트웨어로
     if (twai_driver_install(&g, &t, &f) != ESP_OK) {
-        log.printf("[OBD2] driver_install @%dk 실패\n", kbps);
+        LOGE(log, "[OBD2] driver_install @%dk 실패\n", kbps);
         return false;
     }
     if (twai_start() != ESP_OK) {
-        log.println("[OBD2] twai_start 실패");
+        LOGE(log, "[OBD2] twai_start 실패\n");
         twai_driver_uninstall();
         return false;
     }
@@ -176,10 +178,10 @@ static bool readVin(Stream &log)
         for (int i = 0; i < vlen; i++) s_vin[i] = (char)payload[3 + i];
         s_vin[vlen] = 0;
         s_hasVin = true;
-        log.printf("[OBD2] VIN=%s\n", s_vin);
+        LOGI(log, "[OBD2] VIN=%s\n", s_vin);
         return true;
     }
-    log.printf("[OBD2] VIN 조회 실패 (FF=%d got=%d/%d) — 재시도\n", haveFF ? 1 : 0, got, total);
+    LOGD(log, "[OBD2] VIN 조회 실패 (FF=%d got=%d/%d) — 재시도\n", haveFF ? 1 : 0, got, total);
     return false;
 }
 
@@ -239,15 +241,15 @@ bool begin(Stream &log)
                           ((uint32_t)r[2] << 8) | r[3];
             s_bitrate = rates[i];
             s_lastGood = rates[i];   // 다음 재시도에서 이 속도부터
-            log.printf("[OBD2] ✅ 링크 @%dkbps, 지원PID(01-20)=0x%08X\n",
-                       s_bitrate, s_supported);
+            LOGI(log, "[OBD2] 링크 확립 @%dkbps 지원PID(01-20)=0x%08X\n",
+                 s_bitrate, s_supported);
             if (!s_hasVin) readVin(log);   // VIN 1회 조회(ISO-TP), 캐시
             return true;
         }
-        log.printf("[OBD2] @%dkbps 무응답 — 폴백\n", rates[i]);
+        LOGD(log, "[OBD2] @%dkbps 무응답 — 폴백\n", rates[i]);
         end();
     }
-    log.println("[OBD2] ❌ 링크 미확립 (트랜시버 배선/차량 연결/시동 확인)");
+    LOGW(log, "[OBD2] 링크 미확립 (트랜시버 배선/차량 연결/시동 확인)\n");
     return false;
 }
 
@@ -279,7 +281,7 @@ bool read(Data &out, Stream &log)
             consecMiss++;
             if (isExtPid(pid) && s_extMiss[i] < OBD2_EXT_PID_MISS_LIMIT) {
                 if (++s_extMiss[i] >= OBD2_EXT_PID_MISS_LIMIT) {
-                    log.printf("[OBD2] PID 0x%02X 미지원 확정 — 링크 재확립까지 요청 생략\n", pid);
+                    LOGD(log, "[OBD2] PID 0x%02X 미지원 확정 — 링크 재확립까지 요청 생략\n", pid);
                 }
             }
             // 링크가 끊기면(시동 OFF 등) 남은 PID도 전부 타임아웃이라 폴 하나가
@@ -337,6 +339,9 @@ bool read(Data &out, Stream &log)
 
 void print(const Data &d, Stream &log)
 {
+    // 폴 1회분 전체 항목 덤프 — DEBUG 전용. 평상시 주요 값은 loop의 [STAT] 한 줄에 실린다.
+    if (!LOG_ON(Log::L_DEBUG)) return;
+
     if (!d.valid) { log.println("[OBD2] (링크 없음/무응답)"); return; }
     log.print("[OBD2]");
     if (d.has_rpm)      log.printf(" rpm=%.0f", d.rpm);

@@ -4,6 +4,7 @@
  */
 #include "carkey.h"
 #include "config.h"
+#include "log.h"
 
 namespace Carkey {
 
@@ -56,14 +57,16 @@ void begin()
     digitalWrite(PIN_KEY_LOCK,   RELEASE_LEVEL);
     pinMode(PIN_KEY_UNLOCK, PIN_MODE_SEL);
     digitalWrite(PIN_KEY_UNLOCK, RELEASE_LEVEL);
-    Serial.printf("[KEY] begin — lock=GPIO%d unlock=GPIO%d, drive=%s, released\n",
-                  PIN_KEY_LOCK, PIN_KEY_UNLOCK, DRIVE_NAME);
+    // 배선/극성 확인용 — 부팅 배너에 이미 기능 목록이 나오므로 상세는 DEBUG.
+    LOGD(Serial, "[KEY] begin — lock=GPIO%d unlock=GPIO%d, drive=%s, released\n",
+         PIN_KEY_LOCK, PIN_KEY_UNLOCK, DRIVE_NAME);
 }
 
 void press(Button b, uint16_t holdMs)
 {
     const int pin = pinFor(b);
-    Serial.printf("[KEY] %s press (%ums)\n", nameFor(b), holdMs);
+    // 실제 차키 동작은 앱 상태 전이 — 평상시에도 남아야 원격 명령 결과를 추적할 수 있다.
+    LOGI(Serial, "[KEY] %s press (%ums)\n", nameFor(b), holdMs);
     digitalWrite(pin, PRESS_LEVEL);     // 라인을 누름 레벨로 (DIRECT=LOW / MOSFET=HIGH)
     delay(holdMs);                      // 유지(블로킹 — LED는 Ticker라 무관)
     digitalWrite(pin, RELEASE_LEVEL);   // 뗌: fob 내부 풀업 복귀 (DIRECT=Hi-Z / MOSFET=OFF)

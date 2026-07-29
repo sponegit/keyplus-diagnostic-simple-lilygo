@@ -9,6 +9,7 @@
  *   실패(재부팅 전) → result="failed" 기록 → MQTT 재접속 시 failed
  */
 #include "ota.h"
+#include "log.h"
 #include "config.h"
 #include "cmd.h"
 #include "mqtt.h"
@@ -68,7 +69,7 @@ void begin()
     // 진단: 부팅 파티션/상태.
     // (label 예: app0/app1, state: 0=NEW,1=PENDING_VERIFY,2=VALID,3=INVALID,4=ABORTED,0xff=UNDEFINED)
     // s_pendingVerify=true면 확정(onHealthy) 또는 期限 초과 강제 롤백(tick) 대상.
-    Serial.printf("[OTA] boot partition=%s state=%d pendingVerify=%d\n",
+    LOGD(Serial, "[OTA] boot partition=%s state=%d pendingVerify=%d\n",
                   running ? running->label : "?", (int)st, s_pendingVerify ? 1 : 0);
 }
 
@@ -80,7 +81,7 @@ void onHealthy(Stream &log)
     // 헬스체크 통과(MQTT 접속) → 새 이미지 정상 확정. 부트로더 롤백 취소.
     esp_err_t e = esp_ota_mark_app_valid_cancel_rollback();
     s_confirmed = true;
-    log.printf("[OTA] 새 이미지 확정(mark_valid) %s — 롤백 취소\n",
+    LOGI(log, "[OTA] 새 이미지 확정(mark_valid) %s — 롤백 취소\n",
                e == ESP_OK ? "OK" : "err");
 }
 
@@ -89,7 +90,7 @@ void tick(Stream &log)
     // PENDING_VERIFY인데 期限 내 확정(MQTT 접속) 못 함 = 부팅되나 기능 불능 → 강제 롤백.
     if (!s_pendingVerify || s_confirmed) return;
     if (millis() - s_trialStart < OTA_CONFIRM_DEADLINE_MS) return;
-    log.printf("[OTA] ⚠️ %lus 내 헬스체크 실패 — 강제 롤백 재부팅\n",
+    LOGE(log, "[OTA] %lus 내 헬스체크 실패 — 강제 롤백 재부팅\n",
                (unsigned long)(OTA_CONFIRM_DEADLINE_MS / 1000));
     delay(200);
     esp_ota_mark_app_invalid_rollback_and_reboot();  // 직전 정상 이미지로 롤백 후 재부팅(반환 안 함)
@@ -102,11 +103,11 @@ bool start(TinyGsm &modem, Stream &log,
            const String &md5, const String &version)
 {
     if (url.isEmpty() || !url.startsWith("http")) {
-        log.printf("[OTA] 잘못된 URL: '%s' — 실패\n", url.c_str());
+        LOGE(log, "[OTA] 잘못된 URL: '%s' — 실패\n", url.c_str());
         savePending(cmdId, version, "failed");
         return false;
     }
-    log.printf("[OTA] 시작 cmd=%s ver=%s\n  url=%s\n  md5=%s\n",
+    LOGI(log, "[OTA] 시작 cmd=%s ver=%s\n  url=%s\n  md5=%s\n",
                cmdId.c_str(), version.c_str(), url.c_str(),
                md5.isEmpty() ? "(없음 — 크기만 검증)" : md5.c_str());
 
@@ -117,7 +118,7 @@ bool start(TinyGsm &modem, Stream &log,
     // ② HTTP(S) GET → 바디 크기 취득.
     modem.https_begin();
     if (!modem.https_set_url(url)) {
-        log.println("[OTA] set_url 실패");
+        LOGE(log, "[OTA] set_url 실패\n");
         modem.https_end();
         savePending(cmdId, version, "failed");
         return false;
@@ -125,16 +126,16 @@ bool start(TinyGsm &modem, Stream &log,
     size_t fwSize = 0;
     int httpCode = modem.https_get(&fwSize);
     if (httpCode != 200 || fwSize == 0) {
-        log.printf("[OTA] HTTP GET 실패 code=%d size=%u\n", httpCode, (unsigned)fwSize);
+        LOGE(log, "[OTA] HTTP GET 실패 code=%d size=%u\n", httpCode, (unsigned)fwSize);
         modem.https_end();
         savePending(cmdId, version, "failed");
         return false;
     }
-    log.printf("[OTA] 펌웨어 크기 %u bytes — 플래시 시작\n", (unsigned)fwSize);
+    LOGI(log, "[OTA] 펌웨어 크기 %u bytes — 플래시 시작\n", (unsigned)fwSize);
 
     // ③ Update 시작 + (있으면) MD5 기대값 지정 → end()에서 자동 검증.
     if (!Update.begin(fwSize)) {
-        log.printf("[OTA] Update.begin 실패(공간 부족?) err=%d\n", Update.getError());
+        LOGE(log, "[OTA] Update.begin 실패(공간 부족?) err=%d\n", Update.getError());
         modem.https_end();
         savePending(cmdId, version, "failed");
         return false;
@@ -151,7 +152,7 @@ bool start(TinyGsm &modem, Stream &log,
         int len = modem.https_body(buf, OTA_CHUNK_SIZE);
         if (len > 0) {
             if (Update.write(buf, len) != (size_t)len) {
-                log.printf("[OTA] Update.write 실패 err=%d — 중단\n", Update.getError());
+                LOGE(log, "[OTA] Update.write 실패 err=%d — 중단\n", Update.getError());
                 Update.abort();
                 modem.https_end();
                 savePending(cmdId, version, "failed");
@@ -162,11 +163,11 @@ bool start(TinyGsm &modem, Stream &log,
             int pct = (int)((total * 100ULL) / fwSize);
             if (pct - lastPct >= OTA_PROGRESS_STEP_PCT || pct == 100) {
                 lastPct = pct;
-                log.printf("[OTA] %d%% (%u/%u)\n", pct, (unsigned)total, (unsigned)fwSize);
+                LOGI(log, "[OTA] %d%% (%u/%u)\n", pct, (unsigned)total, (unsigned)fwSize);
             }
         } else {
             if (millis() - lastAdvance > OTA_STALL_TIMEOUT_MS) {
-                log.printf("[OTA] 다운로드 무진전 %lus — 타임아웃 실패(%u/%u)\n",
+                LOGE(log, "[OTA] 다운로드 무진전 %lus — 타임아웃 실패(%u/%u)\n",
                            (unsigned long)(OTA_STALL_TIMEOUT_MS / 1000),
                            (unsigned)total, (unsigned)fwSize);
                 Update.abort();
@@ -181,11 +182,11 @@ bool start(TinyGsm &modem, Stream &log,
 
     // ⑤ 마감 — MD5/크기 검증 포함. 실패면 실행 이미지는 그대로(재부팅 안 함).
     if (!Update.end(true)) {
-        log.printf("[OTA] Update.end 실패 err=%d (MD5 불일치/불완전) — 실패\n", Update.getError());
+        LOGE(log, "[OTA] Update.end 실패 err=%d (MD5 불일치/불완전) — 실패\n", Update.getError());
         savePending(cmdId, version, "failed");
         return false;
     }
-    log.println("[OTA] ✅ 플래시 완료·검증 통과 — 재부팅 예약");
+    LOGI(log, "[OTA] 플래시 완료·검증 통과 — 재부팅 예약\n");
 
     // ⑥ 성공: 결과 미정(result="")으로 pending 저장 → 부팅 후 버전 검증. 그 뒤 재부팅.
     savePending(cmdId, version, "");
@@ -217,7 +218,7 @@ void flushPendingAck(TinyGsm &modem, Stream &log)
         bool ok = ver.isEmpty() || (ver == String(FW_VERSION));
         result = ok ? "done" : "failed";
     }
-    log.printf("[OTA] pending ack: cmd=%s 기대=%s 실행=%s → %s\n",
+    LOGI(log, "[OTA] pending ack: cmd=%s 기대=%s 실행=%s → %s\n",
                cmdId.c_str(), ver.isEmpty() ? "(미지정)" : ver.c_str(),
                FW_VERSION, result);
 

@@ -29,6 +29,11 @@ bool begin(TinyGsm &modem, Stream &log);
 // 브로커 연결 유지 여부.
 bool isConnected(TinyGsm &modem);
 
+// 마지막 telemetry 발행 시점에 읽은 망 상태. loop의 [STAT] 한 줄이 재사용해
+// 상태 출력 때문에 AT 왕복이 늘지 않게 한다(발행 전이면 0).
+int lastRssi();
+int lastReg();
+
 // 콜백/keepalive 펌핑. loop 매 틱 호출.
 void handle(TinyGsm &modem);
 

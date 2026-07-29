@@ -3,6 +3,7 @@
  * @brief     device_id NVS 저장 + 시리얼 콘솔 입력 구현.
  */
 #include "provisioning.h"
+#include "log.h"
 #include "config.h"
 #include <Preferences.h>
 #include <ArduinoHttpClient.h>   // TinyGsmClient 위 평문 HTTP (lte.cpp와 동일 스택)
@@ -101,12 +102,12 @@ static bool uploadProvCa(TinyGsm &modem, Stream &log)
     if (modem.waitResponse(10000UL, ">") == 1) {
         modem.stream.write(ca);
         if (modem.waitResponse() != 1) {
-            log.println("[PROV] CA 업로드 실패");
+            LOGE(log, "[PROV] CA 업로드 실패\n");
             return false;
         }
-        log.println("[PROV] CA 업로드 완료(ca_cert.pem)");
+        LOGD(log, "[PROV] CA 업로드 완료(ca_cert.pem)\n");
     } else {
-        log.println("[PROV] CA 다운로드 프롬프트 없음 — 기존 ca_cert.pem 재사용 가정");
+        LOGD(log, "[PROV] CA 다운로드 프롬프트 없음 — 기존 ca_cert.pem 재사용 가정\n");
     }
     // ② SSL ctx0: CA 바인딩 + 서버 인증 + 부팅 시각 미동기 대비 유효기간 검증 완화.
     modem.sendAT("+CSSLCFG=\"cacert\",0,\"ca_cert.pem\"");   modem.waitResponse();
@@ -122,7 +123,7 @@ ProvResult provisionOverHttp(TinyGsm &modem, Stream &log)
     String imei = modem.getIMEI();
     imei.trim();
     if (imei.isEmpty()) {
-        log.println("[PROV] IMEI 조회 실패 — 네트워크 오류로 처리(재시도)");
+        LOGW(log, "[PROV] IMEI 조회 실패 — 네트워크 오류로 처리(재시도)\n");
         return ProvResult::NETWORK_ERROR;
     }
     uint64_t efuse = ESP.getEfuseMac();
@@ -146,12 +147,12 @@ ProvResult provisionOverHttp(TinyGsm &modem, Stream &log)
     uploadProvCa(modem, log);
 
     String url = String("https://") + PROVISION_HOST + ":" + PROVISION_PORT + PROVISION_PATH;
-    log.printf("[PROV] provision POST %s\n", url.c_str());
-    log.printf("[PROV]   body=%s\n", body.c_str());
+    LOGD(log, "[PROV] provision POST %s\n", url.c_str());
+    LOGD(log, "[PROV]   body=%s\n", body.c_str());
 
     modem.https_begin();
     if (!modem.https_set_url(url)) {
-        log.println("[PROV] https_set_url 실패 — 네트워크 오류");
+        LOGE(log, "[PROV] https_set_url 실패 — 네트워크 오류\n");
         modem.https_end();
         return ProvResult::NETWORK_ERROR;
     }
@@ -160,14 +161,14 @@ ProvResult provisionOverHttp(TinyGsm &modem, Stream &log)
     resp   = modem.https_body();
     modem.https_end();
     if (status < 0) {
-        log.printf("[PROV] HTTPS POST 실패 (code=%d) — 네트워크 오류\n", status);
+        LOGW(log, "[PROV] HTTPS POST 실패 (code=%d) — 네트워크 오류\n", status);
         return ProvResult::NETWORK_ERROR;
     }
 #else
     // 평문 HTTP POST (lte.cpp httpGetCheck와 동일 스택).
-    log.printf("[PROV] provision POST http://%s:%d%s\n",
+    LOGD(log, "[PROV] provision POST http://%s:%d%s\n",
                PROVISION_HOST, PROVISION_PORT, PROVISION_PATH);
-    log.printf("[PROV]   body=%s\n", body.c_str());
+    LOGD(log, "[PROV]   body=%s\n", body.c_str());
 
     TinyGsmClient client(modem);
     HttpClient    http(client, PROVISION_HOST, PROVISION_PORT);
@@ -175,7 +176,7 @@ ProvResult provisionOverHttp(TinyGsm &modem, Stream &log)
 
     int err = http.post(PROVISION_PATH, "application/json", body);
     if (err != 0) {
-        log.printf("[PROV] connect/POST 실패 (err=%d) — 네트워크 오류\n", err);
+        LOGW(log, "[PROV] connect/POST 실패 (err=%d) — 네트워크 오류\n", err);
         http.stop();
         return ProvResult::NETWORK_ERROR;
     }
@@ -183,14 +184,14 @@ ProvResult provisionOverHttp(TinyGsm &modem, Stream &log)
     resp   = http.responseBody();
     http.stop();
 #endif
-    log.printf("[PROV] status=%d body=%s\n", status, resp.c_str());
+    LOGD(log, "[PROV] status=%d body=%s\n", status, resp.c_str());
 
     if (status == 403) {
-        log.println("[PROV] 거절(403) — allowlist 미등록/폐기. 재시도 안 함");
+        LOGE(log, "[PROV] 거절(403) — allowlist 미등록/폐기. 재시도 안 함\n");
         return ProvResult::REJECTED;
     }
     if (status != 200 && status != 201) {
-        log.printf("[PROV] 예상외 상태 %d — 네트워크/서버 오류로 처리\n", status);
+        LOGW(log, "[PROV] 예상외 상태 %d — 네트워크/서버 오류로 처리\n", status);
         return ProvResult::NETWORK_ERROR;
     }
 
@@ -200,7 +201,7 @@ ProvResult provisionOverHttp(TinyGsm &modem, Stream &log)
     String broker = jsonStr(resp, "broker_domain");  // 참고용(현재 미소비: config MQTT_HOST 사용)
 
     if (!isValidId(devId) || pw.isEmpty()) {
-        log.println("[PROV] 응답 파싱 실패(device_id/mqtt_password 누락) — 재시도");
+        LOGE(log, "[PROV] 응답 파싱 실패(device_id/mqtt_password 누락) — 재시도\n");
         return ProvResult::NETWORK_ERROR;
     }
 
@@ -209,7 +210,7 @@ ProvResult provisionOverHttp(TinyGsm &modem, Stream &log)
     s_nvs.putString(KEY_DEVICE,  s_deviceId);
     s_nvs.putString(KEY_MQTT_PW, s_mqttPw);
 
-    log.printf("[PROV] ✅ 발급 성공 device_id=%s, mqtt_pw 저장됨%s\n",
+    LOGI(log, "[PROV] 발급 성공 device_id=%s, mqtt_pw 저장됨%s\n",
                s_deviceId.c_str(),
                broker.length() ? (String(" (broker=") + broker + ")").c_str() : "");
     return ProvResult::OK;
@@ -218,6 +219,8 @@ ProvResult provisionOverHttp(TinyGsm &modem, Stream &log)
 void printHelp(Stream &io)
 {
     io.println("[PROV] 명령: setid vt-YYMM-NNNN-XXX | setpw <pw> | showid | clearid | help");
+    io.printf("[LOG]  명령: log [error|warn|info|debug]   (현재 %s, 인자 없으면 조회)\n",
+              Log::levelName(Log::level()));
 #if FEATURE_CARKEY
     io.println("[KEY]  명령: lock [ms] | unlock [ms]   (ms 생략 시 기본 펄스폭)");
 #endif
@@ -262,6 +265,9 @@ static void processLine(const String &raw, Stream &io)
         io.println("[PROV] NVS 초기화 완료 → 재부팅 시 자동 재발급(프로비저닝)");
     } else if (cmd == "help") {
         printHelp(io);
+    } else if (Log::tryConsole(cmd, arg, io)) {
+        // 'log [레벨]' — 상세 출력 토글. 현장에서 재플래시 없이 진단하기 위한 것이라
+        // 변경값은 NVS에 남는다(재부팅 후에도 유지).
     } else {
 #if FEATURE_CARKEY
         // 차키 검증 명령(lock/unlock [holdMs])을 이 단일 시리얼 소유자에서 위임.
