@@ -191,7 +191,11 @@ static void printBootHeader()
     SerialMon.println();
     SerialMon.println("============================================================");
     SerialMon.printf ("  Keyplus Diagnostic   fw %s\n", FW_VERSION);
-    SerialMon.printf ("  build      : %s %s\n", __DATE__, __TIME__);
+    // build 표기는 보류 — __DATE__/__TIME__ 은 이 .ino 가 실제로 컴파일된 시각이라
+    // 증분 빌드에서 다른 파일만 고치면 갱신되지 않는다. 낡은 값이 최신 빌드처럼 보여
+    // 오히려 오해를 부르므로, 정확한 주입 방법(platformio.ini 타임스탬프)이 정해지기
+    // 전까지 끈다. 지금 스냅샷 식별은 fw 버전(FW_VERSION)으로 한다.
+    // SerialMon.printf ("  build      : %s %s\n", __DATE__, __TIME__);
     SerialMon.printf ("  reset      : %s\n", resetReasonStr());
     SerialMon.println("============================================================");
 }
