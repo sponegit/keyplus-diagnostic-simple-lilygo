@@ -157,7 +157,7 @@
 // 펌웨어 버전 — 부팅 배너/info, telemetry meta, 프로비저닝 요청 body, OTA 결과 검증에
 // 모두 이 값이 쓰인다(단일 출처). OTA 로 새 이미지를 내릴 때는 서버가 기대하는 version 과
 // 반드시 일치시켜야 한다 — 불일치면 재부팅 후 ota ack 가 failed 로 나간다(ota.cpp).
-#define FW_VERSION                  "0.2.2"
+#define FW_VERSION                  "0.2.3"
 
 // ===========================================================================
 // UART 로그 레벨 (log.h)
@@ -250,7 +250,10 @@
 #define PIN_KEY_SPARE       (23)  // 예비/원격시동 (2N7002 게이트) [현 단계 미사용 — LED와 공유]
 
 // 버튼 1회 누름 유지시간(ms). fob가 인식하는 최소 펄스 폭 이상으로 둔다.
-#define CARKEY_PRESS_MS    (120)
+// ⚠️ press()는 이 시간만큼 delay()로 블로킹한다(carkey.cpp) — 그동안 loop가 멈춰
+//    LED 패턴·콘솔·MQTT URC 펌핑이 정지한다. 늘릴 때는 그 대가를 감안할 것.
+//    콘솔 'lock 300' / 'unlock 300' 처럼 인자로 1~5000ms 범위 내 일시 변경 가능.
+#define CARKEY_PRESS_MS    (500)
 
 // ── 차키 버튼 구동 방식 선택 ──────────────────────────────────────────────
 //   DIRECT = fob 버튼패드에 GPIO 직결(오픈드레인). LOW=누름 / HIGH=Hi-Z(뗌).

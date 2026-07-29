@@ -230,7 +230,9 @@ void printHelp(Stream &io)
               Log::levelName(Log::level()));
     if (s_appHelp) s_appHelp(io);
 #if FEATURE_CARKEY
-    io.println("[KEY]  명령: lock [ms] | unlock [ms]   (ms 생략 시 기본 펄스폭)");
+    // 기본 펄스폭을 숫자로 보여준다 — 값이 바뀌어도 도움말이 낡지 않게.
+    io.printf("[KEY]  명령: lock [ms] | unlock [ms]   (ms 생략 시 기본 %dms, 1~5000)\n",
+              CARKEY_PRESS_MS);
 #endif
 }
 
