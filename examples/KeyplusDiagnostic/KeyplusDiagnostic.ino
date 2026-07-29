@@ -729,17 +729,34 @@ static void appPrintHelp(Stream &io)
     io.println("             status [gps|modem|server|obd|key]  상태 조회(생략 시 전체)");
 }
 
+// 콘솔 AT 조회 전에 대기 중인 URC 를 먼저 소화시킨다.
+// info/status 는 모뎀에 AT 를 직접 보내는데, 발행 ACK(+CMQTTPUB) 같은 URC 가
+// 스트림에 남아 있으면 TinyGSM 이 그 줄을 명령 응답으로 읽어버린다
+// (실측: imei 자리에 "+CMQTTPUB: 0,0"). Mqtt::handle 로 흘려보내면 cmd 수신 URC 는
+// 정상 처리되고 나머지는 소비되므로, 명령을 잃지 않으면서 스트림이 비워진다.
+static void drainModemUrc()
+{
+#if FEATURE_LTE
+    uint32_t t0 = millis();
+    while (modem.stream.available() && (millis() - t0) < CONSOLE_URC_DRAIN_MS) {
+        Mqtt::handle(modem);
+    }
+#endif
+}
+
 static bool appConsole(const String &cmd, const String &arg, Stream &io)
 {
     if (cmd == "info") {
         // 펌웨어 버전·빌드시각·리셋 원인(배너) + 단말 정보 표를 함께 낸다.
         // 부팅 로그를 놓쳤거나 한참 뒤에 붙었을 때, 'info' 한 번으로
         // "무슨 펌웨어가 어떤 신원으로 왜 재부팅해서 돌고 있는가"를 다 볼 수 있어야 한다.
+        drainModemUrc();
         printBootHeader();
         printDeviceInfo(modem, g_modemName.c_str());
         return true;
     }
     if (cmd == "status" || cmd == "stat") {
+        drainModemUrc();
         String w = arg; w.toLowerCase();
         statusAll(io, w);
         return true;
@@ -805,21 +822,6 @@ void loop()
     Mqtt::handle(modem);
     Cmd::handle(modem, SerialMon);   // 수신 명령 처리 + ack 발행
 
-    // cmd 구독 — 실패하면 백오프로 재시도한다. 접속이 유지되는 동안에는 재접속
-    // 상승엣지가 오지 않으므로, 여기서 재시도하지 않으면 다운링크가 영영 죽은 채로 남는다.
-    if (Mqtt::isConnected(modem) && !Cmd::isSubscribed()
-            && g_nextSubAt != 0 && (int32_t)(now - g_nextSubAt) >= 0) {
-        Cmd::subscribe(modem, SerialMon);
-        if (Cmd::isSubscribed()) {
-            g_subRetryDelay = 0;
-        } else {
-            g_subRetryDelay = g_subRetryDelay ? g_subRetryDelay * 2 : CMD_SUB_RETRY_BASE_MS;
-            if (g_subRetryDelay > CMD_SUB_RETRY_CAP_MS) g_subRetryDelay = CMD_SUB_RETRY_CAP_MS;
-            g_nextSubAt = now + g_subRetryDelay;
-            LOGW(SerialMon, "[CMD] 구독 재시도 %lus 후\n",
-                 (unsigned long)(g_subRetryDelay / 1000UL));
-        }
-    }
 
 
     bool connected = Mqtt::isConnected(modem);
@@ -842,6 +844,24 @@ void loop()
         LOGW(SerialMon, "[MQTT] 연결 끊김 — 백오프 재접속 시작\n");
     }
     g_wasConnected = connected;
+
+    // cmd 구독 — 실패하면 백오프로 재시도한다. 접속이 유지되는 동안에는 재접속
+    // 상승엣지가 오지 않으므로, 여기서 재시도하지 않으면 다운링크가 영영 죽은 채로 남는다.
+    // ⚠️ 반드시 상승엣지 처리 "뒤"에 둔다. 앞에 두면 이전 세션의 낡은 g_nextSubAt(과거 시각)
+    //    으로 즉시 한 번 구독하고, 곧이어 엣지가 플래그를 내려 5초 뒤 또 구독한다(중복 발행).
+    if (connected && !Cmd::isSubscribed()
+            && g_nextSubAt != 0 && (int32_t)(now - g_nextSubAt) >= 0) {
+        Cmd::subscribe(modem, SerialMon);
+        if (Cmd::isSubscribed()) {
+            g_subRetryDelay = 0;
+        } else {
+            g_subRetryDelay = g_subRetryDelay ? g_subRetryDelay * 2 : CMD_SUB_RETRY_BASE_MS;
+            if (g_subRetryDelay > CMD_SUB_RETRY_CAP_MS) g_subRetryDelay = CMD_SUB_RETRY_CAP_MS;
+            g_nextSubAt = now + g_subRetryDelay;
+            LOGW(SerialMon, "[CMD] 구독 재시도 %lus 후\n",
+                 (unsigned long)(g_subRetryDelay / 1000UL));
+        }
+    }
 
 #if FEATURE_OTA
     // 하드 롤백 期限 감시(매 틱): PENDING_VERIFY인데 접속 못 하고 期限 초과면 강제 롤백 재부팅.

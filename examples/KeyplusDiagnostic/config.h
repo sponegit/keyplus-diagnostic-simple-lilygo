@@ -96,6 +96,12 @@
 // 실제 상한이므로 같은 크기로 둔다(실효 상한 ≈ 1000B).
 #define CMD_PAYLOAD_MAX             (1024)
 
+// 콘솔 AT 조회(info/status) 전에 대기 중인 URC 를 소화시키는 시간 상한.
+// info/status 는 getIMEI()·getSimStatus() 같은 AT 를 직접 보내는데, 발행 ACK
+// (+CMQTTPUB) 같은 URC 가 스트림에 남아 있으면 그게 응답으로 잘못 읽힌다
+// — 실측에서 imei 자리에 "+CMQTTPUB: 0,0" 이 그대로 찍혔다.
+#define CONSOLE_URC_DRAIN_MS        (300)
+
 // --- cmd 구독 페이싱 --------------------------------------------------------
 // 접속 직후 첫 구독을 미루는 이유: connectSession이 status online을 발행하고 나면
 // 그 ACK(+CMQTTPUB URC)가 URC 스트림에 떠 있는데, 그 상태로 SUBACK을 기다리면
@@ -157,7 +163,7 @@
 // 펌웨어 버전 — 부팅 배너/info, telemetry meta, 프로비저닝 요청 body, OTA 결과 검증에
 // 모두 이 값이 쓰인다(단일 출처). OTA 로 새 이미지를 내릴 때는 서버가 기대하는 version 과
 // 반드시 일치시켜야 한다 — 불일치면 재부팅 후 ota ack 가 failed 로 나간다(ota.cpp).
-#define FW_VERSION                  "0.2.4"
+#define FW_VERSION                  "0.2.5"
 
 // ===========================================================================
 // UART 로그 레벨 (log.h)
