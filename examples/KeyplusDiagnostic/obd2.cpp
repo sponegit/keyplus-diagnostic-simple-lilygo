@@ -255,6 +255,24 @@ bool begin(Stream &log)
 
 bool isInstalled() { return s_installed; }
 
+void linkInfo(LinkInfo &out)
+{
+    out.installed    = s_installed;
+    out.bitrate      = s_bitrate;
+    out.lastGoodRate = s_lastGood;
+    out.supportedPid = s_supported;
+    out.hasVin       = s_hasVin;
+    out.vin          = s_hasVin ? s_vin : "";
+    out.vinTries     = s_vinTries;
+    out.extLatched   = 0;
+    out.extTotal     = 0;
+    for (int i = 0; i < kPollCount; i++) {
+        if (!isExtPid(kPolls[i].pid)) continue;
+        out.extTotal++;
+        if (s_extMiss[i] >= OBD2_EXT_PID_MISS_LIMIT) out.extLatched++;
+    }
+}
+
 bool read(Data &out, Stream &log)
 {
     out = Data();

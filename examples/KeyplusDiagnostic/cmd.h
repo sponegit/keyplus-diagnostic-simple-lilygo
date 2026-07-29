@@ -30,6 +30,13 @@ void subscribe(TinyGsm &modem, Stream &log);
 // loop 매틱: 수신된 명령이 있으면 파싱→실행→ack 발행 (논블로킹 진입, 실행은 짧게 블로킹).
 void handle(TinyGsm &modem, Stream &log);
 
+// --- 진단 콘솔용 상태 조회 ---------------------------------------------------
+// 구독 토픽(미구독이면 빈 문자열), 마지막 subscribe 성공 여부, 미처리 수신 유무.
+// clean_session=1이라 재접속마다 재구독하므로, "접속됐는데 명령이 안 온다"를 볼 때 쓴다.
+String topic();
+bool   isSubscribed();
+bool   hasPendingRx();
+
 // cmd/ack 1건 발행 (QoS1). ts는 내부에서 모뎀 시각(epoch)으로 채운다.
 // handle() 내부 + OTA 재부팅 후 지연 ack(Ota::flushPendingAck)에서 공용으로 쓴다.
 void sendAck(TinyGsm &modem, Stream &log, const String &cmdId, const char *result);

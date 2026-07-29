@@ -7,12 +7,16 @@
  *   2) 시리얼 콘솔 setid/setpw: 비상 오버라이드
  * 저장 구조(NVS namespace "prov")는 동일하므로 소스만 바뀐다.
  *
- * Debug Console(시리얼 모니터) 명령:
+ * Debug Console(시리얼 모니터) 명령 — 이 모듈이 시리얼 한 줄 읽기를 독점하고,
+ * 자기 명령이 아니면 등록된 핸들러(Log / 앱 / Carkey)로 차례로 위임한다.
  *   setid vt-2607-0001-x7q   device_id 설정(형식 검증 후 NVS 저장) — 적용은 재부팅
  *   setpw <password>         MQTT 비밀번호 설정(실 브로커용)
  *   showid                   현재 값 출력
  *   clearid                  NVS 초기화 → 재부팅 시 자동 재발급(프로비저닝)
  *   help                     명령 목록
+ *   log [레벨]               UART 로그 상세도 (Log::tryConsole)
+ *   info / status [영역]     단말 정보 / 상태 조회 (앱 핸들러 — .ino)
+ *   lock / unlock [ms]       차키 검증 (Carkey::tryConsole)
  */
 #pragma once
 
@@ -49,5 +53,17 @@ void handleSerial(Stream &io);
 
 // 명령 안내 출력.
 void printHelp(Stream &io);
+
+// --- 앱 명령 위임 -----------------------------------------------------------
+// 이 모듈이 시리얼 한 줄 읽기를 독점하므로, 모뎀/GPS/OBD 같은 상위 상태를 다루는
+// 명령(info/status)은 앱(.ino)이 핸들러로 등록해 처리한다. Prov가 그 의존성을
+// 떠안지 않기 위한 것 — Carkey/Log처럼 tryConsole을 직접 부르면 순환 의존이 된다.
+//   반환 true = 그 명령을 처리했음(이후 핸들러로 넘기지 않음).
+typedef bool (*ConsoleHandler)(const String &cmd, const String &arg, Stream &io);
+void setConsoleHandler(ConsoleHandler fn);
+
+// 앱이 등록한 도움말 출력 훅(printHelp에서 이어서 호출). 미등록이면 생략.
+typedef void (*HelpHandler)(Stream &io);
+void setHelpHandler(HelpHandler fn);
 
 } // namespace Prov

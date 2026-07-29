@@ -22,6 +22,7 @@ static const uint8_t kClientIdx = 0;
 static volatile bool s_pending = false;
 static char     s_payload[256];   // 명령 JSON(작음). null 종단.
 static String   s_cmdTopic;       // v1/{id}/cmd (구독용. ack 토픽은 sendAck가 매번 조립)
+static bool     s_subscribed = false;   // 마지막 subscribe 성공 여부(콘솔 진단용)
 
 // 단일 cmd 토픽만 구독하므로 topic은 무시하고 payload만 사용.
 static void onMessage(const char * /*topic*/, const uint8_t *payload, uint32_t len)
@@ -95,9 +96,14 @@ void subscribe(TinyGsm &modem, Stream &log)
 {
     s_cmdTopic = "v1/" + Prov::deviceId() + "/cmd";
     bool ok = modem.mqtt_subscribe(kClientIdx, s_cmdTopic.c_str(), /*qos=*/1);
+    s_subscribed = ok;
     if (ok) LOGD(log, "[CMD] subscribe %s ok\n", s_cmdTopic.c_str());
     else    LOGW(log, "[CMD] subscribe %s 실패 — 다운링크 수신 불가\n", s_cmdTopic.c_str());
 }
+
+String topic()      { return s_cmdTopic; }
+bool   isSubscribed() { return s_subscribed; }
+bool   hasPendingRx() { return s_pending; }
 
 void sendAck(TinyGsm &modem, Stream &log, const String &cmdId, const char *result)
 {

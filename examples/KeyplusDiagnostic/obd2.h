@@ -45,6 +45,22 @@ bool begin(Stream &log);
 // 드라이버 설치 여부(설치는 됐으나 링크 미확립일 수 있음 — 링크는 read 성공으로 판단).
 bool isInstalled();
 
+// 진단 콘솔용 링크 요약 — 폴 값(Data)과 달리 "링크 자체가 어떤 상태인가"를 본다.
+// 무응답 원인 추적용: 비트레이트가 잡혔는지, 지원 마스크가 뭔지, 확장 PID가 몇 개
+// 미지원 확정(래치)됐는지, VIN을 못 읽고 시도 상한에 걸렸는지.
+struct LinkInfo {
+    bool        installed;      // TWAI 드라이버 설치됨
+    int         bitrate;        // 확립된 kbps (0 = 미확립)
+    int         lastGoodRate;   // 마지막으로 링크가 잡혔던 kbps (재시도 우선순위)
+    uint32_t    supportedPid;   // PID 0x00 응답: 0x01~0x20 지원 비트마스크
+    bool        hasVin;
+    const char *vin;            // hasVin이 false면 ""
+    int         vinTries;       // VIN 재시도 횟수(상한 5)
+    int         extLatched;     // 미지원 확정된 확장 PID 개수
+    int         extTotal;       // 확장 PID 총 개수
+};
+void linkInfo(LinkInfo &out);
+
 // 핵심 PID 폴링 → out 채움.
 // 반환값 = "이번 폴에서 ECU 응답이 있었는가"(= CAN 링크 살아있음). false면 호출측이 재초기화.
 // ⚠️ out.valid 와 다르다: VIN 캐시가 있으면 out.valid는 링크가 죽어도 true로 남는다.

@@ -70,6 +70,31 @@ static GpsFix g_lastFix;
 // 최신 OBD2 샘플 캐시 — telemetry가 참조. 링크 없으면 valid=false 유지(항상 존재).
 static Obd2::Data g_obd;
 
+// ---------------------------------------------------------------------------
+// loop 진행 상태 — 원래 loop() 안의 static 이었지만, 콘솔 'status' 명령이 읽어야 해서
+// 파일 스코프로 올렸다(진단 시 "다음 발행까지 몇 초?", "백오프 어디까지 갔나"를 봐야 한다).
+// ---------------------------------------------------------------------------
+#if FEATURE_OBD2
+static uint32_t g_lastObdPoll  = 0;
+static uint32_t g_lastObdRetry = 0;
+// 재확립 시도는 실패할 때마다 간격을 2배로 늘린다. Obd2::begin은 비트레이트 2종을
+// 무응답 타임아웃까지 시도하므로 1회에 수백 ms 블로킹 + 드라이버 install/uninstall 이
+// 따른다. 주차 중(시동 OFF)엔 이게 몇 시간이고 반복되므로 고정 30초는 과하다.
+static uint32_t g_obdRetryDelay = OBD2_LINK_RETRY_MS;
+#endif
+
+#if FEATURE_LTE
+static uint32_t g_seq          = 0;
+static bool     g_metaSent     = false;
+static uint32_t g_backoff      = 0;
+static uint32_t g_lastConnTry  = 0;
+static bool     g_wasConnected = false;
+static uint32_t g_nextPubAt    = 0;
+static uint32_t g_lastStatAt   = 0;   // [STAT] 마지막 출력 시각(유휴 주기 출력용)
+// 403 래치 — allowlist 문제. 무한 재시도 금지(재부팅/setid로만 해제).
+static bool     g_provRejected = false;
+#endif
+
 #if FEATURE_GPS
 static uint32_t g_lastGpsPoll = 0;   // 마지막 GPS 폴 시각(주기 폴 / 발행 직전 갱신 공용)
 // 직전 폴의 측위 성공 여부 — 획득/상실 전이만 INFO로 남기기 위한 것.
@@ -350,6 +375,11 @@ static void modemCheckGpsCapable()
     }
 }
 
+// 콘솔 핸들러는 loop 상태를 읽어야 해서 아래쪽(loop 직전)에 정의된다.
+// .ino 자동 프로토타입 생성은 기능 토글 조합에 따라 어긋나므로 직접 선언한다.
+static bool appConsole(const String &cmd, const String &arg, Stream &io);
+static void appPrintHelp(Stream &io);
+
 // ---------------------------------------------------------------------------
 void setup()
 {
@@ -386,6 +416,9 @@ void setup()
 
     // 단말 신원 로드(NVS). Debug Console에서 'setid vt-...'로 설정 가능('help' 참고).
     Prov::begin();
+    // 콘솔 위임 등록 — info/status는 모뎀/GPS/OBD 상태를 읽으므로 여기서 처리한다.
+    Prov::setConsoleHandler(appConsole);
+    Prov::setHelpHandler(appPrintHelp);
     Prov::printHelp(SerialMon);
     // 크리덴셜 미확보(device_id/pw 없음) → 미프로비저닝 표시. LTE up 이후 자동 발급(아래).
     if (!Prov::hasCredentials()) Led::set(Led::State::UNPROVISIONED);
@@ -466,6 +499,175 @@ void setup()
 #endif
 }
 
+// ===========================================================================
+// 진단 콘솔 명령 — 'info' / 'status [영역]'
+//   로그 레벨과 무관하게 항상 출력한다(요청에 대한 응답이지 로그가 아니다).
+//   ⚠️ 모뎀에 AT를 보내는 항목이 있으므로 loop 진행이 잠깐 멈춘다. 사람이 친 명령에
+//      한해서만 발생하고, 주기 경로는 캐시값만 쓴다.
+// ===========================================================================
+
+// 경과시간을 사람이 읽는 형태로. now 기준 "몇 초 전"(0이면 아직 없음).
+static void printAgo(Stream &io, const char *label, uint32_t stamp)
+{
+    if (stamp == 0) { io.printf("  %-14s: (없음)\n", label); return; }
+    io.printf("  %-14s: %lus 전\n", label, (unsigned long)((millis() - stamp) / 1000UL));
+}
+
+#if FEATURE_GPS
+static void statusGps(Stream &io)
+{
+    io.println("[GPS]");
+    io.printf("  %-14s: %s\n", "측위", g_gpsFixNow ? "fix" : "no fix");
+    if (g_lastFix.valid) {
+        // g_lastFix는 측위를 놓쳐도 마지막 값을 유지한다 — telemetry가 이걸 계속 싣는다.
+        io.printf("  %-14s: %.6f, %.6f\n", "좌표", g_lastFix.lat, g_lastFix.lon);
+        io.printf("  %-14s: mode=%d 위성=%d 정확도=%.1f\n", "품질",
+                  g_lastFix.fixMode, g_lastFix.vsat, g_lastFix.accuracy);
+        io.printf("  %-14s: %04d-%02d-%02d %02d:%02d:%02d\n", "UTC",
+                  g_lastFix.year, g_lastFix.month, g_lastFix.day,
+                  g_lastFix.hour, g_lastFix.minute, g_lastFix.second);
+        if (!g_gpsFixNow) io.println("  ⚠️ 현재 미측위 — 위 좌표는 마지막 유효값(telemetry도 이 값)");
+    } else {
+        io.println("  ⚠️ 부팅 후 한 번도 측위 못함 — telemetry gps.fix=false");
+    }
+    printAgo(io, "마지막 폴", g_lastGpsPoll);
+    io.printf("  %-14s: %lums (%s)\n", "폴 주기",
+              (unsigned long)(vehicleMoving(g_obd) ? GPS_POLL_INTERVAL_MS : GPS_POLL_IDLE_MS),
+              vehicleMoving(g_obd) ? "주행" : "정차");
+}
+#endif
+
+static void statusModem(Stream &io)
+{
+    io.println("[MODEM]");
+    io.printf("  %-14s: %s\n", "모델", g_modemName.c_str());
+#if FEATURE_LTE
+    // 아래 3개는 실제 AT 왕복이다 — 사람이 status를 쳤을 때만 발생한다.
+    io.printf("  %-14s: %d (1=ready 2=locked)\n", "SIM", modem.getSimStatus());
+    LteStatus st;
+    Lte::status(modem, st);
+    io.printf("  %-14s: %s\n", "망 등록", st.registered ? "등록됨" : "미등록");
+    io.printf("  %-14s: %s\n", "PDP(데이터)", st.dataUp ? "up" : "down");
+    io.printf("  %-14s: %d %s\n", "신호(rssi)", st.rssi,
+              st.rssi == 99 ? "(측정불가)" : st.rssi >= 15 ? "(양호)" : "(약함)");
+    io.printf("  %-14s: %s\n", "사업자", st.oper.length() ? st.oper.c_str() : "-");
+    io.printf("  %-14s: %s\n", "IP", st.ip.length() ? st.ip.c_str() : "-");
+    io.printf("  %-14s: %s\n", "APN", LTE_APN);
+#else
+    io.println("  (FEATURE_LTE=0 — 모뎀 통신 비활성)");
+#endif
+}
+
+#if FEATURE_LTE
+static void statusServer(Stream &io)
+{
+    bool connected = Mqtt::isConnected(modem);
+    io.println("[SERVER]");
+    io.printf("  %-14s: %s:%d (%s)\n", "브로커", MQTT_HOST, MQTT_PORT,
+              MQTT_USE_TLS ? "TLS" : "평문");
+    io.printf("  %-14s: %s\n", "MQTT 세션", connected ? "접속됨" : "끊김");
+    io.printf("  %-14s: %s\n", "CMQTT 서비스", Mqtt::serviceStarted() ? "시작됨" : "미시작");
+    io.printf("  %-14s: %s\n", "크리덴셜",
+              Prov::hasCredentials() ? "확보" : "없음(프로비저닝 필요)");
+    if (g_provRejected) io.println("  ⚠️ 프로비저닝 403 래치 — allowlist 확인 후 재부팅해야 해제");
+    io.printf("  %-14s: %s\n", "client_id",
+              Mqtt::clientId().length() ? Mqtt::clientId().c_str() : "(접속 전)");
+    io.printf("  %-14s: %s\n", "telemetry",
+              Mqtt::topicTelemetry().length() ? Mqtt::topicTelemetry().c_str() : "(접속 전)");
+    io.printf("  %-14s: %s %s\n", "cmd 구독",
+              Cmd::topic().length() ? Cmd::topic().c_str() : "(미구독)",
+              Cmd::isSubscribed() ? "[ok]" : "[실패/미구독]");
+    if (Cmd::hasPendingRx()) io.println("  · 미처리 수신 명령 있음");
+    io.printf("  %-14s: %lums (keepalive %ds)\n", "발행 주기",
+              (unsigned long)Cfg::telemetryIntervalMs(), Cfg::keepaliveS());
+    io.printf("  %-14s: %lu\n", "발행 seq", (unsigned long)g_seq);
+    if (connected) {
+        int32_t remain = (int32_t)(g_nextPubAt - millis());
+        io.printf("  %-14s: %lds 후\n", "다음 발행", (long)(remain > 0 ? remain / 1000 : 0));
+    } else {
+        io.printf("  %-14s: %lums\n", "재접속 백오프", (unsigned long)g_backoff);
+        printAgo(io, "마지막 시도", g_lastConnTry);
+    }
+    io.printf("  %-14s: rssi=%d reg=%d (마지막 발행 시점)\n", "발행시 망상태",
+              Mqtt::lastRssi(), Mqtt::lastReg());
+}
+#endif
+
+#if FEATURE_OBD2
+static void statusObd(Stream &io)
+{
+    Obd2::LinkInfo li;
+    Obd2::linkInfo(li);
+    io.println("[OBD2]");
+    io.printf("  %-14s: %s\n", "TWAI 드라이버", li.installed ? "설치됨" : "미설치");
+    io.printf("  %-14s: %s\n", "링크", g_obd.valid ? "정상(응답 있음)" : "무응답/끊김");
+    if (li.bitrate) io.printf("  %-14s: %dkbps\n", "비트레이트", li.bitrate);
+    else            io.printf("  %-14s: 미확립 (직전 성공 %dkbps)\n", "비트레이트", li.lastGoodRate);
+    io.printf("  %-14s: 0x%08X\n", "지원PID(01-20)", li.supportedPid);
+    io.printf("  %-14s: %s\n", "VIN", li.hasVin ? li.vin : "(미확보)");
+    if (!li.hasVin && li.vinTries >= 5) io.println("  · VIN 재시도 상한 도달 — 미지원 차량으로 판단");
+    io.printf("  %-14s: %d/%d 미지원 확정\n", "확장PID 래치", li.extLatched, li.extTotal);
+    printAgo(io, "마지막 폴", g_lastObdPoll);
+    io.printf("  %-14s: %lums\n", "폴 주기", (unsigned long)OBD2_POLL_INTERVAL_MS);
+    if (!li.installed) {
+        io.printf("  %-14s: %lus\n", "재확립 간격", (unsigned long)(g_obdRetryDelay / 1000));
+        printAgo(io, "마지막 재시도", g_lastObdRetry);
+    }
+    if (g_obd.valid) {
+        io.print("  현재값        :");
+        if (g_obd.has_rpm)      io.printf(" rpm=%.0f", g_obd.rpm);
+        if (g_obd.has_speed)    io.printf(" spd=%d", g_obd.speed);
+        if (g_obd.has_coolant)  io.printf(" cool=%dC", g_obd.coolant);
+        if (g_obd.has_ctrlv)    io.printf(" batt=%.2fV", g_obd.ctrl_v);
+        if (g_obd.has_fuel)     io.printf(" fuel=%.0f%%", g_obd.fuel);
+        if (g_obd.has_odometer) io.printf(" odo=%.1fkm", g_obd.odometer);
+        io.println();
+    }
+}
+#endif
+
+// 'status [gps|modem|server|obd]' — 인자 없으면 전체.
+static void statusAll(Stream &io, const String &what)
+{
+    bool all = what.isEmpty() || what == "all";
+    bool any = all;
+
+#if FEATURE_GPS
+    if (all || what == "gps")    { statusGps(io);    any = true; }
+#endif
+    if (all || what == "modem")  { statusModem(io);  any = true; }
+#if FEATURE_LTE
+    if (all || what == "server") { statusServer(io); any = true; }
+#endif
+#if FEATURE_OBD2
+    if (all || what == "obd")    { statusObd(io);    any = true; }
+#endif
+
+    if (!any) {
+        io.printf("[STATUS] 알 수 없는 영역 '%s' — gps|modem|server|obd|all\n", what.c_str());
+    }
+}
+
+static void appPrintHelp(Stream &io)
+{
+    io.println("[APP]  명령: info                        단말 정보(부팅 배너와 동일)");
+    io.println("             status [gps|modem|server|obd]  상태 조회(생략 시 전체)");
+}
+
+static bool appConsole(const String &cmd, const String &arg, Stream &io)
+{
+    if (cmd == "info") {
+        printDeviceInfo(modem, g_modemName.c_str());
+        return true;
+    }
+    if (cmd == "status" || cmd == "stat") {
+        String w = arg; w.toLowerCase();
+        statusAll(io, w);
+        return true;
+    }
+    return false;
+}
+
 // ---------------------------------------------------------------------------
 void loop()
 {
@@ -479,14 +681,9 @@ void loop()
 
 #if FEATURE_OBD2
     // OBD2 폴링: 링크 있으면 주기 수집, 없으면 백오프 간격으로 재확립 시도.
-    static uint32_t lastObdPoll = 0, lastObdRetry = 0;
-    // 재확립 시도는 실패할 때마다 간격을 2배로 늘린다. Obd2::begin은 비트레이트 2종을
-    // 무응답 타임아웃까지 시도하므로 1회에 수백 ms 블로킹 + 드라이버 install/uninstall 이
-    // 따른다. 주차 중(시동 OFF)엔 이게 몇 시간이고 반복되므로 고정 30초는 과하다.
-    static uint32_t obdRetryDelay = OBD2_LINK_RETRY_MS;
     if (Obd2::isInstalled()) {
-        if (now - lastObdPoll >= OBD2_POLL_INTERVAL_MS) {
-            lastObdPoll = now;
+        if (now - g_lastObdPoll >= OBD2_POLL_INTERVAL_MS) {
+            g_lastObdPoll = now;
             if (Obd2::read(g_obd, SerialMon)) {
                 Obd2::print(g_obd, SerialMon);   // 응답받은 전체 항목 + VIN 출력
             } else {
@@ -494,19 +691,19 @@ void loop()
                 LOGI(SerialMon, "[OBD2] 링크 끊김(폴 무응답) — 재확립 대기\n");
                 Obd2::end();
                 g_obd = Obd2::Data();   // valid=false → telemetry에서 obd 생략
-                lastObdRetry = now;
+                g_lastObdRetry = now;
                 // 방금까지 살아있던 링크다. 일시적 글리치일 수 있으니 기본 간격부터 다시.
-                obdRetryDelay = OBD2_LINK_RETRY_MS;
+                g_obdRetryDelay = OBD2_LINK_RETRY_MS;
             }
         }
-    } else if (now - lastObdRetry >= obdRetryDelay) {
-        lastObdRetry = now;
+    } else if (now - g_lastObdRetry >= g_obdRetryDelay) {
+        g_lastObdRetry = now;
         if (Obd2::begin(SerialMon)) {   // 성공 시 다음 틱부터 폴링
-            obdRetryDelay = OBD2_LINK_RETRY_MS;
+            g_obdRetryDelay = OBD2_LINK_RETRY_MS;
         } else {
-            obdRetryDelay *= 2;
-            if (obdRetryDelay > OBD2_LINK_RETRY_CAP_MS) obdRetryDelay = OBD2_LINK_RETRY_CAP_MS;
-            LOGD(SerialMon, "[OBD2] 다음 재시도 %lus 후\n", (unsigned long)(obdRetryDelay / 1000));
+            g_obdRetryDelay *= 2;
+            if (g_obdRetryDelay > OBD2_LINK_RETRY_CAP_MS) g_obdRetryDelay = OBD2_LINK_RETRY_CAP_MS;
+            LOGD(SerialMon, "[OBD2] 다음 재시도 %lus 후\n", (unsigned long)(g_obdRetryDelay / 1000));
         }
     }
 #endif
@@ -524,31 +721,23 @@ void loop()
     Mqtt::handle(modem);
     Cmd::handle(modem, SerialMon);   // 수신 명령 처리 + ack 발행
 
-    static uint32_t seq = 0;
-    static bool     metaSent = false;
-    static uint32_t backoff = 0;
-    static uint32_t lastConnTry = 0;
-    static bool     wasConnected = false;
-    static uint32_t nextPubAt = 0;
-    static uint32_t lastStatAt = 0;   // [STAT] 마지막 출력 시각(유휴 주기 출력용)
 
     bool connected = Mqtt::isConnected(modem);
 
-    static bool provRejected = false;   // 403 래치 — allowlist 문제. 무한 재시도 금지(재부팅/setid로만 해제)
 
     // 접속 상승엣지: connectSession의 status 발행 ACK가 빠질 시간을 주려
     // 첫 telemetry를 5초 뒤로 잡는다(발행끼리 충돌 방지 — 모뎀은 publish 1건씩).
-    if (connected && !wasConnected) {
-        nextPubAt = now + 5000;
+    if (connected && !g_wasConnected) {
+        g_nextPubAt = now + 5000;
         LOGI(SerialMon, "[MQTT] 재접속됨\n");
         Led::set(Led::State::MQTT_OK);          // 재접속 성공 → 정상(heartbeat)
         Cmd::subscribe(modem, SerialMon);       // clean_session=1 → 재접속마다 재구독
     }
-    if (!connected && wasConnected) {
+    if (!connected && g_wasConnected) {
         // 끊김은 상태 전이 — 조용히 백오프에 들어가면 로그만 보고는 멈춘 것과 구분이 안 된다.
         LOGW(SerialMon, "[MQTT] 연결 끊김 — 백오프 재접속 시작\n");
     }
-    wasConnected = connected;
+    g_wasConnected = connected;
 
 #if FEATURE_OTA
     // 하드 롤백 期限 감시(매 틱): PENDING_VERIFY인데 접속 못 하고 期限 초과면 강제 롤백 재부팅.
@@ -565,12 +754,12 @@ void loop()
 
     if (!connected) {
         // 미접속: 백오프 간격으로 (재)접속. LTE(PDP)가 죽었으면 먼저 살린다.
-        if (now - lastConnTry >= backoff) {
-            lastConnTry = now;
+        if (now - g_lastConnTry >= g_backoff) {
+            g_lastConnTry = now;
 
-            if (provRejected) {
-                // allowlist 거절 확정 → 재시도 안 함(LED REJECTED 유지). backoff만 크게.
-                backoff = MQTT_RECONNECT_CAP_MS;
+            if (g_provRejected) {
+                // allowlist 거절 확정 → 재시도 안 함(LED REJECTED 유지). 백오프만 크게.
+                g_backoff = MQTT_RECONNECT_CAP_MS;
             } else {
                 Led::set(Led::State::PROVISIONING); // 접속/발급 시도 중 → 느린 점멸
                 if (!Lte::isUp(modem)) {
@@ -581,45 +770,45 @@ void loop()
                 if (Lte::isUp(modem) && !Prov::hasCredentials()) {
                     Prov::ProvResult pr = Prov::provisionOverHttp(modem, SerialMon);
                     if (pr == Prov::ProvResult::REJECTED) {
-                        provRejected = true;
+                        g_provRejected = true;
                         Led::set(Led::State::REJECTED);
                     }
                 }
-                if (!provRejected && Lte::isUp(modem) && Prov::hasCredentials()
+                if (!g_provRejected && Lte::isUp(modem) && Prov::hasCredentials()
                         && Mqtt::begin(modem, SerialMon)) {
-                    backoff = 0;   // 성공 → 백오프 리셋 (MQTT_OK는 다음 루프 상승엣지에서 표시)
-                } else if (!provRejected) {
-                    backoff = backoff ? backoff * 2 : 1000;
-                    if (backoff > MQTT_RECONNECT_CAP_MS) backoff = MQTT_RECONNECT_CAP_MS;
+                    g_backoff = 0;   // 성공 → 백오프 리셋 (MQTT_OK는 다음 루프 상승엣지에서 표시)
+                } else if (!g_provRejected) {
+                    g_backoff = g_backoff ? g_backoff * 2 : 1000;
+                    if (g_backoff > MQTT_RECONNECT_CAP_MS) g_backoff = MQTT_RECONNECT_CAP_MS;
                     Led::set(Led::State::COMM_ERROR); // 접속/발급 실패 → 통신오류(3회 버스트)
                 }
             }
         }
-    } else if ((int32_t)(now - nextPubAt) >= 0) {
+    } else if ((int32_t)(now - g_nextPubAt) >= 0) {
         // 접속됨: telemetry 주기 발행(오버플로우 안전 비교). 발행 성공 시 다음 주기 예약,
         // 실패 시 isConnected가 false로 바뀌어 다음 루프에서 재접속 경로를 탄다.
         // 주기는 config_update로 런타임 변경 가능(Cfg::telemetryIntervalMs).
-        nextPubAt = now + Cfg::telemetryIntervalMs();
+        g_nextPubAt = now + Cfg::telemetryIntervalMs();
 #if FEATURE_GPS
         // 발행 직전 좌표 갱신 — 주기 폴에만 의존하면 실을 fix가 최대 폴 주기만큼 묵는다
         // (주행 중 10초 = 시속 100km에서 약 280m 오차). 폴 시각도 갱신되므로 중복 폴 없음.
         pollGps(now);
 #endif
-        bool withMeta = !metaSent;   // 최초 1회만 하드웨어 메타 포함
-        bool pubOk = Mqtt::publishTelemetry(modem, g_lastFix, g_obd, seq, withMeta, SerialMon);
+        bool withMeta = !g_metaSent;   // 최초 1회만 하드웨어 메타 포함
+        bool pubOk = Mqtt::publishTelemetry(modem, g_lastFix, g_obd, g_seq, withMeta, SerialMon);
         if (pubOk) {
-            if (withMeta) metaSent = true;
-            seq++;
+            if (withMeta) g_metaSent = true;
+            g_seq++;
         }
         // 주기 상태 한 줄 — 모듈별 폴 덤프를 DEBUG로 내린 대신 여기서 전체 상태를 요약한다.
-        printStatusLine(true, seq, pubOk ? "pub-ok" : "pub-FAIL");
-        lastStatAt = now;
+        printStatusLine(true, g_seq, pubOk ? "pub-ok" : "pub-FAIL");
+        g_lastStatAt = now;
     }
 
     // 미접속이 길어지면 [STAT]가 아예 안 나와 멈춘 것처럼 보인다 → 유휴에도 주기적으로 남긴다.
-    if (!connected && now - lastStatAt >= STATUS_LINE_IDLE_MS) {
-        lastStatAt = now;
-        printStatusLine(false, seq, "-");
+    if (!connected && now - g_lastStatAt >= STATUS_LINE_IDLE_MS) {
+        g_lastStatAt = now;
+        printStatusLine(false, g_seq, "-");
     }
 #endif
 

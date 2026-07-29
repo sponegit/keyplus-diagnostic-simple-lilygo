@@ -151,6 +151,11 @@ bool isConnected(TinyGsm & /*modem*/) { return s_connected; }
 int lastRssi() { return s_lastRssi; }
 int lastReg()  { return s_lastReg; }
 
+// 토픽/ID는 접속 시점에 조립된다 — 접속 전이면 빈 문자열.
+String clientId()       { return s_clientId; }
+String topicTelemetry() { return s_topicTelemetry; }
+bool   serviceStarted() { return s_serviceStarted; }
+
 // 콜백/URC 펌핑. 매 틱 호출되므로 "URC 없을 때 0ms"가 되어야 한다.
 //   래퍼 mqtt_handle(timeout)은 내부에서 waitResponse(timeout, "+CMQTTRXSTART:")를 하는데,
 //   waitResponse는 매칭이 없으면 timeout을 통째로 spin한다(TinyGsmClientA7670.h do-while).

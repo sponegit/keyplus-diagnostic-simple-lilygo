@@ -34,6 +34,12 @@ bool isConnected(TinyGsm &modem);
 int lastRssi();
 int lastReg();
 
+// 진단 콘솔용 — 접속 시점에 조립되므로 접속 전이면 빈 문자열.
+// serviceStarted()는 CMQTTSTART(부팅당 1회) 완료 여부로, 세션 접속 여부(isConnected)와 다르다.
+String clientId();
+String topicTelemetry();
+bool   serviceStarted();
+
 // 콜백/keepalive 펌핑. loop 매 틱 호출.
 void handle(TinyGsm &modem);
 

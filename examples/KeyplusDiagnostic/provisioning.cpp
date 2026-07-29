@@ -216,11 +216,19 @@ ProvResult provisionOverHttp(TinyGsm &modem, Stream &log)
     return ProvResult::OK;
 }
 
+// 앱(.ino)이 등록하는 위임 훅 — 헤더 주석 참고.
+static ConsoleHandler s_appConsole = nullptr;
+static HelpHandler    s_appHelp    = nullptr;
+
+void setConsoleHandler(ConsoleHandler fn) { s_appConsole = fn; }
+void setHelpHandler(HelpHandler fn)       { s_appHelp = fn; }
+
 void printHelp(Stream &io)
 {
     io.println("[PROV] 명령: setid vt-YYMM-NNNN-XXX | setpw <pw> | showid | clearid | help");
     io.printf("[LOG]  명령: log [error|warn|info|debug]   (현재 %s, 인자 없으면 조회)\n",
               Log::levelName(Log::level()));
+    if (s_appHelp) s_appHelp(io);
 #if FEATURE_CARKEY
     io.println("[KEY]  명령: lock [ms] | unlock [ms]   (ms 생략 시 기본 펄스폭)");
 #endif
@@ -269,6 +277,8 @@ static void processLine(const String &raw, Stream &io)
         // 'log [레벨]' — 상세 출력 토글. 현장에서 재플래시 없이 진단하기 위한 것이라
         // 변경값은 NVS에 남는다(재부팅 후에도 유지).
     } else {
+        // 앱 명령(info/status 등) — 모뎀/GPS/OBD 상태에 접근하므로 .ino가 처리한다.
+        if (s_appConsole && s_appConsole(cmd, arg, io)) return;
 #if FEATURE_CARKEY
         // 차키 검증 명령(lock/unlock [holdMs])을 이 단일 시리얼 소유자에서 위임.
         if (Carkey::tryConsole(cmd, arg, io)) return;
