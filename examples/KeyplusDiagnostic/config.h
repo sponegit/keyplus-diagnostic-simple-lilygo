@@ -77,6 +77,10 @@
 // 몰아칠수록 전압 강하가 심해진다. 실패마다 2배로 늘려 모뎀이 쉬는 시간을 준다.
 #define LTE_RETRY_BASE_MS           (30000UL)
 #define LTE_RETRY_CAP_MS            (300000UL)  // 5분
+// 리셋으로 모뎀이 되살아난 직후의 재브링업 지연. 쌓인 백오프(실측 60초)를 그대로 쓰면
+// 막 부팅한 깨끗한 모뎀을 그만큼 놀린다 — 부팅 URC(+CPIN: READY / +CGEV 등)가 정리될
+// 시간만 주고 바로 붙는다. 유심 인식이 덜 됐으면 Lte::begin 의 SIM 재시도가 흡수한다.
+#define LTE_POST_RESET_DELAY_MS     (5000UL)
 // 데이터패스 검증용 평문 HTTP GET 대상 (안정적·경량 엔드포인트)
 #define LTE_TEST_HOST               "example.com"
 #define LTE_TEST_PORT               (80)
@@ -181,7 +185,7 @@
 // 펌웨어 버전 — 부팅 배너/info, telemetry meta, 프로비저닝 요청 body, OTA 결과 검증에
 // 모두 이 값이 쓰인다(단일 출처). OTA 로 새 이미지를 내릴 때는 서버가 기대하는 version 과
 // 반드시 일치시켜야 한다 — 불일치면 재부팅 후 ota ack 가 failed 로 나간다(ota.cpp).
-#define FW_VERSION                  "0.2.7"
+#define FW_VERSION                  "0.2.8"
 
 // ===========================================================================
 // UART 로그 레벨 (log.h)

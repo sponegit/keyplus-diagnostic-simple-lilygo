@@ -935,16 +935,34 @@ void loop()
                         g_lteRetryDelay = g_lteRetryDelay ? g_lteRetryDelay * 2 : LTE_RETRY_BASE_MS;
                         if (g_lteRetryDelay > LTE_RETRY_CAP_MS) g_lteRetryDelay = LTE_RETRY_CAP_MS;
 
-                        // 연속 실패 = 모뎀이 먹통이거나 전원이 못 받쳐주는 상태.
-                        // AT 재시도만 반복하면 회복 경로가 없다 → 모뎀을 리셋한다.
-                        if (g_lteFailStreak >= LTE_FAIL_BEFORE_RESET) {
-                            if (!Lte::softReset(modem, SerialMon)) modemHardReset();
+                        // 모뎀이 AT 자체를 못 받는 상태면 기다릴 이유가 없다 — 다음 시도도
+                        // 100% 같은 자리에서 실패한다. 백오프는 "등록이 안 붙는" 상황(전원 마진)
+                        // 을 위한 것이지, 죽은 모뎀을 살리지는 못한다 → 즉시 리셋으로 승격.
+                        // (실측: 무응답 확인 후 30초 백오프 + 소프트 리셋 30초를 통째로 버렸다.)
+                        bool dead = !Lte::modemAlive(modem);
+                        if (dead || g_lteFailStreak >= LTE_FAIL_BEFORE_RESET) {
+                            // AT를 못 받는 모뎀에 AT+CFUN=1,1 은 닿지 않는다 → 소프트 리셋을
+                            // 건너뛰고 곧장 PWRKEY 전원 사이클.
+                            bool revived = dead ? modemHardReset()
+                                                : (Lte::softReset(modem, SerialMon) || modemHardReset());
                             g_lteFailStreak = 0;   // 리셋했으니 다시 센다
                             // ⚠️ 모뎀이 리셋되면 CMQTT 서비스와 구독이 모두 사라진다.
                             //    펌웨어 플래그를 같이 내려주지 않으면 begin()이 CMQTTSTART를
                             //    건너뛰어 "접속 실패"만 무한 반복한다(실측 확인된 증상).
                             Mqtt::resetServiceState();
                             Cmd::markUnsubscribed();
+
+                            if (revived) {
+                                // 모뎀이 방금 재부팅돼 깨끗한 상태다 — 실패 이력으로 쌓인
+                                // 백오프를 그대로 쓰면(실측 60초) 살아난 모뎀을 놀린다.
+                                // 부팅 URC(+CPIN: READY 등)가 정리될 짧은 시간만 두고 바로 붙는다.
+                                g_lastLteTry    = millis();   // 리셋 완료 시점 기준으로 다시 센다
+                                g_lteRetryDelay = LTE_POST_RESET_DELAY_MS;
+                                // 바깥 재접속 게이트도 같은 시점에 열어준다. 안 그러면 LTE는
+                                // 5초 뒤 붙을 준비가 됐는데 MQTT 백오프(최대 15초)가 막는다.
+                                g_lastConnTry   = g_lastLteTry;
+                                g_backoff       = LTE_POST_RESET_DELAY_MS;
+                            }
                         }
                         LOGW(SerialMon, "[LTE] 다음 재브링업 %lus 후\n",
                              (unsigned long)(g_lteRetryDelay / 1000UL));
