@@ -96,6 +96,12 @@ static uint32_t g_nextPubAt    = 0;
 static uint32_t g_lastStatAt   = 0;   // [STAT] 마지막 출력 시각(유휴 주기 출력용)
 // 403 래치 — allowlist 문제. 무한 재시도 금지(재부팅/setid로만 해제).
 static bool     g_provRejected = false;
+// LTE 재브링업 페이싱/복구 상태.
+//   연속 실패마다 간격을 늘리고(전원이 약할 때 모뎀이 쉬는 시간을 준다),
+//   LTE_FAIL_BEFORE_RESET 회에 닿으면 모뎀 자체를 리셋한다.
+static uint32_t g_lteRetryDelay = 0;
+static uint32_t g_lastLteTry    = 0;
+static int      g_lteFailStreak = 0;
 #endif
 
 #if FEATURE_GPS
@@ -337,6 +343,29 @@ static void modemPowerOn()
     digitalWrite(BOARD_PWRKEY_PIN, LOW);
 }
 
+#if FEATURE_LTE
+// 모뎀 하드 리셋 — PWRKEY 전원 사이클 후 AT 재개까지 제한 시간만 대기.
+// 소프트 리셋(AT+CFUN=1,1)조차 안 먹는 상태(모뎀이 AT를 아예 못 받음)의 마지막 수단이다.
+// setup()의 modemWaitReady()와 달리 무한 대기하지 않는다 — loop에서 부르므로
+// 회복이 안 되면 포기하고 다음 백오프 주기에 다시 시도해야 한다.
+static bool modemHardReset()
+{
+    LOGW(SerialMon, "[MODEM] 하드 리셋(PWRKEY 전원 사이클)\n");
+    modemPowerOn();
+    uint32_t start = millis();
+    while (millis() - start < LTE_MODEM_RESET_WAIT_MS) {
+        if (modem.testAT(1000)) {
+            LOGI(SerialMon, "[MODEM] 하드 리셋 후 AT 준비됨 (%lus)\n",
+                 (unsigned long)((millis() - start) / 1000UL));
+            return true;
+        }
+        delay(500);
+    }
+    LOGE(SerialMon, "[MODEM] 하드 리셋 후에도 무응답 — 전원 마진(5V 공급/배선) 확인 필요\n");
+    return false;
+}
+#endif
+
 // AT 응답이 올 때까지 대기. 30회 실패 시 PWRKEY 재펄스.
 static void modemWaitReady()
 {
@@ -561,6 +590,12 @@ static void statusModem(Stream &io)
     io.printf("  %-14s: %s\n", "사업자", st.oper.length() ? st.oper.c_str() : "-");
     io.printf("  %-14s: %s\n", "IP", st.ip.length() ? st.ip.c_str() : "-");
     io.printf("  %-14s: %s\n", "APN", LTE_APN);
+    io.printf("  %-14s: %s\n", "모뎀 AT응답", Lte::modemAlive(modem) ? "정상" : "무응답(전원 확인)");
+    if (!st.registered) {
+        io.printf("  %-14s: %d회 (%d회에 모뎀 리셋)\n", "연속 등록실패",
+                  g_lteFailStreak, LTE_FAIL_BEFORE_RESET);
+        io.printf("  %-14s: %lus\n", "재브링업 간격", (unsigned long)(g_lteRetryDelay / 1000UL));
+    }
 #else
     io.println("  (FEATURE_LTE=0 — 모뎀 통신 비활성)");
 #endif
@@ -770,9 +805,28 @@ void loop()
                 g_backoff = MQTT_RECONNECT_CAP_MS;
             } else {
                 Led::set(Led::State::PROVISIONING); // 접속/발급 시도 중 → 느린 점멸
-                if (!Lte::isUp(modem)) {
+                // LTE 재브링업은 자체 백오프로 페이싱한다. 등록 시도는 모뎀이 최대 출력으로
+                // 송신하는 구간이라, 전원 마진이 부족하면 몰아칠수록 전압이 더 내려앉는다.
+                if (!Lte::isUp(modem) && (g_lastLteTry == 0 || now - g_lastLteTry >= g_lteRetryDelay)) {
+                    g_lastLteTry = now;
                     LOGW(SerialMon, "[LTE] 링크 다운 — 재브링업\n");
-                    Lte::begin(modem, SerialMon);
+                    if (Lte::begin(modem, SerialMon)) {
+                        g_lteFailStreak = 0;
+                        g_lteRetryDelay = 0;
+                    } else {
+                        g_lteFailStreak++;
+                        g_lteRetryDelay = g_lteRetryDelay ? g_lteRetryDelay * 2 : LTE_RETRY_BASE_MS;
+                        if (g_lteRetryDelay > LTE_RETRY_CAP_MS) g_lteRetryDelay = LTE_RETRY_CAP_MS;
+
+                        // 연속 실패 = 모뎀이 먹통이거나 전원이 못 받쳐주는 상태.
+                        // AT 재시도만 반복하면 회복 경로가 없다 → 모뎀을 리셋한다.
+                        if (g_lteFailStreak >= LTE_FAIL_BEFORE_RESET) {
+                            if (!Lte::softReset(modem, SerialMon)) modemHardReset();
+                            g_lteFailStreak = 0;   // 리셋했으니 다시 센다
+                        }
+                        LOGW(SerialMon, "[LTE] 다음 재브링업 %lus 후\n",
+                             (unsigned long)(g_lteRetryDelay / 1000UL));
+                    }
                 }
                 // 크리덴셜 없으면 MQTT 전에 먼저 발급받는다(LTE up 상태에서).
                 if (Lte::isUp(modem) && !Prov::hasCredentials()) {

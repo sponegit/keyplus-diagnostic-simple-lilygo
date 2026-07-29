@@ -29,7 +29,19 @@ namespace Lte {
 // 망 등록 + PDP 컨텍스트까지 올린다. APN은 config.h(LTE_APN) 사용.
 // LTE_REG_TIMEOUT_MS 내 등록 실패 또는 등록 거부(REG_DENIED) 시 false.
 // 등록은 필드 실패 1순위(APN/신호)라 진행상황을 log에 출력한다.
+// ⚠️ 진입 시 modemAlive()로 모뎀 응답을 먼저 확인한다 — 무응답이면 등록 폴링
+//    (최대 LTE_REG_TIMEOUT_MS)이 통째로 낭비이므로 즉시 false를 반환한다.
 bool begin(TinyGsm &modem, Stream &log);
+
+// 모뎀이 AT에 응답하는가. LTE_AT_PROBE_MS 안에 응답 없으면 false.
+// 전원 부족으로 모뎀이 내부 리셋/불능이 된 상태를 빠르게 가려낸다
+// (그 경우 CSQ는 99, 등록 상태는 no-result로 나온다).
+bool modemAlive(TinyGsm &modem);
+
+// 모뎀 소프트 리셋(AT+CFUN=1,1) 후 AT 재개까지 대기. 성공 시 true.
+// ⚠️ 최대 LTE_MODEM_RESET_WAIT_MS 동안 블로킹한다 — 복구 경로 전용.
+//    이걸로도 안 살아나면 호출측이 PWRKEY 하드 전원 사이클로 승격한다.
+bool softReset(TinyGsm &modem, Stream &log);
 
 // 망+데이터 모두 살아있는지. 재접속 판단용.
 bool isUp(TinyGsm &modem);

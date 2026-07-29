@@ -48,6 +48,17 @@
 #define LTE_GPRS_PASS               ""
 // 망 등록 대기 상한 (콜드 등록은 수십 초 소요 가능)
 #define LTE_REG_TIMEOUT_MS          (90000UL)
+// --- 모뎀 무응답 복구 -------------------------------------------------------
+// 전원 마진이 부족하면 LTE 등록(최대 출력 송신) 중 전압이 내려앉아 모뎀이 내부 리셋되고,
+// 그 뒤로 AT에 응답하지 않는다(CSQ=99, 등록상태 no-result). 이때 AT 재시도만 반복하면
+// 회복 경로가 없어 영영 못 붙는다 → 아래 값으로 조기 감지 + 리셋 승격을 한다.
+#define LTE_AT_PROBE_MS             (2000)      // 모뎀 생존 확인 AT 응답 대기
+#define LTE_MODEM_RESET_WAIT_MS     (20000UL)   // 리셋 후 AT 재개 대기 상한
+#define LTE_FAIL_BEFORE_RESET       (2)         // 연속 브링업 실패 몇 회에 모뎀 리셋
+// 재브링업 간격 — 등록 시도는 모뎀이 최대 출력으로 송신하는 구간이라, 전원이 약하면
+// 몰아칠수록 전압 강하가 심해진다. 실패마다 2배로 늘려 모뎀이 쉬는 시간을 준다.
+#define LTE_RETRY_BASE_MS           (30000UL)
+#define LTE_RETRY_CAP_MS            (300000UL)  // 5분
 // 데이터패스 검증용 평문 HTTP GET 대상 (안정적·경량 엔드포인트)
 #define LTE_TEST_HOST               "example.com"
 #define LTE_TEST_PORT               (80)

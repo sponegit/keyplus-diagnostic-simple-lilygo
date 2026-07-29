@@ -27,8 +27,41 @@ static const char *regStr(RegStatus s)
     }
 }
 
+bool modemAlive(TinyGsm &modem)
+{
+    return modem.testAT(LTE_AT_PROBE_MS);
+}
+
+bool softReset(TinyGsm &modem, Stream &log)
+{
+    LOGW(log, "[LTE] 모뎀 소프트 리셋(AT+CFUN=1,1)\n");
+    modem.sendAT("+CFUN=1,1");
+    modem.waitResponse(10000UL);
+
+    // 모뎀이 재부팅된다 — AT가 다시 뜰 때까지 제한 시간만 기다린다.
+    uint32_t start = millis();
+    while (millis() - start < LTE_MODEM_RESET_WAIT_MS) {
+        if (modem.testAT(1000)) {
+            LOGI(log, "[LTE] 모뎀 리셋 완료 (%lus)\n",
+                 (unsigned long)((millis() - start) / 1000UL));
+            return true;
+        }
+        delay(500);
+    }
+    LOGE(log, "[LTE] 소프트 리셋 후에도 무응답 — 하드 리셋 필요\n");
+    return false;
+}
+
 bool begin(TinyGsm &modem, Stream &log)
 {
+    // 모뎀이 죽어 있으면 등록 폴링(최대 LTE_REG_TIMEOUT_MS)이 통째로 낭비다.
+    // 전원 부족으로 모뎀이 내부 리셋된 상태가 정확히 이 경우 — 90초를 태우는 대신
+    // 즉시 실패시켜 호출측이 리셋 경로를 타게 한다.
+    if (!modemAlive(modem)) {
+        LOGE(log, "[LTE] 모뎀 무응답 — 등록 시도 생략(리셋 필요, 전원 마진 확인)\n");
+        return false;
+    }
+
     // APN을 등록 전에 지정 — 일부 통신사는 APN이 없으면 등록을 거부한다.
     LOGD(log, "[LTE] set APN: %s\n", LTE_APN);
     if (!modem.setNetworkAPN(LTE_APN)) {
