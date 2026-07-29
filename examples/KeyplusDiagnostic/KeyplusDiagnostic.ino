@@ -61,6 +61,53 @@ TinyGsm modem(SerialAT);
 extern "C" bool verifyRollbackLater() { return true; }
 #endif
 
+#if (FEATURE_GPS || FEATURE_LTE)
+// 최신 GPS fix 캐시 — telemetry가 참조. 미측위면 valid=false 유지.
+static GpsFix g_lastFix;
+#endif
+
+// 최신 OBD2 샘플 캐시 — telemetry가 참조. 링크 없으면 valid=false 유지(항상 존재).
+static Obd2::Data g_obd;
+
+#if FEATURE_GPS
+static uint32_t g_lastGpsPoll = 0;   // 마지막 GPS 폴 시각(주기 폴 / 발행 직전 갱신 공용)
+
+// GPS 1회 폴 → g_lastFix 갱신. 폴 시각도 같이 갱신하므로, 발행 직전에 호출하면
+// 바로 뒤따르는 주기 폴이 중복 실행되지 않는다.
+static void pollGps(uint32_t now)
+{
+    g_lastGpsPoll = now;
+    GpsFix fix;
+    if (Gps::read(modem, fix)) {
+        g_lastFix = fix;                // telemetry용 캐시 갱신
+        Gps::print(fix, SerialMon);
+    } else {
+        // 원시 GNSS 정보(+CGNSSINFO)는 미측위일 때만 — 위성 포착 진행상황 확인용이다.
+        // fix 확보 후엔 진단 가치가 없는데 모뎀 AT 왕복만 2배가 된다(getGPS + getGPSraw).
+        String rawInfo = Gps::raw(modem);
+        SerialMon.print("[GPS] acquiring fix... (cold start may take a while) raw: ");
+        SerialMon.println(rawInfo.length() ? rawInfo : "(no data)");
+    }
+}
+
+// 주행 중 판정 — GPS 폴링 주기를 여기에 맞춘다.
+// OBD 링크가 살아있고 차속/회전수가 잡히면 주행, 아니면 정차/주차로 본다.
+// 링크가 없으면(시동 OFF/미장착) 위치가 변할 일이 없으므로 정차 취급.
+// FEATURE_OBD2 미사용 빌드는 판단 근거가 없으니 항상 주행 취급(기존 주기 유지).
+static bool vehicleMoving(const Obd2::Data &d)
+{
+#if FEATURE_OBD2
+    if (!d.valid) return false;
+    if (d.has_speed && d.speed > 0) return true;
+    if (d.has_rpm   && d.rpm   > 0) return true;
+    return false;
+#else
+    (void)d;
+    return true;
+#endif
+}
+#endif  // FEATURE_GPS
+
 // ---------------------------------------------------------------------------
 // 부팅 원인 진단 — 차량 상시 5V에서 일정시간 후 LED 1/2번(=재부팅) 증상 추적용.
 //   BROWNOUT = 전원 마진 부족(LTE TX 버스트 ~2A 딥). PANIC/WDT = 펌웨어 행/크래시.
@@ -303,14 +350,6 @@ void loop()
     // Debug Console 입력 처리 (setid/setpw/showid/clearid/help) — 논블로킹.
     Prov::handleSerial(SerialMon);
 
-#if (FEATURE_GPS || FEATURE_LTE)
-    // 최신 GPS fix 캐시 — telemetry가 참조. 미측위면 valid=false 유지.
-    static GpsFix g_lastFix;
-#endif
-
-    // 최신 OBD2 샘플 캐시 — telemetry가 참조. 링크 없으면 valid=false 유지(항상 존재).
-    static Obd2::Data g_obd;
-
 #if FEATURE_OBD2
     // OBD2 폴링: 링크 있으면 주기 수집, 없으면 백오프 간격으로 재확립 시도.
     static uint32_t lastObdPoll = 0, lastObdRetry = 0;
@@ -346,23 +385,11 @@ void loop()
 #endif
 
 #if FEATURE_GPS
-    static uint32_t lastPoll = 0;
-    if (now - lastPoll >= GPS_POLL_INTERVAL_MS) {
-        lastPoll = now;
-        GpsFix fix;
-        bool got = Gps::read(modem, fix);
-
-        if (got) {
-            g_lastFix = fix;                // telemetry용 캐시 갱신
-            Gps::print(fix, SerialMon);
-        } else {
-            // 원시 GNSS 정보(+CGNSSINFO)는 미측위일 때만 — 위성 포착 진행상황 확인용이다.
-            // fix 확보 후엔 진단 가치가 없는데 모뎀 AT 왕복만 2배가 된다(getGPS + getGPSraw).
-            String rawInfo = Gps::raw(modem);
-            SerialMon.print("[GPS] acquiring fix... (cold start may take a while) raw: ");
-            SerialMon.println(rawInfo.length() ? rawInfo : "(no data)");
-        }
-    }
+    // 주기 폴 — 주행 중엔 GPS_POLL_INTERVAL_MS, 정차/주차 중엔 GPS_POLL_IDLE_MS.
+    // 발행 직전에도 갱신하므로(아래 telemetry 분기) 이 주기 폴은 측위 유지와
+    // 콜드스타트 진행 확인이 목적이다. 주차 중엔 좌표가 변하지 않으니 느슨하게 둔다.
+    uint32_t gpsInterval = vehicleMoving(g_obd) ? GPS_POLL_INTERVAL_MS : GPS_POLL_IDLE_MS;
+    if (now - g_lastGpsPoll >= gpsInterval) pollGps(now);
 #endif
 
 #if FEATURE_LTE
@@ -440,6 +467,11 @@ void loop()
         // 실패 시 isConnected가 false로 바뀌어 다음 루프에서 재접속 경로를 탄다.
         // 주기는 config_update로 런타임 변경 가능(Cfg::telemetryIntervalMs).
         nextPubAt = now + Cfg::telemetryIntervalMs();
+#if FEATURE_GPS
+        // 발행 직전 좌표 갱신 — 주기 폴에만 의존하면 실을 fix가 최대 폴 주기만큼 묵는다
+        // (주행 중 10초 = 시속 100km에서 약 280m 오차). 폴 시각도 갱신되므로 중복 폴 없음.
+        pollGps(now);
+#endif
         bool withMeta = !metaSent;   // 최초 1회만 하드웨어 메타 포함
         if (Mqtt::publishTelemetry(modem, g_lastFix, g_obd, seq, withMeta, SerialMon)) {
             if (withMeta) metaSent = true;
