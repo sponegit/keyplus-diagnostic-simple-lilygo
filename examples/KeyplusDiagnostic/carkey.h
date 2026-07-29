@@ -35,13 +35,23 @@ enum class Button { LOCK, UNLOCK };
 // 잠금/열림 핀을 OUTPUT LOW(버튼 뗌)로 확정. setup 초반에 호출(게이트 조기 해제).
 void begin();
 
-// 버튼 1회 누름: 누름 레벨 인가 → holdMs 유지 → 뗌 레벨 복귀. 블로킹(~holdMs).
-// LED는 Ticker 구동이라 이 블로킹 동안에도 멈추지 않는다.
-void press(Button b, uint16_t holdMs);
+// 버튼 1회 누름 — **논블로킹**. 누름 레벨만 인가하고 즉시 반환하며,
+// holdMs 가 지나면 update() 가 뗌 레벨로 되돌린다.
+//   holdMs = 0     → config.h CARKEY_PRESS_MS
+//   상한 초과      → CARKEY_PRESS_MAX_MS 로 클램프
+// 반환 false = 이미 다른 누름이 진행 중이라 거부됨. 겹친 조작을 조용히 삼키지 않는다
+// (호출측이 ack 를 done/failed 로 정직하게 구분할 수 있어야 한다).
+bool press(Button b, uint16_t holdMs = 0);
 
 // 편의 래퍼 (holdMs 기본값 = config.h CARKEY_PRESS_MS).
-void lock();
-void unlock();
+bool lock(uint16_t holdMs = 0);
+bool unlock(uint16_t holdMs = 0);
+
+// loop 매 틱 호출 — 유지시간이 끝난 누름을 뗀다. 이걸 부르지 않으면 라인이 눌린 채로 남는다.
+void update();
+
+// 누름 진행 중인가. 진행 중이면 남은 시간(ms), 아니면 0.
+uint32_t busyRemainMs();
 
 // Debug Console 훅: cmd가 "lock"/"unlock"이면 실행하고 true 반환(그 외 false).
 // 시리얼 단일 소유자(Prov::handleSerial)의 미지 명령 분기에서 호출한다.

@@ -50,6 +50,16 @@ static const char *nameFor(Button b) {
     return (b == Button::LOCK) ? "LOCK" : "UNLOCK";
 }
 
+// --- 논블로킹 누름 상태 ------------------------------------------------------
+// delay()로 유지하면 트렁크처럼 2초 이상 눌러야 하는 기능에서 loop 가 그만큼 멈춰
+// LED 패턴·콘솔·MQTT URC 펌핑이 정지한다. 누름은 걸어만 두고 update()가 뗀다.
+static bool     s_active    = false;
+static Button   s_activeBtn = Button::LOCK;
+static int      s_activePin = -1;
+static uint32_t s_releaseAt = 0;
+
+uint32_t busyRemainMs();   // press() 의 거부 로그가 먼저 참조한다
+
 void begin()
 {
     // 두 라인을 즉시 뗌(release) 상태로 확정 — 부팅 초기 플로팅/오동작 방지.
@@ -59,38 +69,72 @@ void begin()
     pinMode(PIN_KEY_UNLOCK, PIN_MODE_SEL);
     digitalWrite(PIN_KEY_UNLOCK, RELEASE_LEVEL);
     // 배선/극성 확인용 — 부팅 배너에 이미 기능 목록이 나오므로 상세는 DEBUG.
+    s_active = false;   // 재초기화 시 진행 중 누름 상태를 남기지 않는다
     LOGD(DbgConsole, "[KEY] begin — lock=GPIO%d unlock=GPIO%d, drive=%s, released\n",
          PIN_KEY_LOCK, PIN_KEY_UNLOCK, DRIVE_NAME);
 }
 
-void press(Button b, uint16_t holdMs)
+bool press(Button b, uint16_t holdMs)
 {
-    const int pin = pinFor(b);
+    if (s_active) {
+        // 겹친 조작 — 두 라인을 동시에 누르거나 유지시간을 뒤엎으면 fob 동작이 불확실해진다.
+        // 조용히 삼키지 않고 거부를 알린다(호출측이 ack 를 failed 로 낼 수 있도록).
+        LOGW(DbgConsole, "[KEY] %s 거부 — %s 누름 진행 중(%lums 남음)\n",
+             nameFor(b), nameFor(s_activeBtn), (unsigned long)busyRemainMs());
+        return false;
+    }
+
+    uint32_t hold = holdMs ? holdMs : (uint32_t)CARKEY_PRESS_MS;
+    if (hold > (uint32_t)CARKEY_PRESS_MAX_MS) hold = CARKEY_PRESS_MAX_MS;
+
+    s_activeBtn = b;
+    s_activePin = pinFor(b);
+    s_releaseAt = millis() + hold;
+    s_active    = true;
+    digitalWrite(s_activePin, PRESS_LEVEL);   // 누름 레벨 (DIRECT=LOW / MOSFET=HIGH)
+
     // 실제 차키 동작은 앱 상태 전이 — 평상시에도 남아야 원격 명령 결과를 추적할 수 있다.
-    LOGI(DbgConsole, "[KEY] %s press (%ums)\n", nameFor(b), holdMs);
-    digitalWrite(pin, PRESS_LEVEL);     // 라인을 누름 레벨로 (DIRECT=LOW / MOSFET=HIGH)
-    delay(holdMs);                      // 유지(블로킹 — LED는 Ticker라 무관)
-    digitalWrite(pin, RELEASE_LEVEL);   // 뗌: fob 내부 풀업 복귀 (DIRECT=Hi-Z / MOSFET=OFF)
+    LOGI(DbgConsole, "[KEY] %s press (%lums)\n", nameFor(b), (unsigned long)hold);
+    return true;
 }
 
-void lock()   { press(Button::LOCK,   CARKEY_PRESS_MS); }
-void unlock() { press(Button::UNLOCK, CARKEY_PRESS_MS); }
+void update()
+{
+    if (!s_active) return;
+    // millis() 오버플로우 안전 비교.
+    if ((int32_t)(millis() - s_releaseAt) < 0) return;
+
+    digitalWrite(s_activePin, RELEASE_LEVEL);  // 뗌: fob 풀업 복귀 (DIRECT=Hi-Z / MOSFET=OFF)
+    s_active = false;
+    LOGD(DbgConsole, "[KEY] %s release\n", nameFor(s_activeBtn));
+}
+
+uint32_t busyRemainMs()
+{
+    if (!s_active) return 0;
+    int32_t left = (int32_t)(s_releaseAt - millis());
+    return left > 0 ? (uint32_t)left : 0;
+}
+
+bool lock(uint16_t holdMs)   { return press(Button::LOCK,   holdMs); }
+bool unlock(uint16_t holdMs) { return press(Button::UNLOCK, holdMs); }
 
 bool tryConsole(const String &cmd, const String &arg, Stream &io)
 {
-    // 선택 인자: 누름 유지시간(ms). 미지정/무효면 기본값 CARKEY_PRESS_MS.
-    long ms = arg.length() ? arg.toInt() : 0;
-    uint16_t hold = (ms > 0 && ms <= 5000) ? (uint16_t)ms : CARKEY_PRESS_MS;
+    if (cmd != "lock" && cmd != "unlock") return false;
 
-    if (cmd == "lock") {
-        press(Button::LOCK, hold);
-        return true;
+    // 선택 인자: 누름 유지시간(ms). 미지정/무효면 기본값(press 내부에서 적용).
+    long ms = arg.length() ? arg.toInt() : 0;
+    if (ms < 0) ms = 0;
+    if (ms > CARKEY_PRESS_MAX_MS) {
+        io.printf("[KEY] %ldms 는 상한 초과 — %dms 로 제한합니다\n", ms, CARKEY_PRESS_MAX_MS);
+        ms = CARKEY_PRESS_MAX_MS;
     }
-    if (cmd == "unlock") {
-        press(Button::UNLOCK, hold);
-        return true;
+
+    if (!press(cmd == "lock" ? Button::LOCK : Button::UNLOCK, (uint16_t)ms)) {
+        io.println("[KEY] 다른 누름이 끝난 뒤 다시 시도하세요");
     }
-    return false;
+    return true;
 }
 
 } // namespace Carkey

@@ -153,13 +153,15 @@ void handle(TinyGsm &modem, Stream &log)
 
     if (type == "door_lock") {
 #if FEATURE_CARKEY
-        Carkey::lock();  sendAck(modem, log, cmdId, "done");
+        // press()는 논블로킹이라 ack 는 "누름을 시작했다"는 뜻이다(유지 종료를 기다리지 않음).
+        // 다른 누름이 진행 중이면 거부되므로 그때는 failed 로 정직하게 알린다.
+        sendAck(modem, log, cmdId, Carkey::lock() ? "done" : "failed");
 #else
         sendAck(modem, log, cmdId, "failed");
 #endif
     } else if (type == "door_unlock") {
 #if FEATURE_CARKEY
-        Carkey::unlock(); sendAck(modem, log, cmdId, "done");
+        sendAck(modem, log, cmdId, Carkey::unlock() ? "done" : "failed");
 #else
         sendAck(modem, log, cmdId, "failed");
 #endif

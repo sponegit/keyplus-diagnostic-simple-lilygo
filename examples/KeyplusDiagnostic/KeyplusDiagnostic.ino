@@ -585,6 +585,19 @@ static void statusGps(Stream &io)
 }
 #endif
 
+#if FEATURE_CARKEY
+static void statusCarkey(Stream &io)
+{
+    uint32_t left = Carkey::busyRemainMs();
+    io.println("[KEY]");
+    io.printf("  %-14s: %s\n", "누름 상태",
+              left ? "진행 중" : "대기");
+    if (left) io.printf("  %-14s: %lums\n", "남은 시간", (unsigned long)left);
+    io.printf("  %-14s: %dms (상한 %dms)\n", "기본 유지시간",
+              CARKEY_PRESS_MS, CARKEY_PRESS_MAX_MS);
+}
+#endif
+
 static void statusModem(Stream &io)
 {
     io.println("[MODEM]");
@@ -701,16 +714,19 @@ static void statusAll(Stream &io, const String &what)
 #if FEATURE_OBD2
     if (all || what == "obd")    { statusObd(io);    any = true; }
 #endif
+#if FEATURE_CARKEY
+    if (all || what == "key")    { statusCarkey(io); any = true; }
+#endif
 
     if (!any) {
-        io.printf("[STATUS] 알 수 없는 영역 '%s' — gps|modem|server|obd|all\n", what.c_str());
+        io.printf("[STATUS] 알 수 없는 영역 '%s' — gps|modem|server|obd|key|all\n", what.c_str());
     }
 }
 
 static void appPrintHelp(Stream &io)
 {
     io.println("[APP]  명령: info                        단말 정보(부팅 배너와 동일)");
-    io.println("             status [gps|modem|server|obd]  상태 조회(생략 시 전체)");
+    io.println("             status [gps|modem|server|obd|key]  상태 조회(생략 시 전체)");
 }
 
 static bool appConsole(const String &cmd, const String &arg, Stream &io)
@@ -738,6 +754,11 @@ void loop()
 
     // 상태표시 LED 패턴 구동(비블로킹, millis 기반). 매 틱 호출.
     Led::update();
+
+#if FEATURE_CARKEY
+    // 차키 누름 해제(비블로킹). 이걸 부르지 않으면 라인이 눌린 채로 남는다.
+    Carkey::update();
+#endif
 
     // Debug Console 입력 처리 (setid/setpw/showid/clearid/help) — 논블로킹.
     Prov::handleSerial(SerialMon);
