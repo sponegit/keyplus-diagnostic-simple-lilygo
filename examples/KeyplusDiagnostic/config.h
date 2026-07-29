@@ -64,6 +64,7 @@
 // ⚠️ 실측: LG U+ 캐리어 NAT가 유휴 TCP를 약 60초에 끊는다(+CMQTTCONNLOST:0,2).
 // 모뎀이 PINGREQ 자동발송을 안 하므로, publish 주기를 그보다 짧게 잡아 publish 자체로
 // NAT를 열어둔다(30초 → 여유 2배). cmd 증분(유휴 상시연결) 땐 실 PING으로 재설계.
+#define MQTT_NAT_IDLE_TIMEOUT_MS    (60000UL) // 캐리어 NAT 유휴 드롭 시간(실측)
 #define MQTT_PUBLISH_INTERVAL_MS    (30000UL) // telemetry 발행 주기(= NAT keep-alive 역할)
 #define MQTT_RECONNECT_CAP_MS       (15000UL) // 재접속 백오프 상한 (최악도 20초 내 수렴)
 // Mqtt::handle의 URC 수신 상한. 매 틱 호출이므로 짧아야 한다(래퍼 기본값 100ms는
@@ -147,9 +148,25 @@
 #define CFG_DEFAULT_KEEPALIVE_S     MQTT_KEEPALIVE_S
 // 안전 가드(원격 오설정 방지). 범위 밖 값은 명령 무시.
 #define CFG_TELE_MS_MIN             (5000UL)
-#define CFG_TELE_MS_MAX             (600000UL)
+// ⚠️ 상한은 캐리어 NAT 유휴 드롭(MQTT_NAT_IDLE_TIMEOUT_MS)에 묶인다.
+// 모뎀이 PINGREQ를 자동발송하지 않아 publish 자체가 유일한 연결유지 수단이므로,
+// 이보다 긴 주기를 허용하면 config_update 한 번으로 단말이 발행→NAT드롭→재접속 루프에
+// 빠진다(keepalive_s를 아무리 올려도 PING을 안 보내니 소용없다).
+// 더 긴 주기가 필요하면 별도 PINGREQ 태스크를 먼저 도입해야 한다.
+#define CFG_TELE_MS_MAX             (MQTT_NAT_IDLE_TIMEOUT_MS * 3 / 4)  // 45초 (NAT의 75%)
 #define CFG_KEEPALIVE_S_MIN         (30)
 #define CFG_KEEPALIVE_S_MAX         (1800)
+// keepalive_s 는 telemetry 주기의 최소 몇 배여야 하는가. publish 사이 유휴 동안 브로커가
+// 먼저 세션을 끊으면(MQTT 규격상 keepalive의 1.5배에서 끊는다) 재접속 루프가 된다.
+#define CFG_KEEPALIVE_TELE_RATIO    (2)
+
+// 컴파일 타임 정합성 — 기본 발행 주기가 원격 설정 상한을 넘으면 안 된다.
+#if (MQTT_PUBLISH_INTERVAL_MS > CFG_TELE_MS_MAX)
+#error "MQTT_PUBLISH_INTERVAL_MS가 CFG_TELE_MS_MAX를 초과 — 캐리어 NAT 유휴 드롭에 걸린다"
+#endif
+#if (MQTT_KEEPALIVE_S * 1000UL < MQTT_PUBLISH_INTERVAL_MS * CFG_KEEPALIVE_TELE_RATIO)
+#error "MQTT_KEEPALIVE_S가 발행 주기 대비 너무 짧다 — 브로커가 먼저 세션을 끊는다"
+#endif
 
 // ===========================================================================
 // 상태표시 LED 핀 (3단계 — 외장 LED, active-high)  설계: phase3-firmware-provisioning-led.md §4
