@@ -143,7 +143,17 @@ bool begin(TinyGsm &modem, Stream &log)
 // 자체 추적값 반환 (플래키한 AT+CMQTTDISC? 폴링 회피).
 bool isConnected(TinyGsm & /*modem*/) { return s_connected; }
 
-void handle(TinyGsm &modem) { modem.mqtt_handle(); }
+// 콜백/URC 펌핑. 매 틱 호출되므로 "URC 없을 때 0ms"가 되어야 한다.
+//   래퍼 mqtt_handle(timeout)은 내부에서 waitResponse(timeout, "+CMQTTRXSTART:")를 하는데,
+//   waitResponse는 매칭이 없으면 timeout을 통째로 spin한다(TinyGsmClientA7670.h do-while).
+//   기본값 100ms → cmd URC가 거의 없는 정상 운행 중에도 매 틱 100ms를 버려
+//   실 루프 주기가 delay(50)의 3배(≈150ms)가 되고 LED 패턴/OBD 폴 시각이 밀린다.
+//   → UART에 실제 바이트가 있을 때만 진입시키고, 그때도 짧은 상한만 준다.
+void handle(TinyGsm &modem)
+{
+    if (!modem.stream.available()) return;   // URC 없음 → 즉시 반환(0ms)
+    modem.mqtt_handle(MQTT_HANDLE_TIMEOUT_MS);
+}
 
 bool ensure(TinyGsm &modem, Stream &log)
 {

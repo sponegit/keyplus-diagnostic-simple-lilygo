@@ -62,6 +62,10 @@
 // NAT를 열어둔다(30초 → 여유 2배). cmd 증분(유휴 상시연결) 땐 실 PING으로 재설계.
 #define MQTT_PUBLISH_INTERVAL_MS    (30000UL) // telemetry 발행 주기(= NAT keep-alive 역할)
 #define MQTT_RECONNECT_CAP_MS       (15000UL) // 재접속 백오프 상한 (최악도 20초 내 수렴)
+// Mqtt::handle의 URC 수신 상한. 매 틱 호출이므로 짧아야 한다(래퍼 기본값 100ms는
+// 유휴 시에도 통째로 소모되어 루프 주기를 3배로 늘린다 — mqtt.cpp handle 주석 참고).
+// UART에 바이트가 있을 때만 진입하므로, 한 URC를 마저 읽을 정도만 주면 충분하다.
+#define MQTT_HANDLE_TIMEOUT_MS      (20)
 #define MQTT_CA_FILENAME            "emqx_ca.pem"
 
 // ── 브로커 선택 ─────────────────────────────────────────────────────────
