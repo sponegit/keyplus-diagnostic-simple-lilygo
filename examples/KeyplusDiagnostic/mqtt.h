@@ -40,6 +40,10 @@ String clientId();
 String topicTelemetry();
 bool   serviceStarted();
 
+// 모뎀 리셋 직후 호출 — 펌웨어가 들고 있던 서비스/접속 플래그를 모뎀 상태에 맞춘다.
+// 이걸 빠뜨리면 다음 begin()이 CMQTTSTART를 건너뛰어 접속이 영영 실패한다.
+void resetServiceState();
+
 // 콜백/keepalive 펌핑. loop 매 틱 호출.
 void handle(TinyGsm &modem);
 

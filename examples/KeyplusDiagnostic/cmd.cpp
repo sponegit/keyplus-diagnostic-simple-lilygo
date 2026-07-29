@@ -103,6 +103,13 @@ void subscribe(TinyGsm &modem, Stream &log)
     else    LOGW(log, "[CMD] subscribe %s 실패 — 다운링크 수신 불가\n", s_cmdTopic.c_str());
 }
 
+void markUnsubscribed()
+{
+    // clean_session=1 이라 새 MQTT 세션마다 구독이 사라진다. 모뎀 리셋이면 더더욱.
+    // 이 플래그가 참으로 남아 있으면 재구독 로직이 "이미 됐다"고 보고 건너뛴다.
+    s_subscribed = false;
+}
+
 String topic()      { return s_cmdTopic; }
 bool   isSubscribed() { return s_subscribed; }
 bool   hasPendingRx() { return s_pending; }

@@ -306,11 +306,14 @@ static void printStatusLine(bool connected, uint32_t seq, const char *pubResult)
     }
 
 #if FEATURE_LTE
-    // rssi는 마지막 발행 때 읽어둔 값 — 상태 출력 때문에 AT 왕복이 늘지 않게 한다.
+    // 접속 중엔 마지막 발행 때 읽어둔 값을 재사용해 AT 왕복을 늘리지 않는다.
+    // 미접속이면 그 값이 끊길 당시의 낡은 수치(대개 99=측정불가)로 굳어 오해를 부르므로,
+    // 30초에 한 번뿐인 유휴 [STAT] 에서는 신선하게 읽는다.
+    int rssi = connected ? Mqtt::lastRssi() : modem.getSignalQuality();
     SerialMon.printf("[STAT] up=%lus mqtt=%s rssi=%d gps=%s obd=%s seq=%lu %s\n",
                      (unsigned long)(millis() / 1000UL),
                      connected ? "on" : "OFF",
-                     Mqtt::lastRssi(), gpsBuf, obdBuf,
+                     rssi, gpsBuf, obdBuf,
                      (unsigned long)seq, pubResult);
 #else
     (void)connected; (void)seq; (void)pubResult;
@@ -808,6 +811,8 @@ void loop()
         LOGI(SerialMon, "[MQTT] 재접속됨\n");
         Led::set(Led::State::MQTT_OK);          // 재접속 성공 → 정상(heartbeat)
         // clean_session=1 → 재접속마다 재구독. 단 발행 ACK가 빠질 시간을 주고 시도한다.
+        // 이전 세션의 구독 플래그가 남아 있으면 재구독을 건너뛰므로 먼저 내린다.
+        Cmd::markUnsubscribed();
         g_nextSubAt     = now + CMD_SUB_DELAY_MS;
         g_subRetryDelay = 0;
     }
@@ -858,6 +863,11 @@ void loop()
                         if (g_lteFailStreak >= LTE_FAIL_BEFORE_RESET) {
                             if (!Lte::softReset(modem, SerialMon)) modemHardReset();
                             g_lteFailStreak = 0;   // 리셋했으니 다시 센다
+                            // ⚠️ 모뎀이 리셋되면 CMQTT 서비스와 구독이 모두 사라진다.
+                            //    펌웨어 플래그를 같이 내려주지 않으면 begin()이 CMQTTSTART를
+                            //    건너뛰어 "접속 실패"만 무한 반복한다(실측 확인된 증상).
+                            Mqtt::resetServiceState();
+                            Cmd::markUnsubscribed();
                         }
                         LOGW(SerialMon, "[LTE] 다음 재브링업 %lus 후\n",
                              (unsigned long)(g_lteRetryDelay / 1000UL));

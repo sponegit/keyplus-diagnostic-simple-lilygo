@@ -154,6 +154,17 @@ bool begin(TinyGsm &modem, Stream &log)
 // 자체 추적값 반환 (플래키한 AT+CMQTTDISC? 폴링 회피).
 bool isConnected(TinyGsm & /*modem*/) { return s_connected; }
 
+void resetServiceState()
+{
+    // 모뎀이 리셋되면 CMQTT 서비스(AT+CMQTTSTART)도 함께 사라진다. 그런데 s_serviceStarted
+    // 는 펌웨어 쪽 플래그라 그대로 남아, begin()이 mqtt_begin()을 건너뛰고 곧바로
+    // mqtt_connect()를 호출한다 → 서비스가 없으니 영영 접속 실패한다.
+    // 모뎀을 리셋한 쪽에서 이걸 불러 상태를 모뎀과 다시 맞춘다. AT는 보내지 않는다
+    // (갓 리셋된 모뎀에 mqtt_disconnect를 보내면 무의미하게 블로킹된다).
+    s_serviceStarted = false;
+    s_connected      = false;
+}
+
 int lastRssi() { return s_lastRssi; }
 int lastReg()  { return s_lastReg; }
 
