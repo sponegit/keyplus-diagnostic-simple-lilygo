@@ -144,7 +144,10 @@
 // 단말 신원/버전 — TODO(provisioning): NVS 프로비저닝으로 이관. 지금은 검증용 상수.
 // 포맷 vt-YYMM-NNNN-XXX (계약 @keyplus-diagnostic/shared deviceId.ts 와 동일).
 #define DEVICE_ID                   "vt-2607-0001-x7q"
-#define FW_VERSION                  "0.2.0-ota"
+// 펌웨어 버전 — 부팅 배너/info, telemetry meta, 프로비저닝 요청 body, OTA 결과 검증에
+// 모두 이 값이 쓰인다(단일 출처). OTA 로 새 이미지를 내릴 때는 서버가 기대하는 version 과
+// 반드시 일치시켜야 한다 — 불일치면 재부팅 후 ota ack 가 failed 로 나간다(ota.cpp).
+#define FW_VERSION                  "0.2.1"
 
 // ===========================================================================
 // UART 로그 레벨 (log.h)

@@ -1,0 +1,31 @@
+{
+  "product": "keyplus-diagnostic",
+  "board": "LILYGO T-A7670E (ESP32-WROVER, Flash 4MB / PSRAM 8MB)",
+  "version": "0.2.1",
+  "file": "keyplus-diagnostic-0.2.1.bin",
+  "size": 383920,
+  "md5": "64fb30e80e34e706b933c25943baf857",
+  "sha256": "0869013deb0ae1ecc05ba2b2e55025faa8d665867a4bfb4b3cc8486ba7a6ad46",
+  "partition": {
+    "table": "min_spiffs.csv",
+    "ota_slot_bytes": 1966080,
+    "usage_pct": 19.5
+  },
+  "url": "https://REPLACE-ME/fw/keyplus-diagnostic-0.2.1.bin",
+  "verify": {
+    "device_checks": "md5",
+    "note": "단말은 md5만 검증한다(Update.setMD5). sha256은 배포 경로 무결성 확인용."
+  },
+  "changes": [
+    "cmd 구독 실패 원인 3종 수정 — SUBACK 타임아웃 1s→10s / 수신 URC 파싱 창 복구 / 구독 백오프 재시도",
+    "모뎀 무응답 복구 경로 — AT 생존 확인 + 소프트(CFUN=1,1)/하드(PWRKEY) 리셋 승격",
+    "LTE 재브링업 지수 백오프 (전원 마진 부족 시 최대출력 재시도 몰아치기 방지)",
+    "보조 콘솔 UART 추가 (TX=GPIO13 / RX=GPIO34) — USB-C 없이 상시전원 상태로 콘솔 사용",
+    "진단 콘솔 info / status [gps|modem|server|obd] 명령 추가",
+    "UART 로그 레벨제 (기본 INFO, 콘솔 'log debug'로 상세 전환, NVS 유지)",
+    "config_update 교차검증 — telemetry 주기가 캐리어 NAT 유휴 드롭을 넘지 못하게 상한 조정",
+    "OBD2 확장 PID 미지원 래치 + 폴 조기중단, 링크 재확립 지수 백오프",
+    "GPS 폴링을 주행/정차로 분리, telemetry 발행 직전 좌표 갱신",
+    "Mqtt::handle 유휴 블로킹 제거 — 루프 주기 150ms→50ms"
+  ]
+}
