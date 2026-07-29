@@ -312,8 +312,12 @@ void loop()
     static Obd2::Data g_obd;
 
 #if FEATURE_OBD2
-    // OBD2 폴링: 링크 있으면 주기 수집, 없으면 주기 재확립 시도.
+    // OBD2 폴링: 링크 있으면 주기 수집, 없으면 백오프 간격으로 재확립 시도.
     static uint32_t lastObdPoll = 0, lastObdRetry = 0;
+    // 재확립 시도는 실패할 때마다 간격을 2배로 늘린다. Obd2::begin은 비트레이트 2종을
+    // 무응답 타임아웃까지 시도하므로 1회에 수백 ms 블로킹 + 드라이버 install/uninstall 이
+    // 따른다. 주차 중(시동 OFF)엔 이게 몇 시간이고 반복되므로 고정 30초는 과하다.
+    static uint32_t obdRetryDelay = OBD2_LINK_RETRY_MS;
     if (Obd2::isInstalled()) {
         if (now - lastObdPoll >= OBD2_POLL_INTERVAL_MS) {
             lastObdPoll = now;
@@ -325,11 +329,19 @@ void loop()
                 Obd2::end();
                 g_obd = Obd2::Data();   // valid=false → telemetry에서 obd 생략
                 lastObdRetry = now;
+                // 방금까지 살아있던 링크다. 일시적 글리치일 수 있으니 기본 간격부터 다시.
+                obdRetryDelay = OBD2_LINK_RETRY_MS;
             }
         }
-    } else if (now - lastObdRetry >= OBD2_LINK_RETRY_MS) {
+    } else if (now - lastObdRetry >= obdRetryDelay) {
         lastObdRetry = now;
-        Obd2::begin(SerialMon);   // 링크 재확립 시도(성공 시 다음 틱부터 폴링)
+        if (Obd2::begin(SerialMon)) {   // 성공 시 다음 틱부터 폴링
+            obdRetryDelay = OBD2_LINK_RETRY_MS;
+        } else {
+            obdRetryDelay *= 2;
+            if (obdRetryDelay > OBD2_LINK_RETRY_CAP_MS) obdRetryDelay = OBD2_LINK_RETRY_CAP_MS;
+            SerialMon.printf("[OBD2] 다음 재시도 %lus 후\n", (unsigned long)(obdRetryDelay / 1000));
+        }
     }
 #endif
 

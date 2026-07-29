@@ -12,6 +12,7 @@ namespace Obd2 {
 static bool     s_installed = false;
 static uint32_t s_supported = 0;   // PID 0x00 지원 비트마스크(0x01~0x20)
 static int      s_bitrate   = 0;   // 확립된 비트레이트(kbps)
+static int      s_lastGood  = 0;   // 마지막으로 링크가 잡힌 비트레이트(재시도 시 우선 시도)
 static char     s_vin[18]   = {0}; // VIN 캐시(차량당 불변, 링크 확립 시 1회 조회)
 static bool     s_hasVin    = false;
 static int      s_vinTries  = 0;   // VIN 재시도 횟수(미지원 차량 무한요청 방지)
@@ -223,7 +224,11 @@ static int requestPid(uint8_t pid, uint8_t *resp, int cap, uint32_t timeoutMs)
 bool begin(Stream &log)
 {
     end();
-    const int rates[] = { 500, 250 };   // 최신 차량 우선, 무응답 시 폴백
+    // 기본은 최신 차량(2008+) 표준 500k 우선, 무응답 시 250k 폴백.
+    // 단 한 번이라도 링크가 잡혔던 비트레이트가 있으면 그것부터 시도한다 — 250k 차량에서
+    // 주차 중 재시도할 때마다 500k 무응답 타임아웃을 먼저 먹는 것을 피한다.
+    const int rates[2] = { s_lastGood == 250 ? 250 : 500,
+                           s_lastGood == 250 ? 500 : 250 };
     for (int i = 0; i < 2; i++) {
         if (!install(rates[i], log)) continue;
         // 링크 확인 겸 지원 PID 조회(0x00). 초기엔 여유 있게 대기.
@@ -233,6 +238,7 @@ bool begin(Stream &log)
             s_supported = ((uint32_t)r[0] << 24) | ((uint32_t)r[1] << 16) |
                           ((uint32_t)r[2] << 8) | r[3];
             s_bitrate = rates[i];
+            s_lastGood = rates[i];   // 다음 재시도에서 이 속도부터
             log.printf("[OBD2] ✅ 링크 @%dkbps, 지원PID(01-20)=0x%08X\n",
                        s_bitrate, s_supported);
             if (!s_hasVin) readVin(log);   // VIN 1회 조회(ISO-TP), 캐시
