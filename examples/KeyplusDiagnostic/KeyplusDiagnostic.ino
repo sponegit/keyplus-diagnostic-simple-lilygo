@@ -349,11 +349,11 @@ static void modemPowerOn()
     digitalWrite(BOARD_PWRKEY_PIN, LOW);
 }
 
-#if FEATURE_LTE
+#if (FEATURE_LTE || FEATURE_GPS)
 // 모뎀 하드 리셋 — PWRKEY 전원 사이클 후 AT 재개까지 제한 시간만 대기.
 // 소프트 리셋(AT+CFUN=1,1)조차 안 먹는 상태(모뎀이 AT를 아예 못 받음)의 마지막 수단이다.
-// setup()의 modemWaitReady()와 달리 무한 대기하지 않는다 — loop에서 부르므로
-// 회복이 안 되면 포기하고 다음 백오프 주기에 다시 시도해야 한다.
+// 회복이 안 되면 포기하고(false) 호출측이 다음 주기에 다시 시도한다 — setup/loop 어느 쪽에서
+// 불러도 여기서 무한 대기하지 않는다.
 static bool modemHardReset()
 {
     LOGW(SerialMon, "[MODEM] 하드 리셋(PWRKEY 전원 사이클)\n");
@@ -373,12 +373,20 @@ static bool modemHardReset()
 #endif
 
 // AT 응답이 올 때까지 대기. 30회 실패 시 PWRKEY 재펄스.
-static void modemWaitReady()
+// MODEM_AT_READY_TIMEOUT_MS 를 넘기면 포기하고 false — 모뎀이 죽어도 부팅은 끝나야 한다
+// (콘솔/OBD2/차키는 모뎀과 무관하게 동작해야 하고, 모뎀 회복은 loop 가 계속 시도한다).
+static bool modemWaitReady()
 {
     LOGI(SerialMon, "[MODEM] AT 응답 대기...\n");
+    uint32_t start = millis();
     int retry = 0;
     while (!modem.testAT(1000)) {
         LOGD(SerialMon, ".");
+        if (millis() - start > MODEM_AT_READY_TIMEOUT_MS) {
+            LOGE(SerialMon, "\n[MODEM] AT 무응답 %lus — 모뎀 없이 부팅 계속(전원/배선 확인)\n",
+                 (unsigned long)(MODEM_AT_READY_TIMEOUT_MS / 1000UL));
+            return false;
+        }
         if (retry++ > 30) {
             digitalWrite(BOARD_PWRKEY_PIN, LOW);  delay(100);
             digitalWrite(BOARD_PWRKEY_PIN, HIGH); delay(MODEM_POWERON_PULSE_WIDTH_MS);
@@ -387,35 +395,60 @@ static void modemWaitReady()
         }
     }
     LOGI(SerialMon, "\n[MODEM] AT 준비됨\n");
+    return true;
 }
 
 // 모뎀이 내장 GPS 지원 모델인지 확인. A7670G(GPS 미지원)면 정지.
 static String g_modemName = "UNKNOWN";   // 부팅 배너에 실을 모뎀 모델명
 
+#if FEATURE_GPS
+// ATI 로 모델명 1회 조회 — 실패(=UNKNOWN)면 재시도 상한까지만.
+static String modemQueryName(int tries)
+{
+    for (int i = 1; i <= tries; ++i) {
+        String name = modem.getModemName();
+        if (name != "UNKNOWN") return name;
+        // TinyGSM 이 실패 시 "MODEM STRING NO FOUND!" 를 남긴다. 왜 실패했는지(무유심 부팅
+        // 직후 모뎀 AT 파서가 잠깐 막힘 등)는 그 앞줄의 URC 를 봐야 한다.
+        LOGW(SerialMon, "[MODEM] 모델명 조회 실패 (%d/%d)\n", i, tries);
+        delay(1000);
+    }
+    return String("UNKNOWN");
+}
+
+// 모델명 확보 + A7670G(내장 GPS 없음) 차단.
+// ⚠️ 여기서 무한 재시도하면 안 된다 — 유심 미삽입 첫 부팅에서 모뎀이 ATI 에 계속 무응답인
+//    사례가 실측됐고(config.h 모뎀 브링업 주석), 그때 setup 이 끝나지 않아 단말 전체가 멈췄다.
+//    상한까지 실패하면 하드 리셋 1회로 회복을 노리고, 그래도 모르면 UNKNOWN 인 채 진행한다.
+//    (모델 미상 = "A7670G 아님"으로 취급 — GPS 를 켜보고 안 되면 그때 실패로 드러난다.)
 static void modemCheckGpsCapable()
 {
-    String name = "UNKNOWN";
-    while (true) {
-        name = modem.getModemName();
-        if (name == "UNKNOWN") {
-            LOGD(SerialMon, "[MODEM] 모델명 조회 실패 — 재시도\n");
-            delay(1000);
-            continue;
-        }
-        // A7670G 계열은 내장 측위 미지원 → 외장 GPS 예제 필요.
-        if (name.startsWith("A7670G")) {
-            while (true) {
-                // 하드웨어 자체가 요구사항을 못 맞추는 상황 → 레벨과 무관하게 계속 알린다.
-                SerialMon.println("[MODEM] 이 모뎀은 내장 GPS가 없습니다(A7670G). "
-                                  "ExternalGPS_A7670G_Only 예제를 쓰세요. 정지.");
-                delay(5000);
-            }
-        }
-        g_modemName = name;
-        LOGD(SerialMon, "[MODEM] model: %s\n", name.c_str());
-        break;
+    String name = modemQueryName(MODEM_NAME_RETRY);
+
+    if (name == "UNKNOWN") {
+        LOGW(SerialMon, "[MODEM] 모델명 미확보 — 하드 리셋 후 재조회\n");
+        if (modemHardReset()) name = modemQueryName(MODEM_NAME_RETRY);
     }
+
+    if (name == "UNKNOWN") {
+        LOGE(SerialMon, "[MODEM] 모델명 확보 실패 — UNKNOWN 으로 계속 진행\n");
+        return;
+    }
+
+    // A7670G 계열은 내장 측위 미지원 → 외장 GPS 예제 필요.
+    if (name.startsWith("A7670G")) {
+        while (true) {
+            // 하드웨어 자체가 요구사항을 못 맞추는 상황 → 레벨과 무관하게 계속 알린다.
+            SerialMon.println("[MODEM] 이 모뎀은 내장 GPS가 없습니다(A7670G). "
+                              "ExternalGPS_A7670G_Only 예제를 쓰세요. 정지.");
+            delay(5000);
+        }
+    }
+
+    g_modemName = name;
+    LOGD(SerialMon, "[MODEM] model: %s\n", name.c_str());
 }
+#endif
 
 // 콘솔 핸들러는 loop 상태를 읽어야 해서 아래쪽(loop 직전)에 정의된다.
 // .ino 자동 프로토타입 생성은 기능 토글 조합에 따라 어긋나므로 직접 선언한다.
@@ -470,17 +503,30 @@ void setup()
     SerialAT.begin(115200, SERIAL_8N1, MODEM_RX_PIN, MODEM_TX_PIN);
     delay(3000);
 
-    modemWaitReady();
+    // 모뎀이 안 뜨면 GPS/LTE 는 못 쓰지만, 콘솔·OBD2·차키는 살아 있어야 한다 → 계속 진행.
+    const bool modemReady = modemWaitReady();
+    (void)modemReady;   // 기능 토글 조합(GPS/LTE 모두 off)에 따라 미사용일 수 있다
 
 #if FEATURE_GPS
-    modemCheckGpsCapable();   // 모델명 확보(배너에 실림) + A7670G(GPS 미지원) 차단
-    // GNSS를 먼저 켜서 아래 LTE 등록(최대 수십 초) 대기 동안 위성을 포착하게 한다.
-    LOGD(SerialMon, "[GPS] GNSS 활성화...\n");
-    while (!Gps::begin(modem)) {
-        LOGW(SerialMon, "[GPS] GNSS 활성화 실패 — 재시도\n");
-        delay(1000);
+    if (modemReady) {
+        modemCheckGpsCapable();   // 모델명 확보(배너에 실림) + A7670G(GPS 미지원) 차단
+        // GNSS를 먼저 켜서 아래 LTE 등록(최대 수십 초) 대기 동안 위성을 포착하게 한다.
+        LOGD(SerialMon, "[GPS] GNSS 활성화...\n");
+        bool gpsOn = false;
+        for (int i = 1; i <= MODEM_GPS_ENABLE_RETRY && !gpsOn; ++i) {
+            gpsOn = Gps::begin(modem);
+            if (!gpsOn) {
+                LOGW(SerialMon, "[GPS] GNSS 활성화 실패 (%d/%d)\n", i, MODEM_GPS_ENABLE_RETRY);
+                delay(1000);
+            }
+        }
+        // 실패해도 멈추지 않는다 — 폴링은 계속 돌고(미측위로 나감), 모뎀이 회복되면
+        // GNSS 도 대개 같이 살아난다. 여기서 막히면 나머지 기능까지 못 쓴다.
+        if (gpsOn) LOGI(SerialMon, "[GPS] GNSS 활성화됨\n");
+        else       LOGE(SerialMon, "[GPS] GNSS 활성화 실패 — GPS 없이 계속 진행\n");
+    } else {
+        LOGE(SerialMon, "[GPS] 모뎀 무응답 — GNSS 브링업 생략\n");
     }
-    LOGI(SerialMon, "[GPS] GNSS 활성화됨\n");
 #endif
 
     // 하드웨어 신원 + 접속 대상 + 주기 설정 요약. 레벨과 무관하게 항상 출력한다.
@@ -492,7 +538,7 @@ void setup()
 
     // 증분 A: 등록 → PDP → 평문 HTTP GET 으로 LG U+ 유심 데이터패스 검증.
     Led::set(Led::State::PROVISIONING);   // 망 등록/접속 시도 중 — 느린 점멸
-    if (Lte::begin(modem, SerialMon)) {
+    if (modemReady && Lte::begin(modem, SerialMon)) {
         LteStatus st;
         Lte::status(modem, st);
         Lte::printStatus(st, SerialMon);

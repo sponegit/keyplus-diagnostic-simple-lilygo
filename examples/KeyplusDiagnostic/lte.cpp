@@ -52,6 +52,25 @@ bool softReset(TinyGsm &modem, Stream &log)
     return false;
 }
 
+// SIM 인식 확인. 유심이 없으면(+CPIN: SIM REMOVED / NOT INSERTED) 등록은 반드시 실패하므로
+// 90초 폴링을 태우기 전에 여기서 끊는다. 부팅 직후 CPIN 지연은 재시도로 흡수한다.
+static bool simReady(TinyGsm &modem, Stream &log)
+{
+    SimStatus st = SIM_ERROR;
+    for (int i = 1; i <= LTE_SIM_PROBE_TRIES; ++i) {
+        st = modem.getSimStatus(LTE_SIM_PROBE_MS);
+        if (st == SIM_READY) return true;
+        LOGD(log, "[LTE] SIM 확인 %d/%d — status=%d\n", i, LTE_SIM_PROBE_TRIES, (int)st);
+        delay(1000);
+    }
+    if (st == SIM_LOCKED) {
+        LOGE(log, "[LTE] SIM 잠김(PIN) — simUnlock 필요. 등록 시도 생략\n");
+    } else {
+        LOGE(log, "[LTE] SIM 미인식 — 유심 삽입/접촉 확인. 등록 시도 생략\n");
+    }
+    return false;
+}
+
 bool begin(TinyGsm &modem, Stream &log)
 {
     // 모뎀이 죽어 있으면 등록 폴링(최대 LTE_REG_TIMEOUT_MS)이 통째로 낭비다.
@@ -61,6 +80,9 @@ bool begin(TinyGsm &modem, Stream &log)
         LOGE(log, "[LTE] 모뎀 무응답 — 등록 시도 생략(리셋 필요, 전원 마진 확인)\n");
         return false;
     }
+
+    // 유심이 없으면(또는 PIN 잠김) 등록 폴링은 90초를 버리고 실패할 뿐이다 — 조기 차단.
+    if (!simReady(modem, log)) return false;
 
     // APN을 등록 전에 지정 — 일부 통신사는 APN이 없으면 등록을 거부한다.
     LOGD(log, "[LTE] set APN: %s\n", LTE_APN);
