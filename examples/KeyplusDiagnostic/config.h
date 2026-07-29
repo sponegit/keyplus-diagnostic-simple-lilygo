@@ -78,11 +78,23 @@
 #define MQTT_NAT_IDLE_TIMEOUT_MS    (60000UL) // 캐리어 NAT 유휴 드롭 시간(실측)
 #define MQTT_PUBLISH_INTERVAL_MS    (30000UL) // telemetry 발행 주기(= NAT keep-alive 역할)
 #define MQTT_RECONNECT_CAP_MS       (15000UL) // 재접속 백오프 상한 (최악도 20초 내 수렴)
-// Mqtt::handle의 URC 수신 상한. 매 틱 호출이므로 짧아야 한다(래퍼 기본값 100ms는
-// 유휴 시에도 통째로 소모되어 루프 주기를 3배로 늘린다 — mqtt.cpp handle 주석 참고).
-// UART에 바이트가 있을 때만 진입하므로, 한 URC를 마저 읽을 정도만 주면 충분하다.
-#define MQTT_HANDLE_TIMEOUT_MS      (20)
+// Mqtt::handle의 URC 수신 상한. 유휴 시 100ms를 통째로 버리던 문제는 "UART에 바이트가
+// 있을 때만 진입"하는 가드로 해결했으므로(mqtt.cpp handle 주석), 이 값은 짧을 필요가 없다.
+// ⚠️ 오히려 짧으면 안 된다. cmd 수신은 +CMQTTRXSTART → RXTOPIC → RXPAYLOAD → RXEND
+//    4단계 URC를 연달아 파싱하는데, 래퍼가 각 단계마다 이 타임아웃을 쓴다.
+//    중간에 한 번이라도 끊기면 메시지를 통째로 놓친다 → 래퍼 기본값과 같은 100ms 유지.
+#define MQTT_HANDLE_TIMEOUT_MS      (100)
 #define MQTT_CA_FILENAME            "emqx_ca.pem"
+
+// --- cmd 구독 페이싱 --------------------------------------------------------
+// 접속 직후 첫 구독을 미루는 이유: connectSession이 status online을 발행하고 나면
+// 그 ACK(+CMQTTPUB URC)가 URC 스트림에 떠 있는데, 그 상태로 SUBACK을 기다리면
+// 파싱이 엉킨다. telemetry 첫 발행을 5초 미루는 것과 같은 이유다.
+#define CMD_SUB_DELAY_MS            (5000UL)
+// 구독 실패 시 재시도 간격(실패마다 2배, 상한까지). 재시도가 없으면 접속이 유지되는 한
+// 재접속 상승엣지가 오지 않아 다운링크가 영영 죽은 채로 남는다.
+#define CMD_SUB_RETRY_BASE_MS       (15000UL)
+#define CMD_SUB_RETRY_CAP_MS        (300000UL)  // 5분
 
 // ── 브로커 선택 ─────────────────────────────────────────────────────────
 // EMQX 기동 전엔 공개 테스트 브로커로 검증. 로컬 EMQX가 뜨면 아래 MQTT_BROKER_SEL

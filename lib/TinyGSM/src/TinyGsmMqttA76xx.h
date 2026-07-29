@@ -306,10 +306,20 @@ public:
         if (thisModem().waitResponse(10000UL) != 1) {
             return false;
         }
-        thisModem().waitResponse("+CMQTTSUB: ");
+        // SUBACK(+CMQTTSUB)은 "OK" 와 달리 브로커까지 왕복한 뒤에 온다.
+        // 인자 없는 waitResponse는 기본 타임아웃이 1000ms 뿐이라 TLS+LTE 에서는 쉽게 넘긴다.
+        // 타임아웃이 나면 아래 streamGetIntBefore가 엉뚱한 값을 읽어, 실제로는 성공한
+        // 구독을 실패로 오판한다(반대로 브로커 거부도 같은 false 라 구분이 안 된다).
+        if (thisModem().waitResponse(10000UL, "+CMQTTSUB: ") != 1) {
+            DBG("### CMQTTSUB: SUBACK 타임아웃");
+            return false;
+        }
         int id = thisModem().streamGetIntBefore(',');
         int status = thisModem().streamGetIntBefore('\n');
         thisModem().stream.flush();
+        if (status != 0) {
+            DBG("### CMQTTSUB: 브로커 거부 err=", status);
+        }
         return id == clientIndex && status == 0;
     }
 

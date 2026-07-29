@@ -96,6 +96,9 @@ static uint32_t g_nextPubAt    = 0;
 static uint32_t g_lastStatAt   = 0;   // [STAT] 마지막 출력 시각(유휴 주기 출력용)
 // 403 래치 — allowlist 문제. 무한 재시도 금지(재부팅/setid로만 해제).
 static bool     g_provRejected = false;
+// cmd 구독 페이싱 — 접속 직후 지연 + 실패 시 지수 백오프 재시도.
+static uint32_t g_nextSubAt     = 0;
+static uint32_t g_subRetryDelay = 0;
 // LTE 재브링업 페이싱/복구 상태.
 //   연속 실패마다 간격을 늘리고(전원이 약할 때 모뎀이 쉬는 시간을 준다),
 //   LTE_FAIL_BEFORE_RESET 회에 닿으면 모뎀 자체를 리셋한다.
@@ -520,7 +523,8 @@ void setup()
             if (Mqtt::begin(modem, SerialMon)) {
                 LOGI(SerialMon, "[MQTT] telemetry 발행 시작\n");
                 Led::set(Led::State::MQTT_OK);    // 정상 접속 — heartbeat
-                Cmd::subscribe(modem, SerialMon); // v1/{id}/cmd 구독
+                // 구독은 여기서 하지 않는다 — status online 발행 ACK가 URC 스트림에 떠 있어
+                // SUBACK 파싱이 엉킨다. loop 상승엣지가 CMD_SUB_DELAY_MS 뒤에 처리한다.
                 // OTA pending ack는 loop에서 hasPending() 가드로 flush(접속 확인 후).
             } else {
                 LOGW(SerialMon, "[MQTT] 접속 실패 — 위 로그(CA/네트워크) 확인\n");
@@ -625,6 +629,11 @@ static void statusServer(Stream &io)
               Cmd::topic().length() ? Cmd::topic().c_str() : "(미구독)",
               Cmd::isSubscribed() ? "[ok]" : "[실패/미구독]");
     if (Cmd::hasPendingRx()) io.println("  · 미처리 수신 명령 있음");
+    if (connected && !Cmd::isSubscribed()) {
+        int32_t left = (int32_t)(g_nextSubAt - millis());
+        io.printf("  %-14s: %lds 후 (간격 %lus)\n", "구독 재시도",
+                  (long)(left > 0 ? left / 1000 : 0), (unsigned long)(g_subRetryDelay / 1000UL));
+    }
     io.printf("  %-14s: %lums (keepalive %ds)\n", "발행 주기",
               (unsigned long)Cfg::telemetryIntervalMs(), Cfg::keepaliveS());
     io.printf("  %-14s: %lu\n", "발행 seq", (unsigned long)g_seq);
@@ -772,6 +781,22 @@ void loop()
     Mqtt::handle(modem);
     Cmd::handle(modem, SerialMon);   // 수신 명령 처리 + ack 발행
 
+    // cmd 구독 — 실패하면 백오프로 재시도한다. 접속이 유지되는 동안에는 재접속
+    // 상승엣지가 오지 않으므로, 여기서 재시도하지 않으면 다운링크가 영영 죽은 채로 남는다.
+    if (Mqtt::isConnected(modem) && !Cmd::isSubscribed()
+            && g_nextSubAt != 0 && (int32_t)(now - g_nextSubAt) >= 0) {
+        Cmd::subscribe(modem, SerialMon);
+        if (Cmd::isSubscribed()) {
+            g_subRetryDelay = 0;
+        } else {
+            g_subRetryDelay = g_subRetryDelay ? g_subRetryDelay * 2 : CMD_SUB_RETRY_BASE_MS;
+            if (g_subRetryDelay > CMD_SUB_RETRY_CAP_MS) g_subRetryDelay = CMD_SUB_RETRY_CAP_MS;
+            g_nextSubAt = now + g_subRetryDelay;
+            LOGW(SerialMon, "[CMD] 구독 재시도 %lus 후\n",
+                 (unsigned long)(g_subRetryDelay / 1000UL));
+        }
+    }
+
 
     bool connected = Mqtt::isConnected(modem);
 
@@ -782,7 +807,9 @@ void loop()
         g_nextPubAt = now + 5000;
         LOGI(SerialMon, "[MQTT] 재접속됨\n");
         Led::set(Led::State::MQTT_OK);          // 재접속 성공 → 정상(heartbeat)
-        Cmd::subscribe(modem, SerialMon);       // clean_session=1 → 재접속마다 재구독
+        // clean_session=1 → 재접속마다 재구독. 단 발행 ACK가 빠질 시간을 주고 시도한다.
+        g_nextSubAt     = now + CMD_SUB_DELAY_MS;
+        g_subRetryDelay = 0;
     }
     if (!connected && g_wasConnected) {
         // 끊김은 상태 전이 — 조용히 백오프에 들어가면 로그만 보고는 멈춘 것과 구분이 안 된다.
