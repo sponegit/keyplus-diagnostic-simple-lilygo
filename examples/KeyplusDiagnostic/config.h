@@ -134,6 +134,16 @@
 // 부팅 시 기본 런타임 레벨. NVS("cfg"/"log_lv")에 저장된 값이 있으면 그쪽이 우선한다.
 // 콘솔 'log debug' / 'log info' 로 현장에서 바꾸며, 변경은 재부팅 후에도 유지된다.
 #define LOG_DEFAULT_LEVEL           (3)   // INFO
+
+// --- 보조 콘솔 UART (외부 USB-TTL 어댑터) ---------------------------------
+// 차량 상시전원 장착 상태에서 USB-C 없이 콘솔을 쓰기 위한 두 번째 포트.
+// USB-C는 연결 시 브리지의 DTR/RTS 자동리셋 회로가 보드를 재부팅시키고,
+// 헤더의 UART0(GPIO1/3)은 그 브리지와 선을 공유해 외부 어댑터 TX가 GPIO3에서 경합한다
+// (수신은 되는데 송신만 안 먹는 증상). 상세 배경은 console.h 헤더 주석 참고.
+#define FEATURE_AUX_CONSOLE         1
+#define AUX_CONSOLE_TX_PIN          (13)  // 헤더 노출, TF Card CS(미사용), 스트랩 아님
+#define AUX_CONSOLE_RX_PIN          (34)  // 헤더 노출, 미사용, 입력 전용(RX 전용으로 적합)
+#define AUX_CONSOLE_BAUD            (115200)
 // [STAT] 한 줄은 telemetry 발행 때마다 나온다. 미접속이라 발행이 없을 땐 이 간격으로
 // 따로 남겨, 로그가 조용한 것과 펌웨어가 멈춘 것을 구분할 수 있게 한다.
 #define STATUS_LINE_IDLE_MS         (30000UL)

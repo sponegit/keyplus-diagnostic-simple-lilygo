@@ -11,10 +11,13 @@
  */
 #include "config.h"
 #include "utilities.h"
+#include "console.h"      // DbgConsole — U0(USB-C) + 보조 UART 동시 출력/입력
 #include <esp_system.h>   // esp_reset_reason() — 부팅 원인 진단
 
 #define TINY_GSM_RX_BUFFER  1024        // RX 버퍼 1KB
-#define SerialMon           Serial
+// 콘솔은 두 포트(USB-C / 외부 USB-TTL)에 동시에 붙는다 — console.h 참고.
+// TinyGSM 디버그 출력도 같은 스트림을 타므로 외부 UART에서도 다 보인다.
+#define SerialMon           DbgConsole
 #define TINY_GSM_DEBUG      SerialMon
 // #define DUMP_AT_COMMANDS             // 필요 시 AT 로그 (StreamDebugger 필요)
 
@@ -254,6 +257,10 @@ static void printDeviceInfo(TinyGsm &modem, const char *modemName)
     printFeatureLine();
     SerialMon.printf("  log level  : %s — 'log debug' 로 상세 출력\n",
                      Log::levelName(Log::level()));
+#if FEATURE_AUX_CONSOLE
+    SerialMon.printf("  aux console: TX=GPIO%d RX=GPIO%d @%d (USB-C와 동시 사용 가능)\n",
+                     AUX_CONSOLE_TX_PIN, AUX_CONSOLE_RX_PIN, AUX_CONSOLE_BAUD);
+#endif
     SerialMon.println("------------------------------------------------------------");
 }
 
@@ -383,7 +390,8 @@ static void appPrintHelp(Stream &io);
 // ---------------------------------------------------------------------------
 void setup()
 {
-    SerialMon.begin(115200);
+    // U0 + 보조 UART 동시 open. 이후 모든 출력이 양쪽 포트에 나간다.
+    consoleBegin();
     delay(100);
     // 로그 레벨을 먼저 로드해야 이후 LOGx 호출이 의도한 레벨로 걸러진다.
     Log::begin();

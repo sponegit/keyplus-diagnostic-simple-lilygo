@@ -299,6 +299,11 @@ void handleSerial(Stream &io)
                 processLine(s_line, io);
                 s_line = "";
             }
+        } else if (c < 0x20 || c > 0x7E) {
+            // 인쇄 가능 ASCII만 명령으로 받는다. 보조 콘솔 RX(GPIO34)는 내부 풀업이 없어
+            // 어댑터를 빼두면 라인이 뜨고 잡음이 문자로 들어오는데, 그게 그대로 누적되면
+            // 매번 '알 수 없는 명령' + help 가 쏟아진다. 잡음은 여기서 버린다.
+            continue;
         } else if (s_line.length() < 80) {
             s_line += c;
         }

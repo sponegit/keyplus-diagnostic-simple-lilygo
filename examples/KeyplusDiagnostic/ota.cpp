@@ -10,6 +10,7 @@
  */
 #include "ota.h"
 #include "log.h"
+#include "console.h"
 #include "config.h"
 #include "cmd.h"
 #include "mqtt.h"
@@ -69,7 +70,7 @@ void begin()
     // 진단: 부팅 파티션/상태.
     // (label 예: app0/app1, state: 0=NEW,1=PENDING_VERIFY,2=VALID,3=INVALID,4=ABORTED,0xff=UNDEFINED)
     // s_pendingVerify=true면 확정(onHealthy) 또는 期限 초과 강제 롤백(tick) 대상.
-    LOGD(Serial, "[OTA] boot partition=%s state=%d pendingVerify=%d\n",
+    LOGD(DbgConsole, "[OTA] boot partition=%s state=%d pendingVerify=%d\n",
                   running ? running->label : "?", (int)st, s_pendingVerify ? 1 : 0);
 }
 

@@ -5,6 +5,7 @@
 #include "obd2.h"
 #include "config.h"
 #include "log.h"
+#include "console.h"
 #include "driver/twai.h"
 #include <string.h>
 
@@ -48,9 +49,9 @@ static void dumpFrame(const char *dir, const twai_message_t &m)
 {
 #if OBD2_DUMP_RAW
     if (!LOG_ON(Log::L_DEBUG)) return;
-    Serial.printf("[CAN] %s %03X [%d]", dir, (unsigned)m.identifier, m.data_length_code);
-    for (int i = 0; i < m.data_length_code; i++) Serial.printf(" %02X", m.data[i]);
-    Serial.println();
+    DbgConsole.printf("[CAN] %s %03X [%d]", dir, (unsigned)m.identifier, m.data_length_code);
+    for (int i = 0; i < m.data_length_code; i++) DbgConsole.printf(" %02X", m.data[i]);
+    DbgConsole.println();
 #else
     (void)dir; (void)m;
 #endif
