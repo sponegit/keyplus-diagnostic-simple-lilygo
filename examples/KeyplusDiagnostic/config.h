@@ -49,6 +49,16 @@
 #define GPS_RETRY_INTERVAL_MS       (5000UL)
 // GNSS UART 속도 (모뎀 ↔ ESP32)
 #define GPS_BAUDRATE                (115200)
+// 연속 미측위 몇 회마다 GNSS 전원 상태(AT+CGNSSPWR?)를 확인할지.
+// ⚠️ 모뎀이 리셋되면(소프트/하드) GNSS 가 꺼진 상태로 돌아간다 — Gps::begin()은 setup
+//    에서 한 번뿐이라, 이 확인이 없으면 리셋 이후 영구 미측위가 된다.
+#define GPS_ENSURE_AFTER_FAILS      (3)
+// 미측위 진행 리포트 주기(INFO). 미측위는 로그가 완전히 침묵해서 폴이 도는지조차
+// 알 수 없었다 — 경과 시간 + 원시 +CGNSSINFO 를 이 주기로 한 줄 남긴다.
+#define GPS_NOFIX_REPORT_MS         (60000UL)
+// AGPS(AT+CAGPS) — 망 보조 데이터로 콜드스타트 단축. LTE(PDP) up 이후 1회 시도.
+// 실패해도 측위는 진행되므로 best-effort. 0 이면 시도하지 않는다.
+#define GPS_USE_AGPS                (1)
 
 // ===========================================================================
 // LTE / MQTT 설정 (1단계)   설계: lte-mqtt-device-design.md
@@ -185,7 +195,7 @@
 // 펌웨어 버전 — 부팅 배너/info, telemetry meta, 프로비저닝 요청 body, OTA 결과 검증에
 // 모두 이 값이 쓰인다(단일 출처). OTA 로 새 이미지를 내릴 때는 서버가 기대하는 version 과
 // 반드시 일치시켜야 한다 — 불일치면 재부팅 후 ota ack 가 failed 로 나간다(ota.cpp).
-#define FW_VERSION                  "0.2.8"
+#define FW_VERSION                  "0.2.9"
 
 // ===========================================================================
 // UART 로그 레벨 (log.h)

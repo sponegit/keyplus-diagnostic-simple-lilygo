@@ -33,7 +33,18 @@ namespace Gps {
 bool begin(TinyGsm &modem);
 
 // 위치 1회 폴링. fix 획득 시 true, 아직 측위 전이면 false.
+// 좌표는 NMEA ddmm.mmmmmm 로 오면 10진수 도로 변환해서 채운다(gps.cpp nmeaToDegrees).
 bool read(TinyGsm &modem, GpsFix &fix);
+
+// GNSS 엔진이 켜져 있는지(AT+CGNSSPWR?). 모뎀이 리셋되면 꺼진 상태로 돌아가므로,
+// 측위 실패가 이어질 때 이걸로 확인하고 begin()을 다시 불러야 한다.
+bool isEnabled(TinyGsm &modem);
+
+// AGPS(AT+CAGPS) — 망 보조 데이터로 콜드스타트 단축. PDP up 상태에서 best-effort.
+bool enableAgps(TinyGsm &modem);
+
+// 현재 위성군 설정(AT+CGNSSMODE?). 0 = 조회 실패. 4 = GPS+BDS+GALILEO+SBAS+QZSS.
+uint8_t mode(TinyGsm &modem);
 
 // GNSS 비활성화 (저전력 진입 시).
 void end(TinyGsm &modem);

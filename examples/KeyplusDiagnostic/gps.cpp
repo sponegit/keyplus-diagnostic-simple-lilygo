@@ -22,7 +22,43 @@ bool begin(TinyGsm &modem)
     }
     // 모뎀 ↔ ESP32 GNSS UART 속도 확정
     modem.setGPSBaud(GPS_BAUDRATE);
+
+    // 위성군 지정(AT+CGNSSMODE). 이걸 안 보내면 모뎀 기본값에 맡기게 되는데, 기본이
+    // 단일 위성군이면 포착이 극단적으로 느려진다(9시간 미측위 사례). LilyGO 의 A7670
+    // GNSS 예제들이 쓰는 값과 동일하게 GPS+BDS+GALILEO+SBAS+QZSS 를 켠다.
+    // 실패해도 측위 자체는 진행되므로 반환값을 막지는 않는다.
+    modem.setGPSMode(GNSS_MODE_GPS_BDS_GALILEO_SBAS_QZSS);
     return true;
+}
+
+uint8_t mode(TinyGsm &modem)
+{
+    // AT+CGNSSMODE? — 실제로 어떤 위성군이 켜져 있는지. 진단(status gps)용.
+    // 응답 전체를 문자열로 받아서 파싱한다 — TinyGSM 의 stream 파서(streamGetIntBefore)는
+    // protected 라 라이브러리 밖에서 못 쓴다.
+    String res;
+    modem.sendAT("+CGNSSMODE?");
+    if (modem.waitResponse(1000L, res) != 1) return 0;
+    int i = res.indexOf("+CGNSSMODE:");
+    if (i < 0) return 0;
+    return (uint8_t)res.substring(i + 11).toInt();
+}
+
+// +CGNSSINFO 의 좌표는 SIMCom 규격상 NMEA 형식 ddmm.mmmmmm(경도는 dddmm.mmmmmm)이고,
+// TinyGSM 은 이를 변환하지 않고 그대로 넘긴다(getGPSImpl 주석 "Latitude in ddmm.mmmmmm").
+// 그대로 telemetry 에 실으면 서울(37.57°)이 3734.2° 로 나가 지도상 좌표가 무의미해진다.
+//
+// 10진수 도(degree)로 들어오는 펌웨어도 있어(모델/펌웨어별 차이) 값을 보고 판단한다:
+// 위도는 10진수면 절대 90을 넘지 못하고, ddmm 형식이면 1° 이상에서 항상 100 이상이다.
+// 경도도 같은 논리로 180 기준. 국내(37N/127E)에서는 어느 쪽인지 항상 명확히 갈린다.
+static float nmeaToDegrees(float v, float maxDeg)
+{
+    float a = fabsf(v);
+    if (a <= maxDeg) return v;          // 이미 10진수 도 — 그대로
+    float deg = floorf(a / 100.0f);     // ddmm.mmmmmm → dd + mm.mmmmmm/60
+    float min = a - deg * 100.0f;
+    float out = deg + min / 60.0f;
+    return v < 0 ? -out : out;
 }
 
 bool read(TinyGsm &modem, GpsFix &fix)
@@ -32,6 +68,8 @@ bool read(TinyGsm &modem, GpsFix &fix)
                             &fix.vsat, &fix.usat, &fix.accuracy,
                             &fix.year, &fix.month, &fix.day,
                             &fix.hour, &fix.minute, &fix.second);
+    fix.lat = nmeaToDegrees(fix.lat, 90.0f);
+    fix.lon = nmeaToDegrees(fix.lon, 180.0f);
     // 모뎀이 속도/필드 미제공 시 -9999 센티넬을 준다(fix는 있어도 speed 필드 공란).
     // 음수는 무효 → 0으로 정리(telemetry·표시에 -9999.0km/h 노출 방지). 실속도는 OBD 0x0D가 권위.
     if (fix.speed < 0)    fix.speed = 0;
@@ -40,6 +78,20 @@ bool read(TinyGsm &modem, GpsFix &fix)
     // fixMode 0 = 아직 측위 못함. 좌표가 있어도 fixMode 0이면 무효 처리.
     fix.valid = got && fix.fixMode != 0;
     return fix.valid;
+}
+
+bool isEnabled(TinyGsm &modem)
+{
+    // AT+CGNSSPWR? — 모뎀이 리셋되면(소프트/하드) GNSS 전원이 0으로 돌아간다.
+    // 그 사실을 알 방법이 이 조회뿐이라, 폴 실패가 이어질 때 호출측이 확인한다.
+    return modem.isEnableGPS();
+}
+
+bool enableAgps(TinyGsm &modem)
+{
+    // AT+CAGPS — 망에서 보조 데이터(에페메리스 등)를 받아 콜드스타트를 단축한다.
+    // PDP 가 올라와 있어야 하고, 실패해도 측위 자체는 진행되므로 best-effort 다.
+    return modem.enableAGPS();
 }
 
 void end(TinyGsm &modem)

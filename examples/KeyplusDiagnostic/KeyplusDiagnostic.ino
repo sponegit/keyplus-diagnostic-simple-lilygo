@@ -109,6 +109,12 @@ static uint32_t g_lastGpsPoll = 0;   // 마지막 GPS 폴 시각(주기 폴 / �
 // g_lastFix는 측위 실패해도 마지막 유효 좌표를 유지하므로(telemetry가 계속 참조)
 // 전이 판정에 g_lastFix.valid를 쓸 수 없다.
 static bool g_gpsFixNow = false;
+// 연속 미측위 횟수 — GNSS 가 꺼져 있는지 확인할 시점을 잡는 데 쓴다.
+// ⚠️ 모뎀이 리셋되면(소프트/하드) AT+CGNSSPWR 이 0으로 돌아가 GNSS 가 꺼진다.
+//    Gps::begin()은 setup 에서 한 번뿐이라, 재활성화가 없으면 그 뒤로 영구 미측위다.
+static int      g_gpsFailStreak = 0;
+static uint32_t g_gpsNofixSince = 0;   // 미측위가 시작된 시각(진행 리포트용)
+static uint32_t g_gpsNofixLogAt = 0;   // 마지막 미측위 리포트 시각
 
 // GPS 1회 폴 → g_lastFix 갱신. 폴 시각도 같이 갱신하므로, 발행 직전에 호출하면
 // 바로 뒤따르는 주기 폴이 중복 실행되지 않는다.
@@ -123,18 +129,46 @@ static void pollGps(uint32_t now)
         if (got) LOGI(SerialMon, "[GPS] 측위 획득 (fix=%d, %d위성)\n", fix.fixMode, fix.vsat);
         else     LOGI(SerialMon, "[GPS] 측위 상실 — 마지막 좌표 유지\n");
         g_gpsFixNow = got;
+        if (!got) { g_gpsNofixSince = now; g_gpsNofixLogAt = now; }
     }
 
     if (got) {
+        g_gpsFailStreak = 0;
         g_lastFix = fix;                // telemetry용 캐시 갱신
         Gps::print(fix, SerialMon);     // 전체 좌표 덤프는 DEBUG에서만
-    } else if (LOG_ON(Log::L_DEBUG)) {
-        // 원시 GNSS 정보(+CGNSSINFO)는 미측위일 때만 — 위성 포착 진행상황 확인용이다.
-        // fix 확보 후엔 진단 가치가 없는데 모뎀 AT 왕복만 2배가 된다(getGPS + getGPSraw).
-        // DEBUG가 아니면 왕복 자체를 생략한다(로그만 끄는 게 아니라 AT도 안 보낸다).
+        return;
+    }
+
+    // ---- 이하 미측위 경로 ----
+    if (g_gpsNofixSince == 0) g_gpsNofixSince = now;   // 부팅부터 미측위인 경우
+
+    // GNSS 가 실제로 켜져 있는지 확인. 매 폴마다 AT 를 더 쏘면 낭비라 연속 실패
+    // 임계에 닿았을 때만 본다. 꺼져 있으면(모뎀 리셋) 다시 켠다.
+    if (++g_gpsFailStreak >= GPS_ENSURE_AFTER_FAILS) {
+        g_gpsFailStreak = 0;
+        if (!Gps::isEnabled(modem)) {
+            LOGW(SerialMon, "[GPS] GNSS 가 꺼져 있음(모뎀 리셋 추정) — 재활성화\n");
+            if (Gps::begin(modem)) LOGI(SerialMon, "[GPS] GNSS 재활성화됨\n");
+            else                   LOGE(SerialMon, "[GPS] GNSS 재활성화 실패 — 다음 폴에 재시도\n");
+        }
+    }
+
+    // 미측위는 INFO 에서 완전히 침묵했다 — 폴이 도는지조차 로그로 알 수 없었다.
+    // INFO 는 GPS_NOFIX_REPORT_MS 주기로 한 줄, DEBUG 는 매 폴 남긴다.
+    // 원시 +CGNSSINFO 는 미측위일 때만 조회한다 — fix 확보 후엔 진단 가치가 없는데
+    // 모뎀 AT 왕복만 2배가 된다(getGPS + getGPSraw).
+    bool reportNow = (now - g_gpsNofixLogAt >= GPS_NOFIX_REPORT_MS);
+    if (reportNow || LOG_ON(Log::L_DEBUG)) {
         String rawInfo = Gps::raw(modem);
-        SerialMon.print("[GPS] acquiring fix... raw: ");
-        SerialMon.println(rawInfo.length() ? rawInfo : "(no data)");
+        const char *rawStr = rawInfo.length() ? rawInfo.c_str()
+                                             : "(응답 없음 — 안테나/GNSS 확인)";
+        if (reportNow) {
+            g_gpsNofixLogAt = now;
+            LOGI(SerialMon, "[GPS] 미측위 %lus 경과 — raw: %s\n",
+                 (unsigned long)((now - g_gpsNofixSince) / 1000UL), rawStr);
+        } else {
+            LOGD(SerialMon, "[GPS] acquiring fix... raw: %s\n", rawStr);
+        }
     }
 }
 
@@ -542,6 +576,13 @@ void setup()
         LteStatus st;
         Lte::status(modem, st);
         Lte::printStatus(st, SerialMon);
+#if (FEATURE_GPS && GPS_USE_AGPS)
+        // PDP 가 올라온 직후 AGPS 보조 데이터를 받는다 — 콜드스타트(수 분)를 크게 줄인다.
+        // 실패해도 측위 자체는 진행되므로 경고만 남기고 넘어간다.
+        if (Gps::enableAgps(modem)) LOGI(SerialMon, "[GPS] AGPS 보조 데이터 수신됨\n");
+        else                        LOGW(SerialMon, "[GPS] AGPS 실패 — 자력 측위로 진행\n");
+#endif
+
         int code = Lte::httpGetCheck(modem, SerialMon);
         if (code == 200) {
             LOGI(SerialMon, "[LTE] 데이터패스 검증 성공 (HTTP 200)\n");
@@ -607,6 +648,13 @@ static void printAgo(Stream &io, const char *label, uint32_t stamp)
 static void statusGps(Stream &io)
 {
     io.println("[GPS]");
+    // GNSS 전원(AT+CGNSSPWR?) — 모뎀 리셋 뒤 꺼져 있는 상태를 눈으로 확인하는 항목.
+    // 사람이 status 를 쳤을 때만 AT 를 쏜다.
+    io.printf("  %-14s: %s\n", "GNSS 엔진",
+              Gps::isEnabled(modem) ? "on" : "OFF(측위 불가 — 재활성화 대기)");
+    io.printf("  %-14s: %d (4=GPS+BDS+GALILEO+SBAS+QZSS, 0=조회실패)\n",
+              "위성군", Gps::mode(modem));
+    io.printf("  %-14s: %s\n", "원시 CGNSSINFO", Gps::raw(modem).c_str());
     io.printf("  %-14s: %s\n", "측위", g_gpsFixNow ? "fix" : "no fix");
     if (g_lastFix.valid) {
         // g_lastFix는 측위를 놓쳐도 마지막 값을 유지한다 — telemetry가 이걸 계속 싣는다.
@@ -770,6 +818,7 @@ static void appPrintHelp(Stream &io)
 {
     io.println("[APP]  명령: info                        단말 정보(부팅 배너와 동일)");
     io.println("             status [gps|modem|server|obd|key]  상태 조회(생략 시 전체)");
+    io.println("             at <명령>                    모뎀 AT 직접 전송(예: at+cgnssinfo)");
 }
 
 // 콘솔 AT 조회 전에 대기 중인 URC 를 먼저 소화시킨다.
@@ -802,6 +851,31 @@ static bool appConsole(const String &cmd, const String &arg, Stream &io)
         drainModemUrc();
         String w = arg; w.toLowerCase();
         statusAll(io, w);
+        return true;
+    }
+    // 임의 AT 명령 패스스루 — 현장에서 재플래싱 없이 모뎀에 직접 물어보기 위한 것이다.
+    // (측위 진단: at+cgnssinfo / at+cgnsspwr? / at+cgnssmode? / at+cvauxs=1 등)
+    // 'at +cgnssinfo'(띄어쓰기)와 'at+cgnssinfo'(붙여쓰기) 둘 다 받는다 — 콘솔은 첫
+    // 공백까지를 명령으로 자르므로 후자는 cmd 자체에 AT 명령이 들어온다.
+    String lc = cmd; lc.toLowerCase();
+    if (lc == "at" || lc.startsWith("at+")) {
+        String body = (lc == "at") ? arg
+                                   : cmd.substring(2) + (arg.length() ? " " + arg : String());
+        body.trim();
+        if (!body.length()) {
+            io.println("사용법: at <명령>   예) at +cgnssinfo   at+cgnsspwr?");
+            return true;
+        }
+        // ⚠️ 사람이 친 명령에 한해 동작하고 loop 를 잠깐 멈춘다. 응답을 다른 경로가
+        //    먹지 않도록 먼저 대기 URC 를 비운다(info/status 와 같은 이유).
+        drainModemUrc();
+        String res;
+        modem.sendAT(body.c_str());
+        int r = modem.waitResponse(5000L, res);
+        res.trim();
+        io.printf("[AT] AT%s → %s\n", body.c_str(),
+                  r == 1 ? "OK" : r == 2 ? "ERROR" : r == 0 ? "타임아웃(무응답)" : "CME/CMS ERROR");
+        if (res.length()) io.println(res);
         return true;
     }
     return false;
@@ -952,6 +1026,15 @@ void loop()
                             Mqtt::resetServiceState();
                             Cmd::markUnsubscribed();
 
+#if FEATURE_GPS
+                            // 모뎀 리셋은 GNSS 도 끈다(AT+CGNSSPWR=0 상태로 복귀).
+                            // 여기서 되살리지 않으면 다음 폴들이 전부 미측위가 되고,
+                            // pollGps 의 연속실패 확인이 뒤늦게 고칠 때까지 위치가 빈다.
+                            if (revived) {
+                                if (Gps::begin(modem)) LOGI(SerialMon, "[GPS] 모뎀 리셋 후 GNSS 재활성화됨\n");
+                                else                   LOGW(SerialMon, "[GPS] 모뎀 리셋 후 GNSS 재활성화 실패 — 폴에서 재시도\n");
+                            }
+#endif
                             if (revived) {
                                 // 모뎀이 방금 재부팅돼 깨끗한 상태다 — 실패 이력으로 쌓인
                                 // 백오프를 그대로 쓰면(실측 60초) 살아난 모뎀을 놀린다.
