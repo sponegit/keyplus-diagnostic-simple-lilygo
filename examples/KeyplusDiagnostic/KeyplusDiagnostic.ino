@@ -80,10 +80,6 @@ static Obd2::Data g_obd;
 #if FEATURE_OBD2
 static uint32_t g_lastObdPoll  = 0;
 static uint32_t g_lastObdRetry = 0;
-// 재확립 시도는 실패할 때마다 간격을 2배로 늘린다. Obd2::begin은 비트레이트 2종을
-// 무응답 타임아웃까지 시도하므로 1회에 수백 ms 블로킹 + 드라이버 install/uninstall 이
-// 따른다. 주차 중(시동 OFF)엔 이게 몇 시간이고 반복되므로 고정 30초는 과하다.
-static uint32_t g_obdRetryDelay = OBD2_LINK_RETRY_MS;
 #endif
 
 #if FEATURE_LTE
@@ -259,7 +255,7 @@ static void printDeviceInfo(TinyGsm &modem, const char *modemName)
                      (unsigned long)Cfg::telemetryIntervalMs(), Cfg::keepaliveS());
 #endif
 #if FEATURE_OBD2
-    SerialMon.printf("  obd poll   : %lums (링크실패 시 %lus부터 백오프)\n",
+    SerialMon.printf("  obd poll   : %lums (링크실패 시 %lus 간격 재시도)\n",
                      (unsigned long)OBD2_POLL_INTERVAL_MS,
                      (unsigned long)(OBD2_LINK_RETRY_MS / 1000));
 #endif
@@ -682,7 +678,8 @@ static void statusObd(Stream &io)
     printAgo(io, "마지막 폴", g_lastObdPoll);
     io.printf("  %-14s: %lums\n", "폴 주기", (unsigned long)OBD2_POLL_INTERVAL_MS);
     if (!li.installed) {
-        io.printf("  %-14s: %lus\n", "재확립 간격", (unsigned long)(g_obdRetryDelay / 1000));
+        io.printf("  %-14s: %lus (고정)\n", "재확립 간격",
+                  (unsigned long)(OBD2_LINK_RETRY_MS / 1000));
         printAgo(io, "마지막 재시도", g_lastObdRetry);
     }
     if (g_obd.valid) {
@@ -781,7 +778,7 @@ void loop()
     Prov::handleSerial(SerialMon);
 
 #if FEATURE_OBD2
-    // OBD2 폴링: 링크 있으면 주기 수집, 없으면 백오프 간격으로 재확립 시도.
+    // OBD2 폴링: 링크 있으면 주기 수집, 없으면 OBD2_LINK_RETRY_MS 고정 간격으로 재확립 시도.
     if (Obd2::isInstalled()) {
         if (now - g_lastObdPoll >= OBD2_POLL_INTERVAL_MS) {
             g_lastObdPoll = now;
@@ -793,19 +790,12 @@ void loop()
                 Obd2::end();
                 g_obd = Obd2::Data();   // valid=false → telemetry에서 obd 생략
                 g_lastObdRetry = now;
-                // 방금까지 살아있던 링크다. 일시적 글리치일 수 있으니 기본 간격부터 다시.
-                g_obdRetryDelay = OBD2_LINK_RETRY_MS;
             }
         }
-    } else if (now - g_lastObdRetry >= g_obdRetryDelay) {
+    } else if (now - g_lastObdRetry >= OBD2_LINK_RETRY_MS) {
+        // 고정 간격 재시도. 시동을 걸면 늦어도 이 간격 안에 링크가 잡힌다.
         g_lastObdRetry = now;
-        if (Obd2::begin(SerialMon)) {   // 성공 시 다음 틱부터 폴링
-            g_obdRetryDelay = OBD2_LINK_RETRY_MS;
-        } else {
-            g_obdRetryDelay *= 2;
-            if (g_obdRetryDelay > OBD2_LINK_RETRY_CAP_MS) g_obdRetryDelay = OBD2_LINK_RETRY_CAP_MS;
-            LOGD(SerialMon, "[OBD2] 다음 재시도 %lus 후\n", (unsigned long)(g_obdRetryDelay / 1000));
-        }
+        Obd2::begin(SerialMon);   // 성공 시 다음 틱부터 폴링
     }
 #endif
 
