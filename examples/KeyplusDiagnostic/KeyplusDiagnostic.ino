@@ -352,16 +352,15 @@ void loop()
         GpsFix fix;
         bool got = Gps::read(modem, fix);
 
-        // 원시 GNSS 정보(+CGNSSINFO) — 측위 전에도 위성 포착 진행상황 확인.
-        String rawInfo = Gps::raw(modem);
-        SerialMon.print("[GPS] raw: ");
-        SerialMon.println(rawInfo.length() ? rawInfo : "(no data)");
-
         if (got) {
             g_lastFix = fix;                // telemetry용 캐시 갱신
             Gps::print(fix, SerialMon);
         } else {
-            SerialMon.println("[GPS] acquiring fix... (cold start may take a while)");
+            // 원시 GNSS 정보(+CGNSSINFO)는 미측위일 때만 — 위성 포착 진행상황 확인용이다.
+            // fix 확보 후엔 진단 가치가 없는데 모뎀 AT 왕복만 2배가 된다(getGPS + getGPSraw).
+            String rawInfo = Gps::raw(modem);
+            SerialMon.print("[GPS] acquiring fix... (cold start may take a while) raw: ");
+            SerialMon.println(rawInfo.length() ? rawInfo : "(no data)");
         }
     }
 #endif
