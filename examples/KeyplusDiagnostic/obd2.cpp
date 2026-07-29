@@ -16,6 +16,31 @@ static char     s_vin[18]   = {0}; // VIN 캐시(차량당 불변, 링크 확립
 static bool     s_hasVin    = false;
 static int      s_vinTries  = 0;   // VIN 재시도 횟수(미지원 차량 무한요청 방지)
 
+// 폴링 대상 PID 표 — 요청 순서와 디코드에 필요한 최소 응답 바이트 수.
+// 0x20 초과 PID는 지원 마스크(0x00 응답, 0x01~0x20)로 거를 수 없어 무조건 요청하게 되므로
+// 아래 s_extMiss 래치로 미지원 차량에서의 반복 타임아웃을 막는다.
+struct PidSpec { uint8_t pid; uint8_t minLen; };
+static const PidSpec kPolls[] = {
+    { 0x0C, 2 },  // RPM
+    { 0x0D, 1 },  // 차속
+    { 0x05, 1 },  // 냉각수온
+    { 0x04, 1 },  // 엔진부하
+    { 0x11, 1 },  // 스로틀
+    { 0x0F, 1 },  // 흡기온
+    { 0x10, 2 },  // MAF
+    { 0x1F, 2 },  // 시동후 경과시간
+    { 0x2F, 1 },  // 연료잔량      (>0x20 — 래치 대상)
+    { 0x42, 2 },  // 제어모듈 전압 (>0x20 — 래치 대상)
+    { 0xA6, 4 },  // 총 주행거리   (>0x20 — 래치 대상, 지원 드묾)
+};
+static const int kPollCount = (int)(sizeof(kPolls) / sizeof(kPolls[0]));
+
+// 확장 PID(>0x20) 연속 무응답 횟수. 상한에 닿으면 링크 재확립(begin) 전까지 요청하지 않는다.
+static uint8_t s_extMiss[kPollCount] = {0};
+
+// 해당 슬롯이 래치 대상(>0x20)인가.
+static bool isExtPid(uint8_t pid) { return pid > 0x20; }
+
 // 원시 CAN 프레임 헥스 덤프(디버그, OBD2_DUMP_RAW). 요청/응답을 [CAN] TX/RX로 출력.
 static void dumpFrame(const char *dir, const twai_message_t &m)
 {
@@ -71,6 +96,7 @@ void end()
     }
     s_hasVin = false;   // 재확립 시 VIN 재조회(차량 교체 대비)
     s_vinTries = 0;
+    for (int i = 0; i < kPollCount; i++) s_extMiss[i] = 0;   // 확장 PID 래치 해제
 }
 
 // VIN(Mode 09 PID 02) — ISO-TP 다중 프레임 재조립. 성공 시 s_vin/s_hasVin 세팅.
@@ -227,8 +253,68 @@ bool read(Data &out, Stream &log)
     if (!s_installed) return false;
     out.supportedPid = s_supported;
 
-    // VIN 미획득이면 폴 때 재시도(begin 실패 복구). 상한까지만 시도(미지원 차량 무한요청 방지).
-    if (!s_hasVin && s_vinTries < 5) { readVin(log); s_vinTries++; }
+    uint8_t r[6];
+    int  consecMiss = 0;     // 연속 무응답(요청을 실제로 보낸 것만 카운트)
+    bool anyAnswer  = false; // 이번 폴에서 ECU가 한 번이라도 응답 = 링크 살아있음
+
+    for (int i = 0; i < kPollCount; i++) {
+        const uint8_t pid    = kPolls[i].pid;
+        const uint8_t minLen = kPolls[i].minLen;
+
+        // ≤0x20 PID는 지원 마스크로 걸러 불필요한 타임아웃을 줄인다.
+        if (!supported(pid)) continue;
+        // >0x20 PID 중 미지원 확정된 것은 요청 자체를 생략(래치). 0ms.
+        if (isExtPid(pid) && s_extMiss[i] >= OBD2_EXT_PID_MISS_LIMIT) continue;
+
+        int n = requestPid(pid, r, 6, OBD2_REQ_TIMEOUT_MS);
+
+        if (n < 0) {
+            // 무응답 — 타임아웃을 통째로 소모했다.
+            consecMiss++;
+            if (isExtPid(pid) && s_extMiss[i] < OBD2_EXT_PID_MISS_LIMIT) {
+                if (++s_extMiss[i] >= OBD2_EXT_PID_MISS_LIMIT) {
+                    log.printf("[OBD2] PID 0x%02X 미지원 확정 — 링크 재확립까지 요청 생략\n", pid);
+                }
+            }
+            // 링크가 끊기면(시동 OFF 등) 남은 PID도 전부 타임아웃이라 폴 하나가
+            // 최대 11 × OBD2_REQ_TIMEOUT_MS 동안 loop 를 멈춘다. 초반 연속 무응답이면
+            // 링크 끊김으로 보고 즉시 중단 → 호출측이 재확립 경로를 탄다.
+            if (consecMiss >= OBD2_POLL_ABORT_MISSES && !anyAnswer) break;
+            continue;
+        }
+
+        // 응답은 왔다(= 링크 정상). 길이가 모자라면 디코드만 건너뛴다.
+        anyAnswer  = true;
+        consecMiss = 0;
+        if (isExtPid(pid)) s_extMiss[i] = 0;
+        if (n < minLen) continue;
+
+        switch (pid) {
+        case 0x0C: out.has_rpm = true;      out.rpm = ((256 * r[0]) + r[1]) / 4.0f;      break;
+        case 0x0D: out.has_speed = true;    out.speed = r[0];                            break;
+        case 0x05: out.has_coolant = true;  out.coolant = (int)r[0] - 40;                break;
+        case 0x04: out.has_load = true;     out.load = r[0] * 100.0f / 255.0f;           break;
+        case 0x11: out.has_throttle = true; out.throttle = r[0] * 100.0f / 255.0f;       break;
+        case 0x0F: out.has_intake = true;   out.intake = (int)r[0] - 40;                 break;
+        case 0x10: out.has_maf = true;      out.maf = ((256 * r[0]) + r[1]) / 100.0f;    break;
+        case 0x1F: out.has_runtime = true;  out.runtime = (256 * r[0]) + r[1];           break;
+        case 0x2F: out.has_fuel = true;     out.fuel = r[0] * 100.0f / 255.0f;           break;
+        case 0x42: out.has_ctrlv = true;    out.ctrl_v = ((256 * r[0]) + r[1]) / 1000.0f; break;
+        case 0xA6: {   // 총 주행거리(J1979-2, 4바이트, raw/10 km)
+            uint32_t raw = ((uint32_t)r[0] << 24) | ((uint32_t)r[1] << 16) |
+                           ((uint32_t)r[2] << 8) | r[3];
+            out.has_odometer = true; out.odometer = raw / 10.0f;
+            break;
+        }
+        default: break;
+        }
+        out.valid = true;
+    }
+
+    // 링크가 죽었으면 VIN 재시도(최대 REQ_TIMEOUT×9)도 낭비이자 추가 스톨 → 응답이 있을 때만.
+    // 상한까지만 시도(미지원 차량 무한요청 방지).
+    if (anyAnswer && !s_hasVin && s_vinTries < 5) { readVin(log); s_vinTries++; }
+
     // VIN(정적)을 매 폴에 실어 telemetry가 참조하게 한다.
     if (s_hasVin) {
         out.has_vin = true;
@@ -237,49 +323,10 @@ bool read(Data &out, Stream &log)
         out.valid = true;
     }
 
-    uint8_t r[6];
-    int n;
-
-    // ≤0x20 PID는 지원 마스크로 걸러 불필요한 타임아웃을 줄인다.
-    if (supported(0x0C) && (n = requestPid(0x0C, r, 6, OBD2_REQ_TIMEOUT_MS)) >= 2) {
-        out.has_rpm = true; out.rpm = ((256 * r[0]) + r[1]) / 4.0f; out.valid = true;
-    }
-    if (supported(0x0D) && (n = requestPid(0x0D, r, 6, OBD2_REQ_TIMEOUT_MS)) >= 1) {
-        out.has_speed = true; out.speed = r[0]; out.valid = true;
-    }
-    if (supported(0x05) && (n = requestPid(0x05, r, 6, OBD2_REQ_TIMEOUT_MS)) >= 1) {
-        out.has_coolant = true; out.coolant = (int)r[0] - 40; out.valid = true;
-    }
-    if (supported(0x04) && (n = requestPid(0x04, r, 6, OBD2_REQ_TIMEOUT_MS)) >= 1) {
-        out.has_load = true; out.load = r[0] * 100.0f / 255.0f; out.valid = true;
-    }
-    if (supported(0x11) && (n = requestPid(0x11, r, 6, OBD2_REQ_TIMEOUT_MS)) >= 1) {
-        out.has_throttle = true; out.throttle = r[0] * 100.0f / 255.0f; out.valid = true;
-    }
-    if (supported(0x0F) && (n = requestPid(0x0F, r, 6, OBD2_REQ_TIMEOUT_MS)) >= 1) {
-        out.has_intake = true; out.intake = (int)r[0] - 40; out.valid = true;
-    }
-    if (supported(0x10) && (n = requestPid(0x10, r, 6, OBD2_REQ_TIMEOUT_MS)) >= 2) {
-        out.has_maf = true; out.maf = ((256 * r[0]) + r[1]) / 100.0f; out.valid = true;
-    }
-    if (supported(0x1F) && (n = requestPid(0x1F, r, 6, OBD2_REQ_TIMEOUT_MS)) >= 2) {
-        out.has_runtime = true; out.runtime = (256 * r[0]) + r[1]; out.valid = true;
-    }
-    // 0x20 초과 — 마스크 대상 아님, 그냥 시도.
-    if ((n = requestPid(0x2F, r, 6, OBD2_REQ_TIMEOUT_MS)) >= 1) {
-        out.has_fuel = true; out.fuel = r[0] * 100.0f / 255.0f; out.valid = true;
-    }
-    if ((n = requestPid(0x42, r, 6, OBD2_REQ_TIMEOUT_MS)) >= 2) {
-        out.has_ctrlv = true; out.ctrl_v = ((256 * r[0]) + r[1]) / 1000.0f; out.valid = true;
-    }
-    // 0xA6 총 주행거리(J1979-2, 4바이트, raw/10 km). 지원 드묾 → 항상 시도, 미지원은 자동 생략.
-    if ((n = requestPid(0xA6, r, 6, OBD2_REQ_TIMEOUT_MS)) >= 4) {
-        uint32_t raw = ((uint32_t)r[0] << 24) | ((uint32_t)r[1] << 16) |
-                       ((uint32_t)r[2] << 8) | r[3];
-        out.has_odometer = true; out.odometer = raw / 10.0f; out.valid = true;
-    }
-    (void)log;
-    return out.valid;
+    // 반환값은 "링크 살아있음"이다 — out.valid 가 아니다.
+    // VIN 캐시가 있으면 out.valid 는 링크가 죽어도 계속 true 라서, 그것으로 판단하면
+    // 호출측이 링크 끊김을 영영 감지하지 못하고 매 폴 타임아웃 스톨만 반복한다.
+    return anyAnswer;
 }
 
 void print(const Data &d, Stream &log)

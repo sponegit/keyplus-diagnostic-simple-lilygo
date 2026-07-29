@@ -45,8 +45,10 @@ bool begin(Stream &log);
 // 드라이버 설치 여부(설치는 됐으나 링크 미확립일 수 있음 — 링크는 read 성공으로 판단).
 bool isInstalled();
 
-// 핵심 PID 폴링 → out 채움. 하나라도 응답 받으면 true(out.valid=true).
-// 폴 전체가 무응답이면 false(링크 끊김 → 호출측이 재초기화 고려).
+// 핵심 PID 폴링 → out 채움.
+// 반환값 = "이번 폴에서 ECU 응답이 있었는가"(= CAN 링크 살아있음). false면 호출측이 재초기화.
+// ⚠️ out.valid 와 다르다: VIN 캐시가 있으면 out.valid는 링크가 죽어도 true로 남는다.
+//    반환값을 out.valid로 두면 링크 끊김을 영영 감지 못해 매 폴 타임아웃 스톨만 반복한다.
 bool read(Data &out, Stream &log);
 
 // 드라이버 정지·제거(재초기화/비트레이트 변경 시).
