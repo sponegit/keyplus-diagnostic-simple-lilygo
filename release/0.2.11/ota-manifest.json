@@ -1,0 +1,44 @@
+{
+  "product": "keyplus-diagnostic",
+  "board": "LILYGO T-A7670E (ESP32-WROVER, Flash 4MB / PSRAM 8MB)",
+  "version": "0.2.11",
+  "file": "keyplus-diagnostic-0.2.11.bin",
+  "size": 390576,
+  "md5": "31adebabb83e94ebffa51f671ed426c9",
+  "sha256": "42f856b8a69475a4bf37753a6349567afc771eed226cdfb65048960b4d0d8489",
+  "partition": {
+    "table": "min_spiffs.csv",
+    "ota_slot_bytes": 1966080,
+    "usage_pct": 19.9
+  },
+  "url": "https://REPLACE-ME/fw/keyplus-diagnostic-0.2.11.bin",
+  "verify": {
+    "device_checks": "md5",
+    "note": "단말은 md5만 검증한다(Update.setMD5). sha256은 배포 경로 무결성 확인용."
+  },
+  "supersedes": {
+    "version": "0.2.6",
+    "reason": "0.2.6 이미지는 FW_VERSION 이 0.2.5 로 남아 있어 OTA ack 가 failed 로 나간다(실기 확인). 0.2.7 에서 수정."
+  },
+  "changes_since_0_2_10": [
+    "telemetry ts 를 캐시 좌표가 아니라 '현재 측위 중인가'로 정한다 — 미측위 구간에서 ts 가 얼어붙어 서버 PK(device_id,ts) 중복제거로 그 구간 telemetry 가 통째로 사라지던 문제",
+    "미측위 시 모뎀 UTC(+CCLK) 폴백이 실제로 동작 — 0.2.10 까지는 캐시 fix.valid 가 계속 true 라 폴백 경로에 진입한 적이 없다",
+    "ts 단조 증가 가드(폴백 경로 한정) — 모뎀 시각 미동기(0)/NITZ 재동기 뒷걸음질로 PK 가 다시 겹치는 것을 막는다"
+  ],
+  "fixes_data_loss": {
+    "symptom": "주행 구간 telemetry 가 서버에 없음 — 속도·RPM 등 OBD2 값이 운행 중 표시되지 않는다",
+    "measured_on": "vt-2607-0003-kfo, 2026-07-30 (fw 0.2.10)",
+    "loss": "발행 2270건 중 323건(14%) 유실. 19:42 세션은 1227건 중 100건(8%), 09:25 세션은 1043건 중 223건(21%)",
+    "worst_case": "19:42:40~20:16:06 주행 33분치 34건이 한 행으로 붕괴 — 설치 직후 시운전 구간 전체",
+    "evidence": "소실 구간 시작 행 seq=2 의 ts-up_s 가 다른 행보다 142초 뒤처짐(= 발행 시점에 142초 묵은 캐시 fix 로 ts 를 만들었다는 직접 증거). 소실 구간 5개 모두 'fresh ts 행 → 갭 → fresh ts 행' 구조"
+  },
+  "known_unfixed": [
+    "미측위 중에도 gps.fix=true + 마지막 좌표가 계속 발행된다 — 서버가 터널/음영을 구분할 수 없다(age_s 또는 실시간 fix 상태 필드 추가는 서버 계약 변경이라 별건)",
+    "gps.spd 는 노트 단위 무변환(TinyGSM getGPS) — km/h 대비 1.852배 작다. 속도는 OBD2 PID 0x0D 가 권위",
+    "OBD2 링크가 끊기면 vehicleMoving()=false 가 되어 주행 중에도 GPS 주기 폴이 60초로 늘어난다(발행 직전 폴이 따로 있어 telemetry 건수엔 영향 없음, 궤적 해상도만 저하)"
+  ],
+  "limits": {
+    "cmd_payload_bytes": 1000,
+    "note": "래퍼가 토픽+페이로드를 한 버퍼에 담는다. 1024B에서 토픽 24B 제외 ≈1000B."
+  }
+}
