@@ -51,9 +51,13 @@ void handle(TinyGsm &modem);
 bool ensure(TinyGsm &modem, Stream &log);
 
 // telemetry 1회 발행 (QoS 1). withMeta=true면 최초 발행용 하드웨어 메타(imei/mac/fw) 포함.
-// fix가 유효하면 gps 좌표/시각을 싣고, ts는 GPS UTC에서 epoch 계산(무효 시 0).
-// obd.valid면 지원 PID를 obd 오브젝트로 동봉(6단계).
-bool publishTelemetry(TinyGsm &modem, const GpsFix &fix, const Obd2::Data &obd,
+// fix가 유효하면 gps 좌표를 싣고, obd.valid면 지원 PID를 obd 오브젝트로 동봉(6단계).
+//
+// ⚠️ fixFresh = "지금 이 순간 측위 중인가"(loop의 g_gpsFixNow). fix 인자는 측위를 놓쳐도
+//    마지막 값을 유지하는 캐시라(g_lastFix) fix.valid 로는 신선도를 알 수 없다. ts 를
+//    캐시 좌표의 UTC 로 계산하면 미측위 구간 내내 같은 ts 가 나가고, 서버 PK
+//    (device_id, ts) 중복제거로 그 구간 telemetry 가 통째로 사라진다.
+bool publishTelemetry(TinyGsm &modem, const GpsFix &fix, bool fixFresh, const Obd2::Data &obd,
                       uint32_t seq, bool withMeta, Stream &log);
 
 // MQTT 서비스(CMQTT) 완전 종료 — 모뎀 SSL 컨텍스트를 해제해 HTTP(S) 서비스와의 충돌을 막는다.

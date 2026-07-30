@@ -68,6 +68,11 @@ extern "C" bool verifyRollbackLater() { return true; }
 #if (FEATURE_GPS || FEATURE_LTE)
 // 최신 GPS fix 캐시 — telemetry가 참조. 미측위면 valid=false 유지.
 static GpsFix g_lastFix;
+// 직전 폴의 측위 성공 여부 — 획득/상실 전이 로그와 telemetry ts 선택에 쓴다.
+// g_lastFix는 측위 실패해도 마지막 유효 좌표를 유지하므로(telemetry가 계속 참조)
+// "지금 측위 중인가"를 g_lastFix.valid로는 알 수 없다. GPS 미빌드에서도 telemetry가
+// 참조하므로(그때는 항상 false → 모뎀 시각 폴백) g_lastFix와 같은 가드에 둔다.
+static bool g_gpsFixNow = false;
 #endif
 
 // 최신 OBD2 샘플 캐시 — telemetry가 참조. 링크 없으면 valid=false 유지(항상 존재).
@@ -105,10 +110,6 @@ static int      g_lteFailStreak = 0;
 
 #if FEATURE_GPS
 static uint32_t g_lastGpsPoll = 0;   // 마지막 GPS 폴 시각(주기 폴 / 발행 직전 갱신 공용)
-// 직전 폴의 측위 성공 여부 — 획득/상실 전이만 INFO로 남기기 위한 것.
-// g_lastFix는 측위 실패해도 마지막 유효 좌표를 유지하므로(telemetry가 계속 참조)
-// 전이 판정에 g_lastFix.valid를 쓸 수 없다.
-static bool g_gpsFixNow = false;
 // 연속 미측위 횟수 — GNSS 가 꺼져 있는지 확인할 시점을 잡는 데 쓴다.
 // ⚠️ 모뎀이 리셋되면(소프트/하드) AT+CGNSSPWR 이 0으로 돌아가 GNSS 가 꺼진다.
 //    Gps::begin()은 setup 에서 한 번뿐이라, 재활성화가 없으면 그 뒤로 영구 미측위다.
@@ -1087,7 +1088,11 @@ void loop()
         pollGps(now);
 #endif
         bool withMeta = !g_metaSent;   // 최초 1회만 하드웨어 메타 포함
-        bool pubOk = Mqtt::publishTelemetry(modem, g_lastFix, g_obd, g_seq, withMeta, SerialMon);
+        // g_gpsFixNow(= 방금 폴에서 실제로 측위됐는가)를 함께 넘긴다. g_lastFix 는 미측위
+        // 중에도 마지막 값을 유지하는 캐시라, 이걸 안 넘기면 ts 가 얼어붙어 서버에서
+        // 그 구간 telemetry 가 PK 중복으로 사라진다(mqtt.cpp publishTelemetry 주석).
+        bool pubOk = Mqtt::publishTelemetry(modem, g_lastFix, g_gpsFixNow, g_obd,
+                                            g_seq, withMeta, SerialMon);
         if (pubOk) {
             if (withMeta) g_metaSent = true;
             g_seq++;

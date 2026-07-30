@@ -200,7 +200,7 @@ void stopService(TinyGsm &modem)
     s_serviceStarted = false;
 }
 
-bool publishTelemetry(TinyGsm &modem, const GpsFix &fix, const Obd2::Data &obd,
+bool publishTelemetry(TinyGsm &modem, const GpsFix &fix, bool fixFresh, const Obd2::Data &obd,
                       uint32_t seq, bool withMeta, Stream &log)
 {
     // 네트워크 상태는 발행 시점에 신선하게 읽는다.
@@ -209,16 +209,33 @@ bool publishTelemetry(TinyGsm &modem, const GpsFix &fix, const Obd2::Data &obd,
     s_lastRssi = rssi;   // [STAT] 한 줄이 재사용(추가 AT 왕복 방지)
     s_lastReg  = reg;
 
-    // ts: GPS UTC fix 우선, 없으면 모뎀 UTC 폴백, 그것도 없으면 0(서버가 수신시각 스탬프).
-    // ⚠️ ts=0이 계속 오면 서버 PK (device_id,ts) 중복제거로 1행만 쌓임 → 모뎀 시각 폴백으로 회피.
+    // ts: 현재 측위 중이면 GPS UTC(권위), 아니면 모뎀 UTC 폴백, 그것도 없으면 0.
+    // ⚠️ 조건은 fix.valid 가 아니라 fixFresh 다. fix 는 측위를 놓쳐도 마지막 값을 유지하는
+    //    캐시라(loop g_lastFix) fix.valid 는 미측위 중에도 계속 true 이고, 그 시각으로 ts 를
+    //    만들면 미측위 구간 내내 ts 가 얼어붙는다. 서버 PK 가 (device_id, ts) 라 같은 ts 는
+    //    한 행으로 붕괴한다 — 실측(0.2.10, 07-30): 측위를 놓친 채 주행한 33분치 34건이
+    //    한 행이 되어 사라졌고, 하루치로는 발행 2270건 중 323건(14%)이 유실됐다.
     uint32_t ts = 0;
-    if (fix.valid && fix.year >= 2020) {
+    bool authoritative = false;
+    if (fixFresh && fix.valid && fix.year >= 2020) {
         ts = civilToEpoch(fix.year, fix.month, fix.day,
                           fix.hour, fix.minute, fix.second);
+        authoritative = true;
     } else {
-        ts = modemEpoch(modem);   // GPS fix 없어도(실내/음영) 실시각 확보 → 서버 누적 정상화
+        ts = modemEpoch(modem);   // 미측위(실내/음영/터널)여도 실시각 확보 → 서버 누적 정상화
     }
     uint32_t up_s = millis() / 1000UL;
+
+    // ts 단조 증가 가드 — 폴백 경로 전용. 모뎀 시각이 미동기(0)이거나 NITZ 재동기로
+    // 뒷걸음질하면 다시 PK 가 겹쳐 행이 사라진다. 앞선 ts 에 up_s 경과분을 더해 밀어낸다.
+    // 측위 중 GPS UTC 는 권위이므로 이 보정을 태우지 않는다(모뎀 시각 오차가 latch 되면
+    // 이후 진짜 GPS 시각이 영영 밀리게 된다).
+    static uint32_t s_lastTs = 0, s_lastTsUp = 0;
+    if (!authoritative && s_lastTs && ts <= s_lastTs) {
+        uint32_t adv = up_s - s_lastTsUp;
+        ts = s_lastTs + (adv ? adv : 1);
+    }
+    if (ts) { s_lastTs = ts; s_lastTsUp = up_s; }
 
     // 계약 스키마(§3)대로 손 조립. gps는 fix일 때만 좌표 포함.
     char buf[640];
