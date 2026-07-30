@@ -53,9 +53,10 @@ struct LinkInfo {
     int         bitrate;        // 확립된 kbps (0 = 미확립)
     int         lastGoodRate;   // 마지막으로 링크가 잡혔던 kbps (재시도 우선순위)
     uint32_t    supportedPid;   // PID 0x00 응답: 0x01~0x20 지원 비트마스크
+    uint32_t    ecuId;          // 고정된 응답 ECU CAN ID (0 = 미확정, 0x7E8 = 엔진)
     bool        hasVin;
     const char *vin;            // hasVin이 false면 ""
-    int         vinTries;       // VIN 재시도 횟수(상한 5)
+    int         vinTries;       // VIN 재시도 횟수(상한 OBD2_VIN_TRY_LIMIT)
     int         extLatched;     // 미지원 확정된 확장 PID 개수
     int         extTotal;       // 확장 PID 총 개수
 };

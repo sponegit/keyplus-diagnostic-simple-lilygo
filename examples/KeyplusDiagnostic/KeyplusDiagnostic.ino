@@ -765,9 +765,16 @@ static void statusObd(Stream &io)
     io.printf("  %-14s: %s\n", "링크", g_obd.valid ? "정상(응답 있음)" : "무응답/끊김");
     if (li.bitrate) io.printf("  %-14s: %dkbps\n", "비트레이트", li.bitrate);
     else            io.printf("  %-14s: 미확립 (직전 성공 %dkbps)\n", "비트레이트", li.lastGoodRate);
+    io.printf("  %-14s: %03X %s\n", "응답 ECU", (unsigned)li.ecuId,
+              li.ecuId == 0      ? "(미확정)"
+            : li.ecuId == 0x7E8  ? "(엔진)"
+                                 : "(엔진 아님 — 항목 제한 가능)");
     io.printf("  %-14s: 0x%08X\n", "지원PID(01-20)", li.supportedPid);
     io.printf("  %-14s: %s\n", "VIN", li.hasVin ? li.vin : "(미확보)");
-    if (!li.hasVin && li.vinTries >= 5) io.println("  · VIN 재시도 상한 도달 — 미지원 차량으로 판단");
+    if (!li.hasVin && li.vinTries >= OBD2_VIN_TRY_LIMIT)
+        io.println("  · VIN 재시도 상한 도달 — 미지원 차량으로 판단");
+    else if (!li.hasVin && li.vinTries)
+        io.printf("  · VIN 재시도 %d/%d\n", li.vinTries, OBD2_VIN_TRY_LIMIT);
     io.printf("  %-14s: %d/%d 미지원 확정\n", "확장PID 래치", li.extLatched, li.extTotal);
     printAgo(io, "마지막 폴", g_lastObdPoll);
     io.printf("  %-14s: %lums\n", "폴 주기", (unsigned long)OBD2_POLL_INTERVAL_MS);

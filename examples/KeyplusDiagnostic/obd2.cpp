@@ -13,11 +13,18 @@ namespace Obd2 {
 
 static bool     s_installed = false;
 static uint32_t s_supported = 0;   // PID 0x00 지원 비트마스크(0x01~0x20)
+// 응답 ECU 고정(0 = 아직 미확정). 기능 요청(0x7DF)에는 여러 모듈이 각자 답한다 —
+// 엔진(0x7E8) 외 모듈이 같은 PID 에 FF(데이터 없음)로 답하거나 자기 기준의 지원
+// 마스크를 주는데, 먼저 도착한 프레임을 채택하면 폴마다 값이 뒤바뀐다.
+// 실측(0.2.8): 부팅마다 지원마스크가 0x80100001/0x983BA013/0x98188003 로 달라지고
+// rpm 이 16384(=0xFFFF/4)로 70초간 발행됐다. 링크 확립 때 정한 ECU 만 채택한다.
+static uint32_t s_ecuId     = 0;
 static int      s_bitrate   = 0;   // 확립된 비트레이트(kbps)
 static int      s_lastGood  = 0;   // 마지막으로 링크가 잡힌 비트레이트(재시도 시 우선 시도)
 static char     s_vin[18]   = {0}; // VIN 캐시(차량당 불변, 링크 확립 시 1회 조회)
 static bool     s_hasVin    = false;
 static int      s_vinTries  = 0;   // VIN 재시도 횟수(미지원 차량 무한요청 방지)
+static int      s_vinSkip   = 0;   // VIN 재시도 페이싱 — 남은 스킵 폴 수
 
 // 폴링 대상 PID 표 — 요청 순서와 디코드에 필요한 최소 응답 바이트 수.
 // 0x20 초과 PID는 지원 마스크(0x00 응답, 0x01~0x20)로 거를 수 없어 무조건 요청하게 되므로
@@ -100,6 +107,8 @@ void end()
     }
     s_hasVin = false;   // 재확립 시 VIN 재조회(차량 교체 대비)
     s_vinTries = 0;
+    s_ecuId  = 0;       // ECU 고정 해제 — 재확립 때 다시 정한다
+    s_vinSkip = 0;
     for (int i = 0; i < kPollCount; i++) s_extMiss[i] = 0;   // 확장 PID 래치 해제
 }
 
@@ -131,6 +140,9 @@ static bool readVin(Stream &log)
         uint32_t rem = (uint32_t)OBD2_REQ_TIMEOUT_MS * 4 - (millis() - start);
         if (twai_receive(&m, pdMS_TO_TICKS(rem)) != ESP_OK) break;
         if (m.extd || m.identifier < 0x7E8 || m.identifier > 0x7EF) continue;
+        // 폴링과 같은 이유로 고정 ECU 응답만 본다 — 타 모듈의 멀티프레임이 섞이면
+        // Flow Control 을 엉뚱한 주소로 보내고 재조립이 깨진다.
+        if (s_ecuId && m.identifier != s_ecuId) continue;
         uint8_t pci = m.data[0] & 0xF0;
         if (pci == 0x00 && (m.data[0] & 0x0F) >= 2 &&
             m.data[1] == 0x49 && m.data[2] == 0x02) {          // VIN Single Frame
@@ -186,9 +198,31 @@ static bool readVin(Stream &log)
     return false;
 }
 
+// 응답 데이터가 전부 0xFF 인가. OBD2 에서 FF 채움은 "데이터 없음"의 관용 표현이고,
+// 그대로 디코드하면 rpm 16384(=0xFFFF/4)처럼 물리적으로 불가능한 값이 telemetry 로 나간다.
+static bool allFf(const uint8_t *d, int n)
+{
+    if (n <= 0) return false;
+    for (int i = 0; i < n; i++) if (d[i] != 0xFF) return false;
+    return true;
+}
+
+// FF 채움을 "데이터 없음"으로 버려도 되는 PID 인가.
+// 1바이트 백분율 PID(부하/스로틀/연료잔량)는 0xFF = 100% 가 실제로 가능한 값이라
+// (전개 가속·만탱크) 버리면 정상 샘플을 잃는다. 그 외는 FF 가 물리적으로 불가능하다
+// — rpm 16383.75, MAF 655.35g/s, 전압 65.5V, 수온 215°C, 차속 255km/h.
+static bool ffMeansNoData(uint8_t pid, int n)
+{
+    if (n >= 2) return true;                                   // 다바이트는 예외 없음
+    return !(pid == 0x04 || pid == 0x11 || pid == 0x2F);        // 백분율 3종만 예외
+}
+
 // PID 1건 요청 → 매칭 응답의 데이터 바이트(A,B,..)를 resp에 채우고 개수 반환. 무응답 -1.
 //   요청 0x7DF [02,01,PID], 응답 0x7E8~0x7EF [len,0x41,PID,A,B,..].
-static int requestPid(uint8_t pid, uint8_t *resp, int cap, uint32_t timeoutMs)
+// s_ecuId 가 정해져 있으면 그 ECU 의 응답만 채택한다(타 모듈의 FF 응답/다른 지원마스크 배제).
+// responderOut 이 주어지면 채택한 프레임의 응답 ID 를 넘긴다(링크 확립 때 ECU 고정용).
+static int requestPid(uint8_t pid, uint8_t *resp, int cap, uint32_t timeoutMs,
+                      uint32_t *responderOut = nullptr, bool preferEngine = false)
 {
     if (!s_installed) return -1;
 
@@ -205,23 +239,44 @@ static int requestPid(uint8_t pid, uint8_t *resp, int cap, uint32_t timeoutMs)
     if (twai_transmit(&tx, pdMS_TO_TICKS(timeoutMs)) != ESP_OK) return -1;
     dumpFrame("TX", tx);
 
+    // preferEngine(링크 확립 시): 창이 끝날 때까지 모아보고 엔진(0x7E8)을 우선 채택한다.
+    // 평상시(ECU 고정 후): 첫 매칭 프레임을 바로 채택한다.
+    int      bestCount = -1;
+    uint32_t bestId    = 0;
+    uint8_t  best[8]   = {0};
+
     uint32_t start = millis();
     while (millis() - start < timeoutMs) {
         uint32_t rem = timeoutMs - (millis() - start);
         if (twai_receive(&m, pdMS_TO_TICKS(rem)) != ESP_OK) break;   // 타임아웃
-        if (!m.extd && m.identifier >= 0x7E8 && m.identifier <= 0x7EF &&
-            m.data_length_code >= 3 && m.data[1] == 0x41 && m.data[2] == pid) {
-            dumpFrame("RX", m);
-            int count = (int)m.data[0] - 2;              // len − (mode+pid)
-            if (count < 0) count = 0;
-            if (count > m.data_length_code - 3) count = m.data_length_code - 3;
-            if (count > cap) count = cap;
-            for (int i = 0; i < count; i++) resp[i] = m.data[3 + i];
-            return count;
+        if (m.extd || m.identifier < 0x7E8 || m.identifier > 0x7EF) continue;
+        if (m.data_length_code < 3 || m.data[1] != 0x41 || m.data[2] != pid) continue;
+        // ECU 가 고정돼 있으면 그 ECU 만. 타 모듈 응답은 값이 다르거나 FF 다.
+        if (s_ecuId && m.identifier != s_ecuId) continue;
+
+        dumpFrame("RX", m);
+        int count = (int)m.data[0] - 2;              // len − (mode+pid)
+        if (count < 0) count = 0;
+        if (count > m.data_length_code - 3) count = m.data_length_code - 3;
+        if (count > cap) count = cap;
+        if (count > (int)sizeof(best)) count = sizeof(best);
+
+        if (bestCount < 0 || (preferEngine && m.identifier == 0x7E8)) {
+            bestCount = count;
+            bestId    = m.identifier;
+            for (int i = 0; i < count; i++) best[i] = m.data[3 + i];
         }
-        // 그 외 CAN 트래픽 → 무시하고 계속 대기
+        // 고정 ECU 응답이거나 엔진 응답을 잡았으면 더 기다릴 이유가 없다.
+        if (!preferEngine || m.identifier == 0x7E8) break;
     }
-    return -1;
+
+    if (bestCount < 0) return -1;
+    // FF 채움 = 데이터 없음. 확장 PID 라면 미지원 신호이므로 무응답과 동일하게 취급한다.
+    if (allFf(best, bestCount) && ffMeansNoData(pid, bestCount)) return -1;
+
+    for (int i = 0; i < bestCount; i++) resp[i] = best[i];
+    if (responderOut) *responderOut = bestId;
+    return bestCount;
 }
 
 bool begin(Stream &log)
@@ -235,15 +290,23 @@ bool begin(Stream &log)
     for (int i = 0; i < 2; i++) {
         if (!install(rates[i], log)) continue;
         // 링크 확인 겸 지원 PID 조회(0x00). 초기엔 여유 있게 대기.
+        // 여러 모듈이 답하므로 창이 끝날 때까지 모아 엔진(0x7E8)을 우선 채택하고,
+        // 채택한 ECU 를 이후 폴링에 고정한다 — 이걸 안 하면 지원마스크와 값이 폴마다 섞인다.
         uint8_t r[4];
-        int n = requestPid(0x00, r, 4, OBD2_REQ_TIMEOUT_MS * 3);
+        uint32_t responder = 0;
+        int n = requestPid(0x00, r, 4, OBD2_REQ_TIMEOUT_MS * 3, &responder, true);
         if (n >= 4) {
             s_supported = ((uint32_t)r[0] << 24) | ((uint32_t)r[1] << 16) |
                           ((uint32_t)r[2] << 8) | r[3];
             s_bitrate = rates[i];
             s_lastGood = rates[i];   // 다음 재시도에서 이 속도부터
-            LOGI(log, "[OBD2] 링크 확립 @%dkbps 지원PID(01-20)=0x%08X\n",
-                 s_bitrate, s_supported);
+            s_ecuId    = responder;  // 이후 이 ECU 응답만 채택
+            LOGI(log, "[OBD2] 링크 확립 @%dkbps ECU=%03X 지원PID(01-20)=0x%08X\n",
+                 s_bitrate, (unsigned)s_ecuId, s_supported);
+            if (s_ecuId != 0x7E8) {
+                // 엔진 ECU 가 답하지 않았다 — rpm/차속 같은 항목이 없을 수 있다.
+                LOGW(log, "[OBD2] 엔진 ECU(7E8)가 응답하지 않음 — 항목이 제한될 수 있다\n");
+            }
             if (!s_hasVin) readVin(log);   // VIN 1회 조회(ISO-TP), 캐시
             return true;
         }
@@ -262,6 +325,7 @@ void linkInfo(LinkInfo &out)
     out.bitrate      = s_bitrate;
     out.lastGoodRate = s_lastGood;
     out.supportedPid = s_supported;
+    out.ecuId        = s_ecuId;
     out.hasVin       = s_hasVin;
     out.vin          = s_hasVin ? s_vin : "";
     out.vinTries     = s_vinTries;
@@ -298,7 +362,10 @@ bool read(Data &out, Stream &log)
         if (n < 0) {
             // 무응답 — 타임아웃을 통째로 소모했다.
             consecMiss++;
-            if (isExtPid(pid) && s_extMiss[i] < OBD2_EXT_PID_MISS_LIMIT) {
+            // ⚠️ 래치는 "이번 폴에서 고정 ECU 가 다른 PID 에 답하고 있다"는 전제에서만
+            //    센다. 시동 직후/버스 폭주 구간의 무응답으로 래치하면 지원 PID 를
+            //    영구 포기한다(실측: 0xA6 지원 차량에서 미지원 오래치).
+            if (isExtPid(pid) && anyAnswer && s_extMiss[i] < OBD2_EXT_PID_MISS_LIMIT) {
                 if (++s_extMiss[i] >= OBD2_EXT_PID_MISS_LIMIT) {
                     LOGD(log, "[OBD2] PID 0x%02X 미지원 확정 — 링크 재확립까지 요청 생략\n", pid);
                 }
@@ -340,7 +407,18 @@ bool read(Data &out, Stream &log)
 
     // 링크가 죽었으면 VIN 재시도(최대 REQ_TIMEOUT×9)도 낭비이자 추가 스톨 → 응답이 있을 때만.
     // 상한까지만 시도(미지원 차량 무한요청 방지).
-    if (anyAnswer && !s_hasVin && s_vinTries < 5) { readVin(log); s_vinTries++; }
+    // ⚠️ 페이싱 없이 매 폴 재시도하면 상한이 링크 확립 직후 수십 초 안에 소진된다
+    //    (실측: 시동 직후 버스 폭주 구간에서 5회를 다 쓰고 세션 내내 VIN 미확보).
+    //    폴 몇 번에 한 번만 시도해 상한을 분 단위로 늘린다.
+    if (anyAnswer && !s_hasVin && s_vinTries < OBD2_VIN_TRY_LIMIT) {
+        if (s_vinSkip == 0) {
+            readVin(log);
+            s_vinTries++;
+            s_vinSkip = OBD2_VIN_RETRY_POLLS;
+        } else {
+            s_vinSkip--;
+        }
+    }
 
     // VIN(정적)을 매 폴에 실어 telemetry가 참조하게 한다.
     if (s_hasVin) {
@@ -375,7 +453,14 @@ void print(const Data &d, Stream &log)
     if (d.has_runtime)  log.printf(" run=%us", d.runtime);
     if (d.has_odometer) log.printf(" odo=%.1fkm", d.odometer);
     log.println();
-    if (d.has_vin)      log.printf("[OBD2] VIN=%s\n", d.vin);
+    // VIN 은 차량당 불변이라 매 폴 찍으면 DEBUG 로그가 두 배가 된다(실측: 5초마다 한 줄).
+    // 값이 바뀔 때(= 최초 확보 / 차량 교체)만 남긴다. 현재값은 'status obd' 에서 본다.
+    static char lastVin[sizeof(d.vin)] = {0};
+    if (d.has_vin && strncmp(lastVin, d.vin, sizeof(lastVin)) != 0) {
+        strncpy(lastVin, d.vin, sizeof(lastVin) - 1);
+        lastVin[sizeof(lastVin) - 1] = 0;
+        log.printf("[OBD2] VIN=%s\n", d.vin);
+    }
 }
 
 } // namespace Obd2
