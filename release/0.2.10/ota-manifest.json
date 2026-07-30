@@ -1,0 +1,50 @@
+{
+  "product": "keyplus-diagnostic",
+  "board": "LILYGO T-A7670E (ESP32-WROVER, Flash 4MB / PSRAM 8MB)",
+  "version": "0.2.10",
+  "file": "keyplus-diagnostic-0.2.10.bin",
+  "size": 390448,
+  "md5": "c53d0c4e69e6d6ed541138f7e42b072b",
+  "sha256": "b86267ab83bfb97c5eaf1c42faab330a2a23270a73ab38f2a08359bab250be95",
+  "partition": {
+    "table": "min_spiffs.csv",
+    "ota_slot_bytes": 1966080,
+    "usage_pct": 19.9
+  },
+  "url": "https://REPLACE-ME/fw/keyplus-diagnostic-0.2.10.bin",
+  "verify": {
+    "device_checks": "md5",
+    "note": "단말은 md5만 검증한다(Update.setMD5). sha256은 배포 경로 무결성 확인용."
+  },
+  "supersedes": {
+    "version": "0.2.6",
+    "reason": "0.2.6 이미지는 FW_VERSION 이 0.2.5 로 남아 있어 OTA ack 가 failed 로 나간다(실기 확인). 0.2.7 에서 수정."
+  },
+  "changes_since_0_2_9": [
+    "OBD2 응답 ECU 고정(링크 확립 시 엔진 0x7E8 우선 채택) — 기능요청 0x7DF 에 여러 모듈이 답해 지원마스크/값이 폴마다 섞이던 문제",
+    "지원 PID 마스크가 부팅마다 달라지던 문제 해소(실측 0x983BA013 고정)",
+    "FF 채움(데이터 없음) 응답 필터 — rpm 16384(=0xFFFF/4) 발행 제거. 1바이트 백분율 PID(0x04/0x11/0x2F)는 0xFF=100% 가 유효값이라 예외",
+    "확장 PID 미지원 래치를 '같은 폴에서 고정 ECU 가 다른 PID 에 응답 중'일 때만 카운트 + 임계 3→5 (0xA6 지원 차량 오래치 방지)",
+    "VIN 재시도 페이싱(5폴 1회, 상한 8회) — 상한이 링크 확립 직후 25초에 소진돼 세션 내내 VIN 미확보였던 문제",
+    "status obd 에 응답 ECU / VIN 재시도 진행 표시, VIN DEBUG 로그를 변경 시에만 출력"
+  ],
+  "changes_since_0_2_8": [
+    "GNSS 위성군 지정(AT+CGNSSMODE=4, GPS+BDS+GALILEO+SBAS+QZSS) — 미지정으로 첫 fix 에 15분 걸렸다",
+    "AGPS(AT+CAGPS) PDP up 직후 1회 — 콜드스타트 단축",
+    "모뎀 리셋 후 GNSS 재활성화(리셋 직후 + 연속 미측위 3회마다 AT+CGNSSPWR? 확인) — 리셋 이후 영구 미측위 수정",
+    "미측위 진행 리포트(60초 주기 INFO, 경과 + 원시 +CGNSSINFO) — 미측위가 로그에서 완전히 침묵했다",
+    "좌표 NMEA ddmm.mmmmmm 방어 변환(이 모뎀은 10진수 반환 → no-op)",
+    "콘솔 'at <명령>' 패스스루 — 현장에서 재플래싱 없이 모뎀 직접 질의",
+    "status gps 에 GNSS 엔진 on/OFF, 위성군, 원시 CGNSSINFO 추가"
+  ],
+  "verified_on_device": {
+    "gps": "GNSS 활성화 후 27초에 fix=3 / 16위성 / PDOP 1.2~1.6 / 36.322273,127.375267 (이전 15분)",
+    "obd2": "ECU=7E8 고정, 마스크 0x983BA013 고정, VIN 즉시 확보, rpm 796~804 정상, odo 33100.1km(0xA6 복구), batt 13.86V",
+    "vehicle": "현대 팰리세이드 LX2 2023 (VIN KMHR281ABRU663944)",
+    "note": "PID 0x2F(연료잔량)는 이 차량이 실제로 미지원 — 래치가 의도대로 동작한 결과다."
+  },
+  "limits": {
+    "cmd_payload_bytes": 1000,
+    "note": "래퍼가 토픽+페이로드를 한 버퍼에 담는다. 1024B에서 토픽 24B 제외 ≈1000B."
+  }
+}
