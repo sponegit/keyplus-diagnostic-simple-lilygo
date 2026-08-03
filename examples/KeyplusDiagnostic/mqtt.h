@@ -64,6 +64,14 @@ void     notePublish();
 uint32_t lastPublishAt();
 bool     publishGapElapsed(uint32_t now, uint32_t gapMs);
 
+// --- 발행 진입 생존 게이트 (R6) ---------------------------------------------
+// 죽은 모뎀에 mqtt_publish 를 던지면 래퍼가 CMQTTTOPIC·CMQTTPAYLOAD 의 '>' 프롬프트를
+// 각각 10초 기다린 뒤에야 실패한다 — 발행 1건에 20초 넘게 loop 가 멈춘다.
+// 짧은 AT 프로브로 미리 끊고, 무응답이면 세션을 사망 처리(다음 틱 재접속)한 뒤 false.
+// 이 모듈의 publish*() 는 스스로 부른다. cmd ack 처럼 발행 체인 밖 경로는 직접 부를 것.
+//   what: 로그에 찍을 발행 종류("telemetry" / "ack" 등).
+bool publishReady(TinyGsm &modem, const char *what, Stream &log);
+
 /**
  * status 재발행 (F1/F3) — `connectSession()` 의 online 발행과 **같은 토픽·QoS1·retain=1**.
  *   {"online":true[,"sub":true],"power_mode":"...","ignition_on":...}

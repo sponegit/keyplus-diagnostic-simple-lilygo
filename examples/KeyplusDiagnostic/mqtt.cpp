@@ -69,6 +69,32 @@ bool publishGapElapsed(uint32_t now, uint32_t gapMs)
 // 사용자/비번이 빈 문자열이면 NULL(익명)로 넘긴다.
 static const char *orNull(const char *s) { return (s && s[0]) ? s : nullptr; }
 
+// 발행 직전 생존 게이트(R6). 죽은 모뎀에 mqtt_publish 를 던지면 래퍼가 CMQTTTOPIC 과
+// CMQTTPAYLOAD 의 '>' 프롬프트를 각각 10초씩 기다린 뒤에야 실패한다
+// (TinyGsmMqttA76xx::mqtt_publish). 그동안 loop 가 통째로 멈춰 LED·차키 해제·OBD 폴이
+// 다 밀리고, 세션 사망 인지도 그만큼 늦는다 — 실측 발행 1건에 20초 이상.
+//   ⚠️ mqtt_publish 의 timeout 인자(60)는 이것과 무관하다. 그건 브로커 쪽 pub_timeout
+//      이고 AT 규격상 하한이 60초라 더 줄일 수 없다(+CMQTTPUB: ...,(60-180),...).
+//      게다가 래퍼는 AT+CMQTTPUB 이 OK 를 내면 곧바로 true 를 반환한다 — 그 값은
+//      블로킹 시간에 영향을 주지 않는다. 실제로 줄일 수 있는 건 이 사전 확인뿐이다.
+//   ⚠️ UART 에 바이트가 있으면 프로브하지 않는다. 대기 중인 URC 를 testAT 가 응답으로
+//      먹으면 수신 명령(+CMQTTRX*)이 통째로 사라진다. 바이트를 보내고 있다 = 살아 있다.
+static bool modemResponsive(TinyGsm &modem)
+{
+    if (modem.stream.available()) return true;
+    return modem.testAT(MODEM_PROBE_TIMEOUT_MS);
+}
+
+// 발행 진입 공통 가드 — 무응답이면 세션을 사망 처리하고 즉시 false.
+// s_connected 를 내려야 loop 가 다음 틱에 재접속 경로로 들어간다.
+bool publishReady(TinyGsm &modem, const char *what, Stream &log)
+{
+    if (modemResponsive(modem)) return true;
+    s_connected = false;
+    LOGW(log, "[MQTT] %s 발행 생략 — 모뎀 무응답(세션 사망 처리)\n", what);
+    return false;
+}
+
 // UTC 민간시각 → epoch(초). days_from_civil (Howard Hinnant).
 static uint32_t civilToEpoch(int y, int m, int d, int hh, int mi, int ss)
 {
@@ -147,6 +173,7 @@ bool publishStatus(TinyGsm &modem, const char *powerMode, bool ignitionOn,
                    bool sub, Stream &log)
 {
     if (!s_connected) return false;
+    if (!publishReady(modem, "status", log)) return false;
 
     // 계약 StatusPayload — online 은 항상 true 다(끊김은 LWT 가 대행 발행한다).
     // sub 는 참일 때만 싣는다. 거짓을 실으면 서버가 "구독 실패 통지"로 오해할 여지가 있고,
@@ -253,6 +280,10 @@ void stopService(TinyGsm &modem)
 bool publishTelemetry(TinyGsm &modem, const GpsFix &fix, bool fixFresh, const Obd2::Data &obd,
                       uint32_t seq, bool withMeta, Stream &log)
 {
+    // ⚠️ 반드시 첫 줄이다. 아래 getSignalQuality/getRegistrationStatus 도 AT 왕복이라
+    //    죽은 모뎀에서는 여기서부터 타임아웃을 태우기 시작한다.
+    if (!publishReady(modem, "telemetry", log)) return false;
+
     // 네트워크 상태는 발행 시점에 신선하게 읽는다.
     int rssi = modem.getSignalQuality();
     int reg  = (int)modem.getRegistrationStatus();
@@ -361,6 +392,7 @@ bool noteTimeFromModem(TinyGsm &modem)
 bool publishBackfill(TinyGsm &modem, const Buf::Record &rec, Stream &log)
 {
     if (!s_connected) return false;
+    if (!publishReady(modem, "백필", log)) return false;
     if (rec.ts == 0) {
         // 호출측이 resolveTs 로 확정했어야 한다. ts=0 을 보내면 서버 PK (device_id,0) 에
         // 여러 건이 한 행으로 붕괴한다 — 보내지 않는 편이 정직하다.
@@ -436,6 +468,7 @@ bool publishBackfill(TinyGsm &modem, const Buf::Record &rec, Stream &log)
 bool publishFast(TinyGsm &modem, const Fast::Sample *win, int n, uint32_t t0, Stream &log)
 {
     if (!s_connected || !win || n <= 0) return false;
+    if (!publishReady(modem, "고빈도 창", log)) return false;
     if (t0 == 0) {
         // 시각 기준이 없으면 서버가 t0+o[i] 로 샘플 시각을 만들 수 없다.
         LOGD(log, "[FAST] t0 미확정 — 창 발행 생략\n");

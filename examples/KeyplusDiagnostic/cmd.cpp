@@ -151,6 +151,13 @@ uint32_t droppedRxCount() { return s_qDropped; }
 
 void sendAck(TinyGsm &modem, Stream &log, const String &cmdId, const char *result)
 {
+    // ⚠️ 첫 줄이다. 아래 nowEpoch 도 AT 왕복(CCLK)이고, 그 뒤 mqtt_publish 는 죽은
+    //    모뎀에서 '>' 프롬프트를 10초+10초 기다린다 — ack 1건에 20초 넘게 loop 가 멈춘다.
+    if (!Mqtt::publishReady(modem, "ack", log)) {
+        LOGW(log, "[CMD] ack id=%s result=%s 생략 — 모뎀 무응답\n", cmdId.c_str(), result);
+        return;
+    }
+
     // device_id는 런타임(NVS)이라 매번 조립(재부팅 후 지연 ack도 구독 전에 발행 가능).
     String ackTopic = "v1/" + Prov::deviceId() + "/cmd/ack";
     uint32_t now = nowEpoch(modem);
