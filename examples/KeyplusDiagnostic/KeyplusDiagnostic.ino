@@ -117,6 +117,19 @@ static int      g_lteFailStreak = 0;
 // 접속이 성립한 시각 — 백필 시작 지연(BACKFILL_START_DELAY_MS)의 기준.
 // 접속 직후는 구독·OTA ack·첫 telemetry 가 몰리는 구간이라 백필을 끼워넣지 않는다.
 static uint32_t g_connectedAt   = 0;
+
+// --- status 전이 재발행 (F1) + 구독 완료 통지 (F3) --------------------------
+// status 는 원래 접속당 1회(connectSession)라 시동 on/off 를 따라가지 못했다. 그래서
+// power_mode·ignition_on 이 DB 기본값에서 한 번도 움직이지 않았고, 서버가 telemetry 의
+// obd·rpm 에서 파생하는 차선책을 쓰고 있었다(30초 지연 + 출처 이중화).
+//   → (OBD 링크, rpm>0) 이 **바뀔 때만** 재발행해 출처를 계약대로 단말로 되돌린다.
+// 감지는 OBD 폴 직후에 하고 발행은 아래 발행 체인에서 한다 — 그래야 telemetry·고빈도
+// 창·백필과 같은 우선순위/간격 규칙을 그대로 받는다(모뎀은 publish 가 겹치면 깨진다).
+static bool     g_stPrevLink   = false;  // 직전 관측 (OBD 링크 있음)
+static bool     g_stPrevIgn    = false;  // 직전 관측 (rpm > 0)
+static bool     g_stInit       = false;  // 최초 1회는 전이로 친다(retained 값 확정)
+static bool     g_stPending    = false;  // 발행 대기
+static bool     g_stSubNotify  = false;  // 이번 발행에 sub:true 를 얹는다(F3)
 #endif
 
 #if FEATURE_OFFLINE_BUF
@@ -133,6 +146,37 @@ static uint32_t g_bfNoClock      = 0;
 #if FEATURE_FAST_SAMPLE
 // 고빈도 창 발행 예약 시각(0 = 예약 없음). 실시간 telemetry 발행 직후에 잡힌다.
 static uint32_t g_nextFastAt    = 0;
+#endif
+
+#if FEATURE_LTE
+// status 전이 재발행(F1/F3)을 지금 내도 되는가.
+//   ① 발행 대기 플래그가 서 있어야 한다(전이 없으면 한 건도 안 나간다 — 주기 발행 아님)
+//   ② 직전 발행과 PUBLISH_MIN_GAP_MS 이상 벌어져야 한다(발행 체인 공통 가드)
+//   ③ 다음 실시간 telemetry 가 STATUS_REPUB_GUARD_MS 안에 있으면 미룬다
+// ③ 이 필요한 이유: 발행 체인은 telemetry 를 먼저 보지만, telemetry 예정 시각 직전에
+// status 를 끼워넣으면 그 둘이 수십 ms 간격으로 붙는다. 전이가 늦어봐야 그만큼이고
+// (합격 기준 5~10초 안), 세션이 깨지는 쪽이 훨씬 비싸다.
+static bool statusGateOpen(uint32_t now)
+{
+    if (!g_stPending) return false;
+    if (!Mqtt::publishGapElapsed(now, PUBLISH_MIN_GAP_MS))             return false;
+    if ((int32_t)(g_nextPubAt - now) < (int32_t)STATUS_REPUB_GUARD_MS) return false;
+    return true;
+}
+
+// 계약상 power_mode 는 단말이 보고하는 값이다. OBD 링크 유무로만 정한다
+// (rpm 은 ignition_on 쪽 — 키 ACC/ON 이면 CAN 은 살아 있고 rpm 만 0 이다).
+// ⚠️ parked_deep 은 쓰지 않는다. 그건 "차가 꺼짐"이 아니라 **"단말이 잠듦"**을 뜻하고
+//    (서버 TTL 300초·estimated_delivery "within_3_min"), 이 단말은 상시 12V 라 차가
+//    꺼져도 계속 접속돼 1초 안에 응답한다. 주차 중 전 차량이 "3분 내 배달"로 나가면
+//    그건 거짓말이다 — 실제 단말 절전을 도입할 때까지 비워둔다.
+// ⚠️ 살아 있는 g_obd.valid 가 아니라 전이 감지 시점의 스냅샷(g_stPrevLink)을 쓴다.
+//    감지와 발행 사이에 최대 1~2초가 벌어지는데(간격 가드), 그 사이 링크가 바뀌면
+//    power_mode 는 새 값, ignition_on 은 옛 값이 되어 한 발행 안에서 어긋난다.
+static const char *statusPowerMode()
+{
+    return g_stPrevLink ? "driving" : "parked_active";
+}
 #endif
 
 #if FEATURE_GPS
@@ -791,7 +835,14 @@ static void statusServer(Stream &io)
     io.printf("  %-14s: %s %s\n", "cmd 구독",
               Cmd::topic().length() ? Cmd::topic().c_str() : "(미구독)",
               Cmd::isSubscribed() ? "[ok]" : "[실패/미구독]");
-    if (Cmd::hasPendingRx()) io.println("  · 미처리 수신 명령 있음");
+    if (Cmd::hasPendingRx())
+        io.printf("  · 미처리 수신 명령 %d건 (큐 %d칸)\n", Cmd::pendingRxCount(), CMD_RX_QUEUE_N);
+    // 0 이 아니면 명령이 실제로 유실됐다는 뜻 — 조용히 넘어가면 안 되는 값이다.
+    if (Cmd::droppedRxCount())
+        io.printf("  ⚠️ 수신 큐 넘침으로 드롭 %lu건\n", (unsigned long)Cmd::droppedRxCount());
+    io.printf("  %-14s: %s / %s%s\n", "차량 상태(보고)",
+              statusPowerMode(), g_stPrevIgn ? "ignition_on" : "ignition_off",
+              g_stPending ? " [재발행 대기]" : "");
     if (connected && !Cmd::isSubscribed()) {
         int32_t left = (int32_t)(g_nextSubAt - millis());
         io.printf("  %-14s: %lds 후 (간격 %lus)\n", "구독 재시도",
@@ -1014,6 +1065,24 @@ void loop()
     }
 #endif
 
+#if (FEATURE_OBD2 && FEATURE_LTE)
+    // ── status 전이 감지 (F1) ────────────────────────────────────────────────
+    // ⚠️ CAN 링크 유무와 rpm 을 **분리**한다. 키가 ACC/ON 위치면 시동이 꺼져 있어도 CAN 은
+    //    살아 있고 그때 rpm 은 0 이다. 링크만으로 시동을 판단하면 이 상태를 시동 켜짐으로
+    //    오인한다 → power_mode 는 링크로, ignition_on 은 rpm 으로 각각 정한다.
+    // 여기서는 플래그만 세운다. 실제 발행은 아래 발행 체인에서(간격·우선순위 규칙 공유).
+    {
+        bool link = g_obd.valid;
+        bool ign  = g_obd.has_rpm && g_obd.rpm > 0;
+        if (!g_stInit || link != g_stPrevLink || ign != g_stPrevIgn) {
+            g_stPrevLink = link;
+            g_stPrevIgn  = ign;
+            g_stInit     = true;
+            g_stPending  = true;
+        }
+    }
+#endif
+
 #if FEATURE_GPS
     // 주기 폴 — 주행 중엔 GPS_POLL_INTERVAL_MS, 정차/주차 중엔 GPS_POLL_IDLE_MS.
     // 발행 직전에도 갱신하므로(아래 telemetry 분기) 이 주기 폴은 측위 유지와
@@ -1060,6 +1129,15 @@ void loop()
         Cmd::subscribe(modem, SerialMon);
         if (Cmd::isSubscribed()) {
             g_subRetryDelay = 0;
+            // F3 — 구독 완료를 status 로 알린다. 서버는 지금 단말이 언제 구독을 끝냈는지
+            // 몰라서 status online 을 받고 7초(COMMAND_FLUSH_DELAY_MS)를 추측으로 기다린 뒤
+            // pending 을 flush 한다. 구독이 실패해 백오프(15초→30초)를 타면 그 타이머는
+            // 헛돌고, 게이트웨이가 재시작하면 인메모리 타이머 자체가 사라진다.
+            // sub:true 가 도착하면 서버는 지연 0 으로 즉시 flush 한다.
+            // ⚠️ connectSession 의 online 발행은 power_mode 를 싣지 않으므로(모듈이 OBD 를
+            //    모른다) 재접속마다 이 발행이 실제 차량 상태 재보고를 겸한다.
+            g_stSubNotify = true;
+            g_stPending   = true;
         } else {
             g_subRetryDelay = g_subRetryDelay ? g_subRetryDelay * 2 : CMD_SUB_RETRY_BASE_MS;
             if (g_subRetryDelay > CMD_SUB_RETRY_CAP_MS) g_subRetryDelay = CMD_SUB_RETRY_CAP_MS;
@@ -1200,7 +1278,11 @@ void loop()
                 }
             }
         }
-    } else if ((int32_t)(now - g_nextPubAt) >= 0) {
+    } else if ((int32_t)(now - g_nextPubAt) >= 0
+               && Mqtt::publishGapElapsed(now, PUBLISH_MIN_GAP_MS)) {
+        // ⚠️ 발행 간격 가드는 telemetry 에도 건다. cmd ack 는 발행 체인 밖(Cmd::handle)에서
+        //    나가므로, 이게 없으면 ack 직후 주기가 돌아온 telemetry 와 겹칠 수 있다.
+        //    g_nextPubAt 은 갱신하지 않고 조건만 막으므로 가드가 풀리는 즉시 발행된다.
         // 접속됨: telemetry 주기 발행(오버플로우 안전 비교). 발행 성공 시 다음 주기 예약,
         // 실패 시 isConnected가 false로 바뀌어 다음 루프에서 재접속 경로를 탄다.
         // 주기는 config_update로 런타임 변경 가능(Cfg::telemetryIntervalMs).
@@ -1229,8 +1311,21 @@ void loop()
         printStatusLine(true, g_seq, pubOk ? "pub-ok" : "pub-FAIL");
         g_lastStatAt = now;
     }
+    else if (statusGateOpen(now)) {
+        // ── status 전이 재발행 (F1) / 구독 완료 통지 (F3) ────────────────────
+        // telemetry 다음 우선순위다 — 지연 30초+ 를 5초대로 줄이는 것이 이 발행의 전부라
+        // 고빈도 창·백필보다 먼저 나가야 한다.
+        bool sub = g_stSubNotify;
+        if (Mqtt::publishStatus(modem, statusPowerMode(), g_stPrevIgn, sub, SerialMon)) {
+            g_stPending   = false;
+            g_stSubNotify = false;
+        }
+        // 발행 실패는 세션 끊김이다(publishStatus 가 s_connected 를 내린다) — 플래그를
+        // 그대로 두면 재접속 후 다시 나간다. 단 sub 는 재구독 시 어차피 다시 세워진다.
+    }
 #if FEATURE_FAST_SAMPLE
-    else if (g_nextFastAt != 0 && (int32_t)(now - g_nextFastAt) >= 0) {
+    else if (g_nextFastAt != 0 && (int32_t)(now - g_nextFastAt) >= 0
+             && Mqtt::publishGapElapsed(now, PUBLISH_MIN_GAP_MS)) {
         // ── 고빈도 창 발행 ───────────────────────────────────────────────────
         g_nextFastAt = 0;
         int      n  = 0;
@@ -1251,9 +1346,11 @@ void loop()
     }
 #endif
 #if FEATURE_OFFLINE_BUF
-    else if (Buf::count() && backfillGateOpen(now)) {
+    else if (Buf::count() && backfillGateOpen(now)
+             && Mqtt::publishGapElapsed(now, PUBLISH_MIN_GAP_MS)) {
         // ── 백필 1건 ─────────────────────────────────────────────────────────
-        // else-if 체인이라 실시간 telemetry → 고빈도 창 → 백필 순으로 자동 우선한다.
+        // else-if 체인이라 실시간 telemetry → status 전이 → 고빈도 창 → 백필 순으로
+        // 자동 우선한다. 공통 간격 가드까지 걸어 cmd ack 와도 겹치지 않게 한다.
         g_backfillNextAt = now + BACKFILL_MIN_GAP_MS;
         Buf::Record r;
         if (Buf::peek(r, SerialMon)) {

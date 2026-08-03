@@ -54,6 +54,18 @@ static bool s_connected      = false;   // 세션 접속 여부
 static int s_lastRssi = 0;
 static int s_lastReg  = 0;
 
+// 마지막 발행 시각(millis). 발행 간 간격 가드의 기준 — 헤더 주석 참고.
+static uint32_t s_lastPubAt = 0;
+
+void     notePublish()   { s_lastPubAt = millis(); }
+uint32_t lastPublishAt() { return s_lastPubAt; }
+
+bool publishGapElapsed(uint32_t now, uint32_t gapMs)
+{
+    if (s_lastPubAt == 0) return true;   // 아직 한 건도 안 냈다
+    return (int32_t)(now - s_lastPubAt) >= (int32_t)gapMs;   // 오버플로우 안전 비교
+}
+
 // 사용자/비번이 빈 문자열이면 NULL(익명)로 넘긴다.
 static const char *orNull(const char *s) { return (s && s[0]) ? s : nullptr; }
 
@@ -121,11 +133,44 @@ static bool connectSession(TinyGsm &modem, Stream &log)
     }
 
     // 접속 알림: status online, retained.
+    // ⚠️ 여기서는 power_mode·ignition_on 을 싣지 않는다 — 이 모듈은 OBD 상태를 모른다.
+    //    구독 성공 직후 loop 가 publishStatus(sub=true) 로 실제 차량 상태를 함께 보고한다(F1/F3).
     static const char kOnline[] = "{\"online\":true}";
     modem.mqtt_publish(kClientIdx, s_topicStatus.c_str(), kOnline, /*qos=*/1,
                        /*timeout=*/60, /*retain=*/1);
+    notePublish();   // 접속 직후 발행이 몰리는 구간의 간격 가드 기준
     s_connected = true;
     return true;
+}
+
+bool publishStatus(TinyGsm &modem, const char *powerMode, bool ignitionOn,
+                   bool sub, Stream &log)
+{
+    if (!s_connected) return false;
+
+    // 계약 StatusPayload — online 은 항상 true 다(끊김은 LWT 가 대행 발행한다).
+    // sub 는 참일 때만 싣는다. 거짓을 실으면 서버가 "구독 실패 통지"로 오해할 여지가 있고,
+    // 계약상으로도 없는 키(구식 펌웨어)와 같은 뜻이라 굳이 보낼 이유가 없다.
+    char buf[128];
+    int n = snprintf(buf, sizeof(buf),
+        "{\"online\":true%s,\"power_mode\":\"%s\",\"ignition_on\":%s}",
+        sub ? ",\"sub\":true" : "", powerMode, ignitionOn ? "true" : "false");
+    if (n <= 0 || n >= (int)sizeof(buf)) {
+        LOGE(log, "[MQTT] status 페이로드 오버플로\n");
+        return false;
+    }
+
+    // retain=1 — connectSession 의 online 이 retained 라, 여기서 0 으로 내면 브로커에는
+    // power_mode 없는 낡은 값이 남는다.
+    bool ok = modem.mqtt_publish(kClientIdx, s_topicStatus.c_str(), buf, /*qos=*/1,
+                                 /*timeout=*/60, /*retain=*/1);
+    notePublish();
+    if (!ok) s_connected = false;   // 발행 실패 = 세션 끊김 → 다음 루프서 재접속
+    // ⚠️ 태그는 [MQTT] 다. [STAT] 를 쓰면 UART 진단 앱이 주기 상태 한 줄로 오인해
+    //    key=value 파싱이 깨진다(printStatusLine 주석).
+    LOGI(log, "[MQTT] status %s power_mode=%s ignition_on=%d%s\n",
+         ok ? "published" : "FAILED", powerMode, ignitionOn ? 1 : 0, sub ? " sub=1" : "");
+    return ok;
 }
 
 bool begin(TinyGsm &modem, Stream &log)
@@ -298,6 +343,7 @@ bool publishTelemetry(TinyGsm &modem, const GpsFix &fix, bool fixFresh, const Ob
     }
 
     bool ok = modem.mqtt_publish(kClientIdx, s_topicTelemetry.c_str(), buf, /*qos=*/1);
+    notePublish();
     if (!ok) s_connected = false;   // 발행 실패 = 세션 끊김 → 다음 루프서 재접속
     // 발행 1건마다의 상세는 DEBUG. 평상시 발행 결과는 loop의 [STAT] 한 줄에 실린다.
     LOGD(log, "[MQTT] telemetry seq=%u %s (%d B)\n", seq, ok ? "published" : "FAILED", n);
@@ -381,6 +427,7 @@ bool publishBackfill(TinyGsm &modem, const Buf::Record &rec, Stream &log)
     }
 
     bool ok = modem.mqtt_publish(kClientIdx, s_topicTelemetry.c_str(), buf, /*qos=*/1);
+    notePublish();
     if (!ok) s_connected = false;   // 발행 실패 = 세션 끊김 → 다음 루프서 재접속
     LOGD(log, "[BUF] 백필 ts=%u %s (%d B)\n", rec.ts, ok ? "published" : "FAILED", n);
     return ok;
@@ -428,6 +475,7 @@ bool publishFast(TinyGsm &modem, const Fast::Sample *win, int n, uint32_t t0, St
     }
 
     bool ok = modem.mqtt_publish(kClientIdx, s_topicFast.c_str(), buf, /*qos=*/1);
+    notePublish();
     if (!ok) s_connected = false;
     LOGD(log, "[FAST] 창 t0=%u n=%d %s (%d B)\n", t0, n, ok ? "published" : "FAILED", p);
     return ok;

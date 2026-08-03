@@ -52,6 +52,33 @@ void handle(TinyGsm &modem);
 // 끊겨 있으면 재접속(begin 재실행). 백오프는 호출측(loop)에서 관리.
 bool ensure(TinyGsm &modem, Stream &log);
 
+// --- 발행 간 간격 가드 -------------------------------------------------------
+// 모뎀은 publish 를 1건씩만 처리하고 겹치면 세션이 깨진다(실측). 래퍼 mqtt_publish()
+// 는 AT+CMQTTPUB 의 OK 까지만 기다리고 결과 URC 는 비동기로 늦게 오므로, "반환됨"을
+// "발행 끝"으로 볼 수 없다 — 호출측이 직접 간격을 벌려야 한다.
+//
+// 이 모듈의 publish*() 는 발행 직후 스스로 notePublish() 한다. cmd ack 처럼 모듈 밖에서
+// modem.mqtt_publish() 를 직접 부르는 경로는 **발행 직후 notePublish() 를 불러야** 이
+// 기준이 맞는다. 빠뜨리면 가드가 그 발행을 못 보고 곧바로 다음 발행을 통과시킨다.
+void     notePublish();
+uint32_t lastPublishAt();
+bool     publishGapElapsed(uint32_t now, uint32_t gapMs);
+
+/**
+ * status 재발행 (F1/F3) — `connectSession()` 의 online 발행과 **같은 토픽·QoS1·retain=1**.
+ *   {"online":true[,"sub":true],"power_mode":"...","ignition_on":...}
+ *
+ * retain=1 을 유지하는 이유: 접속 시 online 이 retained 로 올라가 있어, 이 발행이
+ * retain=0 이면 브로커의 retained 값이 `power_mode` 없는 낡은 상태로 남는다.
+ *
+ * sub=true 면 "구독 완료" 통지를 겸한다 — 서버가 pending flush 를 7초 추측 대기 없이
+ * 즉시 돌린다(구식 펌웨어는 이 키를 안 보내므로 서버는 하위호환 경로를 탄다).
+ *
+ * ⚠️ 호출측이 publishGapElapsed() 로 직전 발행과의 간격을 확보한 뒤 부를 것.
+ */
+bool publishStatus(TinyGsm &modem, const char *powerMode, bool ignitionOn,
+                   bool sub, Stream &log);
+
 // telemetry 1회 발행 (QoS 1). withMeta=true면 최초 발행용 하드웨어 메타(imei/mac/fw) 포함.
 // fix가 유효하면 gps 좌표를 싣고, obd.valid면 지원 PID를 obd 오브젝트로 동봉(6단계).
 //

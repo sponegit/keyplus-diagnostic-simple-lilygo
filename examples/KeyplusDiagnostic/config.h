@@ -129,6 +129,15 @@
 // cmd.cpp 가 RX 콜백에서 복사해 두는 명령 JSON 버퍼. 위 버퍼에서 토픽을 뺀 만큼이
 // 실제 상한이므로 같은 크기로 둔다(실효 상한 ≈ 1000B).
 #define CMD_PAYLOAD_MAX             (1024)
+// 수신 큐 칸 수(F4). 콜백은 복사만 하고 실행은 loop 가 틱당 1건씩 비우므로, 서버
+// flushPendingForDevice() 가 pending 을 연속 발행하면 1칸 버퍼로는 첫 건만 살아남는다
+// — 게다가 유실이 조용해서 "가끔 안 먹는다"로만 보고된다. 명령 자체는 드물어 4칸이면
+// 실무상 충분하다. RAM 은 4 × CMD_PAYLOAD_MAX = 4KB(정적).
+#define CMD_RX_QUEUE_N              (4)
+// 명령 실행을 다음 틱으로 미루는 지연(F2 §5). received ack 를 낸 뒤 곧바로 실행하면
+// 실행측 발행(done/failed)이나 OTA 의 CMQTTSTOP 이 아직 안 빠진 +CMQTTPUB URC 와
+// 겹친다 — 모뎀은 publish 가 겹치면 세션이 깨진다(실측). FAST_PUBLISH_DELAY_MS 와 동일.
+#define CMD_DEFER_EXEC_MS           (1000UL)
 
 // 콘솔 AT 조회(info/status) 전에 대기 중인 URC 를 소화시키는 시간 상한.
 // info/status 는 getIMEI()·getSimStatus() 같은 AT 를 직접 보내는데, 발행 ACK
@@ -197,7 +206,7 @@
 // 펌웨어 버전 — 부팅 배너/info, telemetry meta, 프로비저닝 요청 body, OTA 결과 검증에
 // 모두 이 값이 쓰인다(단일 출처). OTA 로 새 이미지를 내릴 때는 서버가 기대하는 version 과
 // 반드시 일치시켜야 한다 — 불일치면 재부팅 후 ota ack 가 failed 로 나간다(ota.cpp).
-#define FW_VERSION                  "0.2.12"
+#define FW_VERSION                  "0.3.0"
 
 // ===========================================================================
 // UART 로그 레벨 (log.h)
@@ -297,6 +306,20 @@
 // NVS 커서 저장 간격 — 전원 단절 시 최대 (이 값−1)건이 재전송된다.
 // 서버 telemetry PK 가 (device_id, ts) + ON CONFLICT DO NOTHING 이라 중복은 흡수된다.
 #define BUF_CURSOR_SAVE_EVERY       (32)
+
+// --- 발행 간 최소 간격 (모뎀 보호) ------------------------------------------
+// 모뎀은 publish 를 1건씩만 처리하고 겹치면 세션이 깨진다(실측 +CMQTTCONNLOST).
+// 래퍼 mqtt_publish() 는 AT+CMQTTPUB 의 OK 까지만 기다리고 결과 URC(+CMQTTPUB: 0,0)는
+// 비동기로 늦게 온다 — 즉 "반환됐다"가 "발행이 끝났다"는 뜻이 아니다.
+// 그래서 telemetry 를 뺀 모든 발행 경로(status 전이·고빈도 창·백필)는 직전 발행으로부터
+// 이 간격이 지났을 때만 나간다(Mqtt::publishGapElapsed).
+#define PUBLISH_MIN_GAP_MS          (1000UL)
+
+// --- status 전이 재발행 (F1) ------------------------------------------------
+// status 는 원래 접속당 1회(connectSession)라 시동 on/off 를 따라가지 못한다.
+// (OBD 링크, rpm>0) 이 바뀔 때만 재발행해 power_mode·ignition_on 의 출처를 단말로 되돌린다.
+// ⚠️ 주기 발행이 아니다 — 전이가 없으면 한 건도 나가지 않는다.
+#define STATUS_REPUB_GUARD_MS       (2000UL)   // 다음 실시간 telemetry 직전 금지 구간
 
 // --- 백필 페이싱 (실시간 발행이 절대 우선) ----------------------------------
 #define BACKFILL_START_DELAY_MS     (15000UL)  // 접속 후 백필 시작까지
