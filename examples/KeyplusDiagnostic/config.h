@@ -93,6 +93,18 @@
 // 막 부팅한 깨끗한 모뎀을 그만큼 놀린다 — 부팅 URC(+CPIN: READY / +CGEV 등)가 정리될
 // 시간만 주고 바로 붙는다. 유심 인식이 덜 됐으면 Lte::begin 의 SIM 재시도가 흡수한다.
 #define LTE_POST_RESET_DELAY_MS     (5000UL)
+// --- 모뎀 생존 프로브 (R1) --------------------------------------------------
+// 세션 사망을 telemetry publish 실패로만 알던 구조라, 모뎀이 내부 리셋돼도 다음 발행
+// 주기(30초)가 돌아와 mqtt_publish 가 '>' 프롬프트 대기(10초+10초)를 태우고 나서야
+// mqtt=off 가 됐다 — 실측 55~95초. 그동안 LED 는 정상(접속됨)을 표시했다.
+//   → 발행과 무관한 짧은 AT 프로브로 감지 지연을 프로브 주기 수준으로 끌어내린다.
+// ⚠️ 프로브는 URC 가 스트림에 없을 때만 보낸다. testAT 의 waitResponse 가 대기 중인
+//    +CMQTTRX*/+CMQTTPUB 를 응답으로 잘못 먹으면 수신 명령이 통째로 사라진다.
+#define MODEM_PROBE_INTERVAL_MS     (5000UL)   // 프로브 주기
+#define MODEM_PROBE_TIMEOUT_MS      (500)      // 1회 AT 응답 대기(생존 확인용 — 짧게)
+#define MODEM_PROBE_FAILS_TO_DOWN   (2)        // 연속 무응답 몇 회에 세션 사망 판정
+// 직전 발행 이후 이만큼 지나야 프로브한다 — 발행 ACK(+CMQTTPUB) URC 가 빠질 시간.
+#define MODEM_PROBE_PUB_GUARD_MS    (2000UL)
 // 데이터패스 검증용 평문 HTTP GET 대상 (안정적·경량 엔드포인트)
 #define LTE_TEST_HOST               "example.com"
 #define LTE_TEST_PORT               (80)

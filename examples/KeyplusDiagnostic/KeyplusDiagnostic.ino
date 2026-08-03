@@ -117,6 +117,9 @@ static int      g_lteFailStreak = 0;
 // 접속이 성립한 시각 — 백필 시작 지연(BACKFILL_START_DELAY_MS)의 기준.
 // 접속 직후는 구독·OTA ack·첫 telemetry 가 몰리는 구간이라 백필을 끼워넣지 않는다.
 static uint32_t g_connectedAt   = 0;
+// 모뎀 생존 프로브(R1) — 발행과 무관하게 세션 사망을 잡는다.
+static uint32_t g_lastProbeAt     = 0;
+static int      g_probeFailStreak = 0;
 
 // --- status 전이 재발행 (F1) + 구독 완료 통지 (F3) --------------------------
 // status 는 원래 접속당 1회(connectSession)라 시동 on/off 를 따라가지 못했다. 그래서
@@ -176,6 +179,23 @@ static bool statusGateOpen(uint32_t now)
 static const char *statusPowerMode()
 {
     return g_stPrevLink ? "driving" : "parked_active";
+}
+
+// 모뎀이 내부 리셋된 정황을 잡았을 때의 공통 처리 — 펌웨어 플래그를 모뎀 실제 상태와
+// 다시 맞추고, 재접속 게이트를 즉시 연다. 감지 경로가 여럿이라(생존 프로브 R1,
+// GNSS 꺼짐 R2, 브링업 실패 R4) 한 군데로 모은다.
+// ⚠️ Mqtt::resetServiceState 는 s_serviceStarted 도 내린다. 모뎀이 재부팅되면
+//    AT+CMQTTSTART 로 띄운 CMQTT 서비스가 함께 사라지므로, 이걸 내려주지 않으면
+//    begin() 이 CMQTTSTART 를 건너뛰고 영영 "접속 실패"만 반복한다.
+static void noteModemRestarted(const char *why)
+{
+    LOGW(SerialMon, "[MODEM] 리셋 정황 감지(%s) — 세션 사망 처리·재접속 즉시 시도\n", why);
+    Mqtt::resetServiceState();
+    Cmd::markUnsubscribed();
+    // 쌓인 재접속 백오프(최대 15초)를 그대로 쓰면 이미 확인된 사망을 그만큼 더 기다린다.
+    // LTE 재브링업 백오프(g_lteRetryDelay)는 건드리지 않는다 — 그건 "등록이 안 붙는"
+    // 전원 마진 상황을 위한 페이싱이라, 여기서 풀면 브라운아웃을 몰아치게 만든다.
+    g_backoff = 0;
 }
 #endif
 
@@ -1096,7 +1116,28 @@ void loop()
     Mqtt::handle(modem);
     Cmd::handle(modem, SerialMon);   // 수신 명령 처리 + ack 발행
 
-
+    // ── 모뎀 생존 프로브 (R1) ───────────────────────────────────────────────
+    // 접속 상태는 자체 추적 플래그(Mqtt::isConnected)이고, 그 플래그를 내리는 유일한
+    // 경로가 publish 실패였다 — 모뎀이 죽어도 다음 발행 주기(30초) + 래퍼 프롬프트
+    // 대기(10초+10초)가 지나야 알았다. 실측 55~95초 동안 LED 는 정상을 표시했다.
+    //   → 접속 중이라고 믿는 동안 짧은 AT 프로브로 실제 생존을 확인한다.
+    // ⚠️ 조건 세 개는 전부 필수다.
+    //    ① 스트림이 비어 있을 때만 — 대기 중인 URC 를 testAT 가 응답으로 먹으면
+    //       수신 명령(+CMQTTRX*)이 통째로 사라진다.
+    //    ② 직전 발행 후 가드 — 발행 ACK(+CMQTTPUB)가 빠질 시간을 준다.
+    //    ③ 접속 중일 때만 — 미접속 구간은 아래 재접속 경로가 이미 프로브한다.
+    if (Mqtt::isConnected(modem)
+            && (int32_t)(now - g_lastProbeAt) >= (int32_t)MODEM_PROBE_INTERVAL_MS
+            && !modem.stream.available()
+            && Mqtt::publishGapElapsed(now, MODEM_PROBE_PUB_GUARD_MS)) {
+        g_lastProbeAt = now;
+        if (modem.testAT(MODEM_PROBE_TIMEOUT_MS)) {
+            g_probeFailStreak = 0;
+        } else if (++g_probeFailStreak >= MODEM_PROBE_FAILS_TO_DOWN) {
+            g_probeFailStreak = 0;
+            noteModemRestarted("AT 프로브 무응답");
+        }
+    }
 
     bool connected = Mqtt::isConnected(modem);
 
@@ -1106,6 +1147,10 @@ void loop()
     if (connected && !g_wasConnected) {
         g_nextPubAt = now + 5000;
         g_connectedAt = now;   // 백필 시작 지연의 기준 — 접속 직후는 발행이 몰린다
+        // 접속 직후는 status online·구독·첫 telemetry 가 몰린다 — 프로브 시계를 여기서
+        // 다시 세워 그 구간에 AT 를 끼워넣지 않는다(R1).
+        g_lastProbeAt     = now;
+        g_probeFailStreak = 0;
         LOGI(SerialMon, "[MQTT] 재접속됨\n");
         Led::set(Led::State::MQTT_OK);          // 재접속 성공 → 정상(heartbeat)
         // clean_session=1 → 재접속마다 재구독. 단 발행 ACK가 빠질 시간을 주고 시도한다.
