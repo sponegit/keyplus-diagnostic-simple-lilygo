@@ -1,0 +1,68 @@
+{
+  "product": "keyplus-diagnostic",
+  "board": "LILYGO T-A7670E (ESP32-WROVER, Flash 4MB / PSRAM 8MB)",
+  "version": "0.3.0",
+  "file": "keyplus-diagnostic-0.3.0.bin",
+  "size": 406272,
+  "md5": "c3afd6a57b0c69da9a9f3a51e40ea05a",
+  "sha256": "6e936394403e19756dc6f68d5defbab59baadd00c27ccb5ff560960f37287ac0",
+  "partition": {
+    "table": "min_spiffs.csv",
+    "ota_slot_bytes": 1966080,
+    "usage_pct": 20.6,
+    "note": "spiffs 파티션(0x3D0000, 128KB)을 오프라인 링버퍼로 전용한다. SPIFFS 로 마운트하지 않는다 — 이후 파일시스템이 필요해지면 파티션 표 재설계가 선행돼야 한다."
+  },
+  "url": "https://REPLACE-ME/fw/keyplus-diagnostic-0.3.0.bin",
+  "verify": {
+    "device_checks": "md5",
+    "note": "단말은 md5만 검증한다(Update.setMD5). sha256은 배포 경로 무결성 확인용."
+  },
+  "supersedes": {
+    "version": "0.2.6",
+    "reason": "0.2.6 이미지는 FW_VERSION 이 0.2.5 로 남아 있어 OTA ack 가 failed 로 나간다(실기 확인). 0.2.7 에서 수정."
+  },
+  "changes_since_0_2_12": [
+    "F1 — status 전이 재발행. (OBD 링크, rpm>0) 이 바뀔 때만 status 를 재발행해 power_mode·ignition_on 의 출처를 계약대로 단말로 되돌린다. 서버 telemetry 파생(30초+ 지연)이 5초대로 줄어든다. 주기 발행이 아니다 — 전이가 없으면 한 건도 나가지 않는다",
+    "F2 — ota_start 에 received ack. 다운로드 시작 전에 수신 사실을 알린다. 수신 → 다운로드(실측 2분+) → 재부팅 → ack 사이의 깜깜한 구간이 사라진다. 실행은 CMD_DEFER_EXEC_MS(1초) 뒤로 미뤄 received 발행과 CMQTTSTOP 이 겹치지 않게 했다",
+    "F3 — 구독 완료 통지 sub:true. Cmd::subscribe() 성공 직후 status 에 얹는다. 서버가 status online 후 7초를 추측으로 기다리던 pending flush 가 지연 0 이 된다. 새 토픽·새 EMQX Rule 불필요(fwd_status 가 이미 잡는다)",
+    "F4 — cmd 수신 큐 1칸 → 4칸 링. 서버 flushPendingForDevice() 가 pending 을 연속 발행할 때 첫 건만 살아남던 조용한 유실을 없앴다. 큐가 가득 찼을 때만 드롭하고 그때는 [CMD] 로그를 남긴다(누적 건수는 콘솔 status 에도 노출)",
+    "발행 간격 가드 중앙화 — 모든 발행 경로(telemetry·status·고빈도 창·백필·cmd ack)가 Mqtt::publishGapElapsed(PUBLISH_MIN_GAP_MS=1초) 하나를 공유한다. 종전에는 cmd ack 가 이 규칙 밖에 있어 telemetry·백필과 겹칠 수 있었다",
+    "콘솔 status 에 '차량 상태(보고)' / 수신 큐 깊이 / 드롭 누적 표시 추가"
+  ],
+  "server_prerequisites": {
+    "F1": "없음. ingestStatus 가 COALESCE($1, power_mode) 로 이미 받는다. 🔜 다만 배포 후 services/ingest.ts ③-b 의 telemetry 파생 블록을 제거해야 한다 — 남겨두면 단말이 먼저 알린 값을 30초 뒤에 서버 파생이 덮어써 지연이 되살아나고 출처가 둘이 된다",
+    "F2": "없음(수용 대기). CommandResult.RECEIVED 가 계약에 있고 ingestAck 가 비종결로 처리한다. 중복 received(QoS1 재전송)가 이미 delivered 인 행을 되돌리지 않는 가드도 들어가 있다",
+    "F3": "ingestStatus 에 분기 1개 — p.sub === true 면 scheduleFlushForDevice 대신 즉시 flushPendingForDevice. 하위호환(구식 펌웨어는 sub 를 안 보내므로 기존 7초 경로)",
+    "F4": "없음",
+    "baseline": "서버 기준 커밋 dc9bb14 (keyplus-diagnostic-backend, main)"
+  },
+  "deploy_order": [
+    "0단계: 0.2.12 를 아직 배포하지 않았다면 UART 진단 앱 STAT_KEYS 에 'buf','fast' 추가가 선결이다 — release/0.2.12/README.md 참고. 0.2.12 를 이미 배포했다면 이 펌웨어는 [STAT] 포맷을 바꾸지 않으므로 UART 앱 변경이 필요 없다",
+    "1단계: 이 펌웨어 OTA — F1·F2·F4 는 서버 무변경으로 즉시 동작한다",
+    "2단계: 서버 ingestStatus 에 sub 분기 추가 → F3 활성 (펌웨어는 이미 보내고 있고, 없으면 기존 7초 경로로 무해하게 흡수된다)",
+    "3단계: 서버 services/ingest.ts ③-b telemetry 파생 블록 제거 — F1 배포 확인 후"
+  ],
+  "breaking": {
+    "uart_app": "없음 — [STAT] 한 줄 포맷이 0.2.12 와 동일하다. status 재발행 로그는 [MQTT] 태그로 나가므로 STAT_RE 파싱에 닿지 않는다",
+    "status_payload": "status 페이로드에 power_mode·ignition_on·sub 키가 추가된다. 계약(StatusPayload)에 이미 있는 필드이고 서버는 COALESCE 로 받으므로 하위호환이다"
+  },
+  "known_unfixed": [
+    "차키 지연 전달은 여전히 불가하다 — TTL 10초 + 재시도 없음(스위퍼 30초·재발행 백오프 60초는 둘 다 만료 뒤에 돈다)의 결과이지 F3·F4 로 해결되는 문제가 아니다. 부팅 후 뒤늦은 실행까지 원한다면 TTL 을 올려야 하고 그건 '뒤늦게 열림'을 받아들이는 결정이다",
+    "OBD 를 차량 상태 신호로 쓰는 한계 — 차종에 따라 시동 OFF 후 CAN 이 수 분간 살아 있어 그동안 driving 이 유지된다(단 ignition_on 은 rpm=0 이라 정확). 트랜시버·배선 고장이면 주행 중에도 parked_active 로 보고되며 차량 상태와 구분할 수 없다",
+    "전이 감지 지연 — 시동 ON 후 OBD2_LINK_RETRY_MS(30초) 안에 링크가 잡혀야 전이가 보인다. 최악 30초",
+    "ignition_on 을 안전 판정에 쓰면 안 된다 — 서버 값은 최대 한 주기 낡았고 배선 고장에 취약하다. 시동 중 차키 제어를 막아야 한다면 단말에서 판단해야 하는데 현재 단말에 그 로직이 없다(rejected_ignition_on 을 보내는 경로 없음)",
+    "parked_deep 미사용 — 단말 절전을 도입하면 차키 TTL 10초와 서버 오프라인 판정(90초 창)이 동시에 깨진다. ttl.ts 의 전력모드별 분기 복원이 선행돼야 한다",
+    "도어·설정 명령에는 received 를 넣지 않았다 — 수신 즉시 done 을 보내므로 received 와 done 이 연달아 나가 발행이 겹친다. done 이 이미 수신 증거 역할을 하므로 서버는 정확히 동작한다",
+    "명령 처리에 최대 1초의 페이싱 지연이 생긴다(PUBLISH_MIN_GAP_MS). 직전 발행이 있었을 때만이고, 차키 TTL 10초는 원래 시계 오차·LTE 왕복·OBD 폴 지연을 흡수하도록 잡은 값이라 여유 안이다. 다만 TTL 을 5초로 낮추자는 논의가 있다면 이 1초를 함께 계산해야 한다",
+    "미측위 중에도 gps.fix=true + 마지막 좌표가 계속 발행된다(0.2.11 부터 기지). 서버가 터널/음영을 구분할 수 없다",
+    "gps.spd 는 노트 단위 무변환(TinyGSM getGPS) — km/h 대비 1.852배 작다. 속도는 OBD2 PID 0x0D 가 권위"
+  ],
+  "limits": {
+    "cmd_payload_bytes": 1000,
+    "cmd_rx_queue": 4,
+    "fast_payload_bytes": 2048,
+    "offline_records": 2336,
+    "publish_min_gap_ms": 1000,
+    "note": "래퍼가 토픽+페이로드를 한 버퍼에 담는다. 1024B에서 토픽 24B 제외 ≈1000B. 수신 큐는 4칸 × 1024B = 4KB(정적 RAM). 모뎀은 publish 가 겹치면 세션이 깨지므로 모든 발행 경로가 최소 1초 간격을 공유한다."
+  }
+}
