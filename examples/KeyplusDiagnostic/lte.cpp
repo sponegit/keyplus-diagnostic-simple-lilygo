@@ -27,9 +27,9 @@ static const char *regStr(RegStatus s)
     }
 }
 
-bool modemAlive(TinyGsm &modem)
+bool modemAlive(TinyGsm &modem, uint32_t timeoutMs)
 {
-    return modem.testAT(LTE_AT_PROBE_MS);
+    return modem.testAT(timeoutMs);
 }
 
 bool softReset(TinyGsm &modem, Stream &log)

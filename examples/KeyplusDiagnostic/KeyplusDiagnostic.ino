@@ -207,12 +207,29 @@ static uint32_t g_lastGpsPoll = 0;   // 마지막 GPS 폴 시각(주기 폴 / �
 static int      g_gpsFailStreak = 0;
 static uint32_t g_gpsNofixSince = 0;   // 미측위가 시작된 시각(진행 리포트용)
 static uint32_t g_gpsNofixLogAt = 0;   // 마지막 미측위 리포트 시각
+// GNSS 재활성화 보류 플래그(R3) — 모뎀이 무응답이라 지금 켤 수 없을 때 세운다.
+// Gps::begin 은 최대 15초 블로킹이라, 죽은 모뎀에 던지면 복구 경로를 그만큼 밀어낸다.
+static bool     g_gpsReenablePending = false;
 
 // GPS 1회 폴 → g_lastFix 갱신. 폴 시각도 같이 갱신하므로, 발행 직전에 호출하면
 // 바로 뒤따르는 주기 폴이 중복 실행되지 않는다.
 static void pollGps(uint32_t now)
 {
     g_lastGpsPoll = now;
+
+#if FEATURE_LTE
+    // 모뎀 무응답으로 미뤄둔 GNSS 재활성화(R3). 모뎀이 살아났으면 여기서 되살린다.
+    // 실패하면 플래그를 유지해 다음 폴에 다시 시도한다.
+    if (g_gpsReenablePending && Lte::modemAlive(modem, MODEM_PROBE_TIMEOUT_MS)) {
+        if (Gps::begin(modem)) {
+            g_gpsReenablePending = false;
+            LOGI(SerialMon, "[GPS] GNSS 재활성화됨(모뎀 복구 후)\n");
+        } else {
+            LOGW(SerialMon, "[GPS] GNSS 재활성화 실패 — 다음 폴에 재시도\n");
+        }
+    }
+#endif
+
     GpsFix fix;
     bool got = Gps::read(modem, fix);
 
@@ -254,8 +271,18 @@ static void pollGps(uint32_t now)
             // MQTT 세션도 같이 죽었다고 보고 재접속 경로를 즉시 연다(R2).
             noteModemRestarted("GNSS 꺼짐");
 #endif
-            if (Gps::begin(modem)) LOGI(SerialMon, "[GPS] GNSS 재활성화됨\n");
-            else                   LOGE(SerialMon, "[GPS] GNSS 재활성화 실패 — 다음 폴에 재시도\n");
+            // ⚠️ 모뎀이 살아 있을 때만 켠다(R3). Gps::begin 은 enableGPS 를 최대 15초
+            //    폴링하는데(gps.cpp), AT 자체를 못 받는 모뎀에 던지면 그 15초 + AT 대기가
+            //    통째로 복구 경로를 밀어낸다 — 실측 사이클당 30초 × 2회를 버렸다.
+            //    죽었으면 재활성화는 복구된 뒤로 미룬다.
+            if (!Lte::modemAlive(modem, MODEM_PROBE_TIMEOUT_MS)) {
+                LOGW(SerialMon, "[GPS] 모뎀 무응답 — GNSS 재활성화는 복구 후로 미룸\n");
+                g_gpsReenablePending = true;
+            } else if (Gps::begin(modem)) {
+                LOGI(SerialMon, "[GPS] GNSS 재활성화됨\n");
+            } else {
+                LOGE(SerialMon, "[GPS] GNSS 재활성화 실패 — 다음 폴에 재시도\n");
+            }
         }
     }
 

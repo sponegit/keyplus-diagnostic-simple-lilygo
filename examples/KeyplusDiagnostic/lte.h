@@ -14,6 +14,7 @@
 // utilities.h가 TINY_GSM_MODEM_A7670를 정의하므로 TinyGsmClient.h보다 먼저 포함.
 #include "utilities.h"
 #include <TinyGsmClient.h>
+#include "config.h"   // LTE_AT_PROBE_MS — modemAlive 기본 인자
 
 // 현재 망 상태 스냅샷 (디버그/보고용).
 struct LteStatus {
@@ -33,10 +34,13 @@ namespace Lte {
 //    (최대 LTE_REG_TIMEOUT_MS)이 통째로 낭비이므로 즉시 false를 반환한다.
 bool begin(TinyGsm &modem, Stream &log);
 
-// 모뎀이 AT에 응답하는가. LTE_AT_PROBE_MS 안에 응답 없으면 false.
+// 모뎀이 AT에 응답하는가. timeoutMs 안에 응답 없으면 false.
 // 전원 부족으로 모뎀이 내부 리셋/불능이 된 상태를 빠르게 가려낸다
 // (그 경우 CSQ는 99, 등록 상태는 no-result로 나온다).
-bool modemAlive(TinyGsm &modem);
+// 기본값 LTE_AT_PROBE_MS(2초)는 "리셋을 걸기 전 최종 확인"용이라 넉넉하다.
+// 경로를 가르기만 하는 자리(폴 중 확인, 재브링업 게이트)에서는 MODEM_PROBE_TIMEOUT_MS
+// 같은 짧은 값을 넘겨 죽은 모뎀에 초 단위를 태우지 않는다.
+bool modemAlive(TinyGsm &modem, uint32_t timeoutMs = LTE_AT_PROBE_MS);
 
 // 모뎀 소프트 리셋(AT+CFUN=1,1) 후 AT 재개까지 대기. 성공 시 true.
 // ⚠️ 최대 LTE_MODEM_RESET_WAIT_MS 동안 블로킹한다 — 복구 경로 전용.
