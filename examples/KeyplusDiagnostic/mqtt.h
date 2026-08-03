@@ -17,8 +17,10 @@
 
 #include "utilities.h"
 #include <TinyGsmClient.h>
-#include "gps.h"    // GpsFix
-#include "obd2.h"   // Obd2::Data
+#include "gps.h"      // GpsFix
+#include "obd2.h"     // Obd2::Data
+#include "buffer.h"   // Buf::Record (백필)
+#include "fast.h"     // Fast::Sample (고빈도 창)
 
 namespace Mqtt {
 
@@ -59,6 +61,32 @@ bool ensure(TinyGsm &modem, Stream &log);
 //    (device_id, ts) 중복제거로 그 구간 telemetry 가 통째로 사라진다.
 bool publishTelemetry(TinyGsm &modem, const GpsFix &fix, bool fixFresh, const Obd2::Data &obd,
                       uint32_t seq, bool withMeta, Stream &log);
+
+/**
+ * 백필 1건 발행 — **기존 telemetry 토픽·스키마 그대로**, ts 만 과거 시각이다.
+ * 서버 변경이 필요 없다: telemetry PK 가 (device_id, ts) + ON CONFLICT DO NOTHING 이고,
+ * vehicle_state UPSERT 도 `WHERE vehicle_state.ts < EXCLUDED.ts` 라 백필이 현재 상태를
+ * 과거로 되돌리지 않는다.
+ *
+ * 백필 표시자는 `sys.bf=1` — ingest 가 sys 를 통째로 data JSONB 에 넣으므로 게이트웨이
+ * 코드 변경 없이 저장된다. 창 집계가 있으면(rec.agg_n>0) `agg` 오브젝트를 함께 싣는다.
+ *
+ * ⚠️ rec.ts 는 호출 전에 Buf::resolveTs() 로 확정돼 있어야 한다(ts=0 이면 발행하지 않는다).
+ */
+bool publishBackfill(TinyGsm &modem, const Buf::Record &rec, Stream &log);
+
+/**
+ * 고빈도 창 1건 발행 — 별도 토픽 `v1/{id}/telemetry/fast` (QoS 1).
+ * ⚠️ 서버에 EMQX Rule `v1/+/telemetry/fast` 가 있어야 라우팅된다(`+` 는 한 레벨만 매칭).
+ *    Rule 이 없으면 발행은 성공하나 조용히 버려진다 — 무해하지만 데이터·전력 낭비다.
+ * t0 가 0(시각 미상)이면 발행하지 않는다 — 서버가 샘플 시각을 만들 수 없다.
+ */
+bool publishFast(TinyGsm &modem, const Fast::Sample *win, int n, uint32_t t0, Stream &log);
+
+// 모뎀 RTC(CCLK)에서 시각을 읽어 Clk base 를 갱신한다. 오프라인 구간에서 시각 기준을
+// 확보하기 위한 것 — 망이 끊겨도 모뎀 RTC 는 계속 돈다. AT 왕복 1회이므로 호출측이
+// 빈도를 제한한다(base 가 아예 없을 때만). 성공 시 true.
+bool noteTimeFromModem(TinyGsm &modem);
 
 // MQTT 서비스(CMQTT) 완전 종료 — 모뎀 SSL 컨텍스트를 해제해 HTTP(S) 서비스와의 충돌을 막는다.
 // OTA 다운로드 진입 직전에 호출(어차피 OTA 성공 시 재부팅되므로 세션은 버린다).

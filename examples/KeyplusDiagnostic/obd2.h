@@ -68,6 +68,20 @@ void linkInfo(LinkInfo &out);
 //    반환값을 out.valid로 두면 링크 끊김을 영영 감지 못해 매 폴 타임아웃 스톨만 반복한다.
 bool read(Data &out, Stream &log);
 
+// 고빈도(1Hz) 3 PID 서브셋. 차속(0x0D)·회전수(0x0C)·스로틀(0x11)만 요청한다.
+// 전체 폴(read)과 같은 requestPid 를 재사용하며, 같은 loop 에서 순차 실행되므로 재진입 없음.
+// 비용: ECU 응답 5~20ms × 3 ≈ 60ms/초 = 듀티 6%.
+struct FastSample {
+    bool     has_speed = false;  uint8_t  speed = 0;   // 0x0D km/h
+    bool     has_rpm = false;    uint16_t rpm = 0;     // 0x0C
+    bool     has_throttle = false; uint8_t throttle = 0; // 0x11 %
+};
+
+// 반환값 = "이번 요청에서 ECU 응답이 있었는가". read() 와 같은 규약이다.
+// false 가 연속되면 호출측(Fast::tick)이 폴을 중단하고 전체 폴의 재확립 경로에 맡긴다 —
+// 링크가 죽은 채로 매초 3×타임아웃을 태우면 loop 가 초당 300ms 씩 멈춘다.
+bool readFast(FastSample &out, Stream &log);
+
 // 드라이버 정지·제거(재초기화/비트레이트 변경 시).
 void end();
 

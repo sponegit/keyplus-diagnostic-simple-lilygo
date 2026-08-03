@@ -39,6 +39,14 @@
 #endif
 
 #include "obd2.h"   // 항상 컴파일(Obd2::Data). 폴링은 FEATURE_OBD2일 때만.
+#include "clk.h"    // 시각 기준(base) — 오프라인 적재/고빈도 창이 공유한다
+
+#if FEATURE_FAST_SAMPLE
+#include "fast.h"
+#endif
+#if FEATURE_OFFLINE_BUF
+#include "buffer.h"
+#endif
 
 #if FEATURE_LTE
 #include "lte.h"
@@ -106,6 +114,25 @@ static uint32_t g_subRetryDelay = 0;
 static uint32_t g_lteRetryDelay = 0;
 static uint32_t g_lastLteTry    = 0;
 static int      g_lteFailStreak = 0;
+// 접속이 성립한 시각 — 백필 시작 지연(BACKFILL_START_DELAY_MS)의 기준.
+// 접속 직후는 구독·OTA ack·첫 telemetry 가 몰리는 구간이라 백필을 끼워넣지 않는다.
+static uint32_t g_connectedAt   = 0;
+#endif
+
+#if FEATURE_OFFLINE_BUF
+// 다음 오프라인 적재 시각. 주행 30초 / 정차 120초로 갈아탄다.
+static uint32_t g_nextLogAt     = 0;
+// 백필 페이싱 — 틱당 1건, 최소 BACKFILL_MIN_GAP_MS 간격.
+static uint32_t g_backfillNextAt = 0;
+// 시각 복원 불가로 폐기한 건수(§4.2) — 조용히 사라지지 않게 [STAT]/status 에 노출한다.
+static uint32_t g_bfDiscarded    = 0;
+// 시각 미확보로 백필을 미룬 횟수. 폐기가 아니라 대기다 — 시각이 오면 그대로 복원된다.
+static uint32_t g_bfNoClock      = 0;
+#endif
+
+#if FEATURE_FAST_SAMPLE
+// 고빈도 창 발행 예약 시각(0 = 예약 없음). 실시간 telemetry 발행 직후에 잡힌다.
+static uint32_t g_nextFastAt    = 0;
 #endif
 
 #if FEATURE_GPS
@@ -136,6 +163,13 @@ static void pollGps(uint32_t now)
     if (got) {
         g_gpsFailStreak = 0;
         g_lastFix = fix;                // telemetry용 캐시 갱신
+        // 시각 기준 갱신 — ⚠️ 오프라인 구간에서는 이 경로가 유일한 권위 시각 공급원이다
+        // (telemetry 발행은 접속 중에만 돈다). 여기서 note 하지 않으면 음영 주행 내내
+        // base 가 낡아 오프라인 레코드의 ts 가 전부 외삽값이 된다.
+        if (fix.year >= 2020) {
+            Clk::noteCivil(fix.year, fix.month, fix.day,
+                           fix.hour, fix.minute, fix.second, Clk::SRC_GPS);
+        }
         Gps::print(fix, SerialMon);     // 전체 좌표 덤프는 DEBUG에서만
         return;
     }
@@ -336,20 +370,36 @@ static void printStatusLine(bool connected, uint32_t seq, const char *pubResult)
         if (g_obd.has_speed) n += snprintf(obdBuf + n, sizeof(obdBuf) - n, " spd=%d", g_obd.speed);
     }
 
+    // ⚠️ buf/fast 는 반드시 key=value 토큰이고 위치는 obd 그룹 뒤·seq 앞으로 고정한다.
+    //    UART 진단 앱(main.py)의 STAT_KEYS 가 닫힌 목록이라 미등록 토큰은 앞 필드 값에
+    //    통째로 흡수된다 — 신규 필드가 안 보이는 정도가 아니라 obd/seq 표시가 깨진다.
+    //    앱의 STAT_KEYS 확장(U1)이 이 펌웨어 배포의 선결 조건이다.
+    //    비어 있어도 buf=0 을 낸다(키가 사라지면 앱이 축약형과 구분하지 못한다).
+#if FEATURE_OFFLINE_BUF
+    unsigned long bufN = (unsigned long)Buf::count();
+#else
+    unsigned long bufN = 0;
+#endif
+#if FEATURE_FAST_SAMPLE
+    int fastN = Fast::count();
+#else
+    int fastN = 0;
+#endif
+
 #if FEATURE_LTE
     // 접속 중엔 마지막 발행 때 읽어둔 값을 재사용해 AT 왕복을 늘리지 않는다.
     // 미접속이면 그 값이 끊길 당시의 낡은 수치(대개 99=측정불가)로 굳어 오해를 부르므로,
     // 30초에 한 번뿐인 유휴 [STAT] 에서는 신선하게 읽는다.
     int rssi = connected ? Mqtt::lastRssi() : modem.getSignalQuality();
-    SerialMon.printf("[STAT] up=%lus mqtt=%s rssi=%d gps=%s obd=%s seq=%lu %s\n",
+    SerialMon.printf("[STAT] up=%lus mqtt=%s rssi=%d gps=%s obd=%s buf=%lu fast=%d seq=%lu %s\n",
                      (unsigned long)(millis() / 1000UL),
                      connected ? "on" : "OFF",
-                     rssi, gpsBuf, obdBuf,
+                     rssi, gpsBuf, obdBuf, bufN, fastN,
                      (unsigned long)seq, pubResult);
 #else
     (void)connected; (void)seq; (void)pubResult;
-    SerialMon.printf("[STAT] up=%lus gps=%s obd=%s\n",
-                     (unsigned long)(millis() / 1000UL), gpsBuf, obdBuf);
+    SerialMon.printf("[STAT] up=%lus gps=%s obd=%s buf=%lu fast=%d\n",
+                     (unsigned long)(millis() / 1000UL), gpsBuf, obdBuf, bufN, fastN);
 #endif
 }
 
@@ -519,6 +569,12 @@ void setup()
 
     // 런타임 설정 로드(NVS "cfg") — config_update로 변경된 telemetry 주기/keepalive 복원.
     Cfg::begin();
+
+#if FEATURE_OFFLINE_BUF
+    // 오프라인 링버퍼 — 파티션 탐색 + 섹터 헤더 스캔으로 head/tail 복원.
+    // 실패해도(파티션 없음) 부팅은 계속한다 — 적재만 비활성되고 나머지는 정상 동작한다.
+    Buf::begin(SerialMon);
+#endif
 
 #if (FEATURE_LTE && FEATURE_OTA)
     // OTA pending 플래그 로드 — 재부팅-후-성공/실패면 접속 후 loop가 ack를 flush.
@@ -827,6 +883,13 @@ static void appPrintHelp(Stream &io)
     io.println("[APP]  명령: info                        단말 정보(부팅 배너와 동일)");
     io.println("             status [gps|modem|server|obd|key]  상태 조회(생략 시 전체)");
     io.println("             at <명령>                    모뎀 AT 직접 전송(예: at+cgnssinfo)");
+#if FEATURE_OFFLINE_BUF
+    io.println("             buf                          오프라인 백로그/링 상태");
+    io.println("             buf clear                    ⚠️ 링 전체 삭제(미전송 주행데이터 소실)");
+#endif
+#if FEATURE_FAST_SAMPLE
+    io.println("             fast                         고빈도 창/집계 상태");
+#endif
 }
 
 // 콘솔 AT 조회 전에 대기 중인 URC 를 먼저 소화시킨다.
@@ -861,6 +924,13 @@ static bool appConsole(const String &cmd, const String &arg, Stream &io)
         statusAll(io, w);
         return true;
     }
+#if FEATURE_OFFLINE_BUF
+    // 'buf' / 'buf clear' — 모뎀 AT 를 쓰지 않으므로 URC 배수가 필요 없다.
+    if (Buf::tryConsole(cmd, arg, io)) return true;
+#endif
+#if FEATURE_FAST_SAMPLE
+    if (Fast::tryConsole(cmd, arg, io)) return true;
+#endif
     // 임의 AT 명령 패스스루 — 현장에서 재플래싱 없이 모뎀에 직접 물어보기 위한 것이다.
     // (측위 진단: at+cgnssinfo / at+cgnsspwr? / at+cgnssmode? / at+cvauxs=1 등)
     // 'at +cgnssinfo'(띄어쓰기)와 'at+cgnssinfo'(붙여쓰기) 둘 다 받는다 — 콘솔은 첫
@@ -888,6 +958,23 @@ static bool appConsole(const String &cmd, const String &arg, Stream &io)
     }
     return false;
 }
+
+#if (FEATURE_OFFLINE_BUF && FEATURE_LTE)
+// 백필을 지금 1건 내보내도 되는가 — **실시간 발행이 절대 우선**이라는 규칙의 구현부.
+//   ① 접속 직후 BACKFILL_START_DELAY_MS 동안은 금지(구독·OTA ack·첫 telemetry 가 몰린다)
+//   ② 틱당 1건, 최소 BACKFILL_MIN_GAP_MS 간격
+//   ③ 다음 실시간 발행 BACKFILL_GUARD_MS 이내면 금지
+// 모뎀은 publish 를 1건씩만 처리하고 겹치면 세션이 깨진다 — 가드가 이 펌웨어의 생명줄이다.
+static bool backfillGateOpen(uint32_t now)
+{
+    if (g_connectedAt == 0) return false;
+    if ((int32_t)(now - g_connectedAt) < (int32_t)BACKFILL_START_DELAY_MS) return false;
+    if (g_backfillNextAt != 0 && (int32_t)(now - g_backfillNextAt) < 0)    return false;
+    // 다음 실시간 발행 직전 구간은 비워둔다.
+    if ((int32_t)(g_nextPubAt - now) < (int32_t)BACKFILL_GUARD_MS)         return false;
+    return true;
+}
+#endif
 
 // ---------------------------------------------------------------------------
 void loop()
@@ -949,6 +1036,7 @@ void loop()
     // 첫 telemetry를 5초 뒤로 잡는다(발행끼리 충돌 방지 — 모뎀은 publish 1건씩).
     if (connected && !g_wasConnected) {
         g_nextPubAt = now + 5000;
+        g_connectedAt = now;   // 백필 시작 지연의 기준 — 접속 직후는 발행이 몰린다
         LOGI(SerialMon, "[MQTT] 재접속됨\n");
         Led::set(Led::State::MQTT_OK);          // 재접속 성공 → 정상(heartbeat)
         // clean_session=1 → 재접속마다 재구독. 단 발행 ACK가 빠질 시간을 주고 시도한다.
@@ -994,7 +1082,42 @@ void loop()
     }
 #endif
 
+#if FEATURE_FAST_SAMPLE
+    // ⚠️ 접속 분기 **밖**이다 — 오프라인에서도 창 집계를 만들어야 하고, 접속 상태와 무관하다.
+    //    CAN(TWAI)은 모뎀과 별개 버스라 이 폴이 모뎀에 주는 부담은 0 이다.
+    //    Cfg::fastMs()==0 이면 즉시 반환한다(원격 비활성화).
+    Fast::tick(now, g_obd, SerialMon);
+#endif
+
     if (!connected) {
+#if FEATURE_OFFLINE_BUF
+        // ── 오프라인 적재 ────────────────────────────────────────────────────
+        // 주행 30초 / 정차 120초. 정차 창이 길수록 주차 보관 시간이 늘어난다(3.2일).
+        if (Buf::available() && (g_nextLogAt == 0 || (int32_t)(now - g_nextLogAt) >= 0)) {
+            const bool moving = vehicleMoving(g_obd);
+            g_nextLogAt = now + (moving ? OFFLINE_LOG_MS_DRIVING : OFFLINE_LOG_MS_PARKED);
+
+            // 시각 기준이 아예 없으면(콜드 부팅이 음영에서 시작) 모뎀 RTC 를 한 번 물어본다.
+            // 망이 끊겨도 모뎀 RTC 는 계속 도므로 CCLK 가 유효할 수 있다. base 가 이미
+            // 있으면 부르지 않는다 — 적재 1건마다 AT 왕복을 늘릴 이유가 없다.
+            if (Clk::source() == Clk::SRC_NONE) Mqtt::noteTimeFromModem(modem);
+
+#if FEATURE_GPS
+            // 음영을 벗어난 순간의 좌표를 잡기 위해 적재 직전에도 갱신한다(실시간 경로와 동일).
+            pollGps(now);
+#endif
+            Fast::Aggregate agg;
+#if FEATURE_FAST_SAMPLE
+            // ⚠️ 원본 링이 아니라 **누산기**를 가져온다. 정차 창은 120초라 최대 120샘플로
+            //    FAST_WINDOW_MAX(64)를 넘어, 원본 링을 훑어 집계하면 가장 오래된 56샘플이
+            //    조용히 빠진다(fast.h 헤더 주석).
+            agg = Fast::takeAggregate();
+#endif
+            Buf::pushSample(g_lastFix, g_gpsFixNow, g_obd, g_seq, agg,
+                            /*parkedWindow=*/!moving,
+                            Mqtt::lastRssi(), Mqtt::lastReg(), SerialMon);
+        }
+#endif
         // 미접속: 백오프 간격으로 (재)접속. LTE(PDP)가 죽었으면 먼저 살린다.
         if (now - g_lastConnTry >= g_backoff) {
             g_lastConnTry = now;
@@ -1097,10 +1220,74 @@ void loop()
             if (withMeta) g_metaSent = true;
             g_seq++;
         }
+#if FEATURE_FAST_SAMPLE
+        // 고빈도 창은 실시간 발행 직후 1초 뒤에 낸다 — 모뎀은 publish 를 1건씩만 처리하고
+        // 겹치면 세션이 깨진다(실측). 발행 성공 여부와 무관하게 예약한다.
+        g_nextFastAt = now + FAST_PUBLISH_DELAY_MS;
+#endif
         // 주기 상태 한 줄 — 모듈별 폴 덤프를 DEBUG로 내린 대신 여기서 전체 상태를 요약한다.
         printStatusLine(true, g_seq, pubOk ? "pub-ok" : "pub-FAIL");
         g_lastStatAt = now;
     }
+#if FEATURE_FAST_SAMPLE
+    else if (g_nextFastAt != 0 && (int32_t)(now - g_nextFastAt) >= 0) {
+        // ── 고빈도 창 발행 ───────────────────────────────────────────────────
+        g_nextFastAt = 0;
+        int      n  = 0;
+        uint32_t t0 = 0;
+        const Fast::Sample *win = Fast::window(n, t0);
+        if (n >= FAST_PUBLISH_MIN_N) {
+            Fast::notePublished(Mqtt::publishFast(modem, win, n, t0, SerialMon));
+        } else if (n > 0 || Cfg::fastMs() != 0) {
+            Fast::noteSkipped();   // 시동 OFF·링크 없음 → 샘플 부족
+        }
+        // ⚠️ 발행 실패해도 창을 비운다. 쌓아두면 다음 창과 섞여 o 오프셋이 무의미해지고,
+        //    실시간성이 생명인 데이터라 재전송 가치가 낮다. 실패는 [FAST] 카운터로만 남긴다.
+        Fast::reset();
+        // 누산기도 함께 버린다 — 온라인 구간 이벤트는 서버가 1Hz 원본으로 판정하므로
+        // 무손실이다. 버리지 않으면 온라인이 길어질수록 누산기가 자라, 오프라인으로
+        // 떨어진 직후 첫 레코드의 agg 가 "직전 창"이 아니라 "온라인 세션 전체"를 요약한다.
+        Fast::dropAggregate();
+    }
+#endif
+#if FEATURE_OFFLINE_BUF
+    else if (Buf::count() && backfillGateOpen(now)) {
+        // ── 백필 1건 ─────────────────────────────────────────────────────────
+        // else-if 체인이라 실시간 telemetry → 고빈도 창 → 백필 순으로 자동 우선한다.
+        g_backfillNextAt = now + BACKFILL_MIN_GAP_MS;
+        Buf::Record r;
+        if (Buf::peek(r, SerialMon)) {
+            switch (Buf::resolveTs(r)) {
+            case Buf::TsFix::OK:
+                if (Mqtt::publishBackfill(modem, r, SerialMon)) Buf::pop();
+                // 발행 실패는 세션 끊김이다 — pop 하지 않고 다음 접속에서 다시 시도한다.
+                break;
+
+            case Buf::TsFix::RETRY:
+                // 아직 시각을 모른다(GPS fix·모뎀 NITZ 둘 다 없음). 폐기하지 않는다 —
+                // 시각이 도착하면 그대로 복원된다. 링은 FIFO 라 이 레코드를 건너뛸 수
+                // 없으므로 백필이 잠시 멈추는데, 접속된 상태에서 시각은 곧 온다.
+                // 영영 안 오면 링이 가득 차 오래된 것부터 폐기되지만, 그건 시각을
+                // 모르는 단말이 애초에 보낼 수 있는 게 없다는 뜻이다.
+                if (++g_bfNoClock % 60 == 1) {
+                    LOGW(SerialMon, "[BUF] 시각 미확보 — 백필 대기 중(백로그 %lu건)\n",
+                         (unsigned long)Buf::count());
+                }
+                break;
+
+            case Buf::TsFix::DISCARD:
+                // 다른 부팅 세션의 ts=0 레코드 → 복원 불가.
+                // ts=0 으로 보내면 서버 PK (device_id,0) 에 여러 건이 한 행으로 붕괴한다.
+                Buf::pop();
+                if (++g_bfDiscarded % 10 == 1) {
+                    LOGW(SerialMon, "[BUF] 시각 복원 불가 — 누적 %lu건 폐기\n",
+                         (unsigned long)g_bfDiscarded);
+                }
+                break;
+            }
+        }
+    }
+#endif
 
     // 미접속이 길어지면 [STAT]가 아예 안 나와 멈춘 것처럼 보인다 → 유휴에도 주기적으로 남긴다.
     if (!connected && now - g_lastStatAt >= STATUS_LINE_IDLE_MS) {

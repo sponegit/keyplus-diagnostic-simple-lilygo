@@ -11,6 +11,7 @@
 #include "certs.h"
 #include "provisioning.h"
 #include "cfg.h"
+#include "clk.h"
 #include "log.h"
 
 namespace Mqtt {
@@ -30,12 +31,16 @@ static const char *kCaPem = CA_ISRG_ROOT_X1;
 static String s_clientId;        // = device_id
 static String s_topicStatus;     // v1/{device_id}/status
 static String s_topicTelemetry;  // v1/{device_id}/telemetry
+static String s_topicFast;       // v1/{device_id}/telemetry/fast
 
 static void buildTopics()
 {
     s_clientId      = Prov::deviceId();
     s_topicStatus    = "v1/" + s_clientId + "/status";
     s_topicTelemetry = "v1/" + s_clientId + "/telemetry";
+    // ⚠️ telemetry 하위 4레벨 토픽. 서버 EMQX Rule 은 `v1/+/telemetry` 와 별도로
+    //    `v1/+/telemetry/fast` 가 필요하다(MQTT `+` 는 한 레벨만 매칭).
+    s_topicFast      = s_topicTelemetry + "/fast";
 }
 
 static const uint8_t kClientIdx = 0;
@@ -221,8 +226,12 @@ bool publishTelemetry(TinyGsm &modem, const GpsFix &fix, bool fixFresh, const Ob
         ts = civilToEpoch(fix.year, fix.month, fix.day,
                           fix.hour, fix.minute, fix.second);
         authoritative = true;
+        // 시각 기준 갱신 — 오프라인 적재/고빈도 창이 이 base 로 시각을 만든다(§4.1).
+        // ts 산출 로직 자체는 건드리지 않는다(0.2.11 동작 유지).
+        Clk::note(ts, Clk::SRC_GPS);
     } else {
         ts = modemEpoch(modem);   // 미측위(실내/음영/터널)여도 실시각 확보 → 서버 누적 정상화
+        if (ts) Clk::note(ts, Clk::SRC_MODEM);
     }
     uint32_t up_s = millis() / 1000UL;
 
@@ -292,6 +301,135 @@ bool publishTelemetry(TinyGsm &modem, const GpsFix &fix, bool fixFresh, const Ob
     if (!ok) s_connected = false;   // 발행 실패 = 세션 끊김 → 다음 루프서 재접속
     // 발행 1건마다의 상세는 DEBUG. 평상시 발행 결과는 loop의 [STAT] 한 줄에 실린다.
     LOGD(log, "[MQTT] telemetry seq=%u %s (%d B)\n", seq, ok ? "published" : "FAILED", n);
+    return ok;
+}
+
+bool noteTimeFromModem(TinyGsm &modem)
+{
+    uint32_t e = modemEpoch(modem);
+    if (!e) return false;
+    Clk::note(e, Clk::SRC_MODEM);
+    return true;
+}
+
+bool publishBackfill(TinyGsm &modem, const Buf::Record &rec, Stream &log)
+{
+    if (!s_connected) return false;
+    if (rec.ts == 0) {
+        // 호출측이 resolveTs 로 확정했어야 한다. ts=0 을 보내면 서버 PK (device_id,0) 에
+        // 여러 건이 한 행으로 붕괴한다 — 보내지 않는 편이 정직하다.
+        LOGW(log, "[BUF] ts 미확정 레코드 — 발행 생략\n");
+        return false;
+    }
+
+    const bool  parked = (rec.flags & Buf::F_PARKED_WIN) != 0;
+    const int   aggW   = parked ? (int)(OFFLINE_LOG_MS_PARKED / 1000UL)
+                                : (int)(OFFLINE_LOG_MS_DRIVING / 1000UL);
+    const bool  hasFix = (rec.flags & Buf::F_GPS_FIX) != 0;
+    const bool  hasPos = (rec.lat_e6 != 0 || rec.lon_e6 != 0);
+
+    char buf[640];
+    int n = snprintf(buf, sizeof(buf),
+        "{\"ts\":%u,\"seq\":%u,\"gps\":{\"fix\":%s",
+        rec.ts, (unsigned)rec.seq, hasFix ? "true" : "false");
+
+    if (hasPos) {
+        n += snprintf(buf + n, sizeof(buf) - n,
+            ",\"lat\":%.6f,\"lon\":%.6f,\"spd\":%.1f,\"sat\":%d",
+            rec.lat_e6 / 1e6, rec.lon_e6 / 1e6, rec.spd_x10 / 10.0, (int)rec.sat);
+    }
+
+    // sys.bf=1 이 백필 표시자다. ingest 가 sys 를 통째로 data JSONB 에 넣으므로
+    // 게이트웨이 코드 변경 없이 저장된다.
+    n += snprintf(buf + n, sizeof(buf) - n,
+        "},\"net\":{\"rssi\":%d,\"reg\":%d},\"sys\":{\"up_s\":%u,\"bf\":1}",
+        (int)rec.rssi, (int)rec.reg, rec.up_s);
+
+    if (rec.obd_flags) {
+        n += snprintf(buf + n, sizeof(buf) - n, ",\"obd\":{");
+        int o = 0;
+        if (rec.obd_flags & Buf::O_RPM)      { n += snprintf(buf+n, sizeof(buf)-n, "%s\"rpm\":%u",        o++?",":"", rec.rpm); }
+        if (rec.obd_flags & Buf::O_SPEED)    { n += snprintf(buf+n, sizeof(buf)-n, "%s\"speed\":%u",      o++?",":"", rec.obd_speed); }
+        if (rec.obd_flags & Buf::O_COOLANT)  { n += snprintf(buf+n, sizeof(buf)-n, "%s\"coolant\":%d",    o++?",":"", (int)rec.coolant); }
+        if (rec.obd_flags & Buf::O_LOAD)     { n += snprintf(buf+n, sizeof(buf)-n, "%s\"load\":%.1f",     o++?",":"", rec.load_x2 / 2.0); }
+        if (rec.obd_flags & Buf::O_THR)      { n += snprintf(buf+n, sizeof(buf)-n, "%s\"throttle\":%.1f", o++?",":"", rec.throttle_x2 / 2.0); }
+        if (rec.obd_flags & Buf::O_INTAKE)   { n += snprintf(buf+n, sizeof(buf)-n, "%s\"intake\":%d",     o++?",":"", (int)rec.intake); }
+        if (rec.obd_flags & Buf::O_MAF)      { n += snprintf(buf+n, sizeof(buf)-n, "%s\"maf\":%.2f",      o++?",":"", rec.maf_x10 / 10.0); }
+        if (rec.obd_flags & Buf::O_FUEL)     { n += snprintf(buf+n, sizeof(buf)-n, "%s\"fuel\":%.1f",     o++?",":"", rec.fuel_x2 / 2.0); }
+        if (rec.obd_flags & Buf::O_CTRLV)    { n += snprintf(buf+n, sizeof(buf)-n, "%s\"ctrl_v\":%.2f",   o++?",":"", rec.ctrl_mv / 1000.0); }
+        if (rec.obd_flags & Buf::O_RUNTIME)  { n += snprintf(buf+n, sizeof(buf)-n, "%s\"runtime\":%u",    o++?",":"", rec.runtime_s); }
+        if (rec.obd_flags & Buf::O_ODOMETER) { n += snprintf(buf+n, sizeof(buf)-n, "%s\"odometer\":%.1f", o++?",":"", rec.odo_x10 / 10.0); }
+        n += snprintf(buf + n, sizeof(buf) - n, "}");
+    }
+
+    // ⚠️ agg 는 창에 샘플이 있을 때만 싣는다. 0 으로 채운 agg 를 보내면 서버가
+    //    "정지·무회전"을 관측값으로 오인한다(shared/telemetry.ts AggSample 주석).
+    if (rec.agg_n > 0) {
+        n += snprintf(buf + n, sizeof(buf) - n,
+            ",\"agg\":{\"w\":%d,\"n\":%u,\"spd_max\":%u,\"spd_min\":%u,\"rpm_max\":%u,"
+            "\"accel\":%.1f,\"decel\":%.1f,\"ev\":%u,\"ev_n\":%u}",
+            aggW, rec.agg_n, rec.agg_spd_max, rec.agg_spd_min,
+            (unsigned)rec.agg_rpm_max_x100 * 100,
+            rec.agg_accel_x10 / 10.0, rec.agg_decel_x10 / 10.0,
+            rec.agg_ev, rec.agg_ev_n);
+    }
+    n += snprintf(buf + n, sizeof(buf) - n, "}");
+
+    if (n <= 0 || n >= (int)sizeof(buf)) {
+        LOGE(log, "[BUF] 백필 페이로드 오버플로\n");
+        return false;
+    }
+
+    bool ok = modem.mqtt_publish(kClientIdx, s_topicTelemetry.c_str(), buf, /*qos=*/1);
+    if (!ok) s_connected = false;   // 발행 실패 = 세션 끊김 → 다음 루프서 재접속
+    LOGD(log, "[BUF] 백필 ts=%u %s (%d B)\n", rec.ts, ok ? "published" : "FAILED", n);
+    return ok;
+}
+
+bool publishFast(TinyGsm &modem, const Fast::Sample *win, int n, uint32_t t0, Stream &log)
+{
+    if (!s_connected || !win || n <= 0) return false;
+    if (t0 == 0) {
+        // 시각 기준이 없으면 서버가 t0+o[i] 로 샘플 시각을 만들 수 없다.
+        LOGD(log, "[FAST] t0 미확정 — 창 발행 생략\n");
+        return false;
+    }
+
+    // 페이로드는 평탄(flat) 형태다 — 단말이 snprintf 로 손조립하므로 중첩을 피한다.
+    // n=30 기준 약 545B, n=64 기준 약 1.2KB (모뎀 +CMQTTPAYLOAD 상한 10,240B).
+    char buf[FAST_PAYLOAD_BUF];
+    int  p = snprintf(buf, sizeof(buf), "{\"t0\":%u,\"dt\":%u,\"n\":%d",
+                      t0, (unsigned)(Cfg::fastMs() / 1000UL), n);
+
+    // o = t0 기준 초 오프셋. loop 가 MQTT publish(~0.5초)나 전체 OBD 폴로 초를 건너뛰므로
+    // 고정 격자를 가정하면 시계열이 조용히 어긋난다 → 오프셋을 명시적으로 싣는다.
+    p += snprintf(buf + p, sizeof(buf) - p, ",\"o\":[");
+    for (int i = 0; i < n && p < (int)sizeof(buf); i++)
+        p += snprintf(buf + p, sizeof(buf) - p, "%s%u", i ? "," : "", win[i].off);
+
+    p += snprintf(buf + p, sizeof(buf) - p, "],\"spd\":[");
+    for (int i = 0; i < n && p < (int)sizeof(buf); i++)
+        p += snprintf(buf + p, sizeof(buf) - p, "%s%u", i ? "," : "", win[i].spd);
+
+    p += snprintf(buf + p, sizeof(buf) - p, "],\"rpm\":[");
+    for (int i = 0; i < n && p < (int)sizeof(buf); i++)
+        p += snprintf(buf + p, sizeof(buf) - p, "%s%u", i ? "," : "", win[i].rpm);
+
+    p += snprintf(buf + p, sizeof(buf) - p, "],\"thr\":[");
+    for (int i = 0; i < n && p < (int)sizeof(buf); i++)
+        p += snprintf(buf + p, sizeof(buf) - p, "%s%u", i ? "," : "", win[i].thr);
+
+    p += snprintf(buf + p, sizeof(buf) - p, "]}");
+
+    if (p <= 0 || p >= (int)sizeof(buf)) {
+        // 잘린 JSON 을 보내면 서버가 배치 전체를 버린다 — 보내지 않는다.
+        LOGE(log, "[FAST] 창 페이로드 오버플로(n=%d) — 발행 생략\n", n);
+        return false;
+    }
+
+    bool ok = modem.mqtt_publish(kClientIdx, s_topicFast.c_str(), buf, /*qos=*/1);
+    if (!ok) s_connected = false;
+    LOGD(log, "[FAST] 창 t0=%u n=%d %s (%d B)\n", t0, n, ok ? "published" : "FAILED", p);
     return ok;
 }
 

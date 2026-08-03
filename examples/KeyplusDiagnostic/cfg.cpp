@@ -15,6 +15,7 @@ static const char *kNs = "cfg";
 
 static uint32_t s_teleMs   = CFG_DEFAULT_TELE_MS;
 static int      s_keepaliveS = CFG_DEFAULT_KEEPALIVE_S;
+static uint32_t s_fastMs   = CFG_DEFAULT_FAST_MS;
 
 // --- 간이 JSON 숫자 추출 ("key": num). cmd.cpp jNum과 동일 규약. -----------
 // -1 반환 = 키 없음(부재와 값 0 구분용).
@@ -34,6 +35,7 @@ void begin()
     p.begin(kNs, /*readOnly=*/true);
     s_teleMs     = p.getULong("tele_ms", CFG_DEFAULT_TELE_MS);
     s_keepaliveS = (int)p.getInt("ka_s", CFG_DEFAULT_KEEPALIVE_S);
+    s_fastMs     = p.getULong("fast_ms", CFG_DEFAULT_FAST_MS);
     p.end();
 
     // NVS 값은 상한이 더 느슨했던 이전 펌웨어가 써놨을 수 있다(예: tele_ms=600000).
@@ -48,10 +50,15 @@ void begin()
     if ((uint32_t)s_keepaliveS * 1000UL < s_teleMs * CFG_KEEPALIVE_TELE_RATIO) {
         s_keepaliveS = CFG_DEFAULT_KEEPALIVE_S;
     }
+    // 0 은 "비활성"이라는 별도 의미다 — 클램프 대상이 아니다.
+    if (s_fastMs != 0 && (s_fastMs < CFG_FAST_MS_MIN || s_fastMs > CFG_FAST_MS_MAX)) {
+        s_fastMs = CFG_DEFAULT_FAST_MS;
+    }
 }
 
 uint32_t telemetryIntervalMs() { return s_teleMs; }
 int      keepaliveS()          { return s_keepaliveS; }
+uint32_t fastMs()              { return s_fastMs; }
 
 int applyUpdate(const char *jsonBody, Stream &log)
 {
@@ -90,12 +97,30 @@ int applyUpdate(const char *jsonBody, Stream &log)
         }
     }
 
-    if (!teleReq && !kaReq) return 0;
+    // fast_ms — 고빈도 샘플 주기. 0 = 비활성(롤아웃 안전판)이라 범위검사에서 예외로 둔다.
+    // telemetry/keepalive 와 상호 제약이 없어(별도 버스·별도 토픽) 교차검증 대상이 아니다.
+    uint32_t fastMsNew = s_fastMs;
+    bool     fastReq   = false;
+    long fast = jNumOr(jsonBody, "fast_ms", -1);
+    if (fast >= 0) {
+        if (fast == 0 || (fast >= (long)CFG_FAST_MS_MIN && fast <= (long)CFG_FAST_MS_MAX)) {
+            fastMsNew = (uint32_t)fast;
+            fastReq   = true;
+        } else {
+            LOGW(log, "[CFG] fast_ms=%ld 범위밖(0 또는 %lu~%lu) — 무시\n",
+                       fast, (unsigned long)CFG_FAST_MS_MIN, (unsigned long)CFG_FAST_MS_MAX);
+        }
+    }
+
+    if (!teleReq && !kaReq && !fastReq) return 0;
 
     // 교차검증: keepalive가 발행 주기 대비 너무 짧으면 publish 사이 유휴 동안 브로커가
     // 먼저 세션을 끊어(MQTT 규격상 keepalive의 1.5배) 재접속 루프가 된다. 한쪽만 바꾸는
     // 명령도 결과 조합으로 검사하므로, 부분 반영으로 관계가 깨지는 일이 없다.
-    if ((uint32_t)kaS * 1000UL < teleMs * CFG_KEEPALIVE_TELE_RATIO) {
+    // ⚠️ 이 교차검증은 tele/ka 를 실제로 바꾸려 할 때만 건다. fast_ms 만 온 명령까지
+    //    여기서 막으면, 무관한 두 값의 관계 때문에 고빈도 on/off 가 거부된다.
+    if ((teleReq || kaReq)
+            && (uint32_t)kaS * 1000UL < teleMs * CFG_KEEPALIVE_TELE_RATIO) {
         LOGW(log, "[CFG] 조합 거부 — keepalive_s=%d 는 telemetry %lums 의 %d배 미만\n",
                    kaS, (unsigned long)teleMs, CFG_KEEPALIVE_TELE_RATIO);
         return 0;
@@ -114,6 +139,14 @@ int applyUpdate(const char *jsonBody, Stream &log)
         s_keepaliveS = kaS;                         // 다음 접속 반영
         p.putInt("ka_s", s_keepaliveS);
         LOGI(log, "[CFG] keepalive_s=%d (다음 MQTT 접속 반영)\n", s_keepaliveS);
+        applied++;
+    }
+    if (fastReq) {
+        s_fastMs = fastMsNew;                       // 즉시 적용
+        p.putULong("fast_ms", s_fastMs);
+        if (s_fastMs) LOGI(log, "[CFG] fast_ms=%lu (고빈도 샘플 활성, 즉시 적용)\n",
+                           (unsigned long)s_fastMs);
+        else          LOGI(log, "[CFG] fast_ms=0 (고빈도 샘플 비활성)\n");
         applied++;
     }
     p.end();

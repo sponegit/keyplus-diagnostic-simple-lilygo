@@ -434,6 +434,55 @@ bool read(Data &out, Stream &log)
     return anyAnswer;
 }
 
+bool readFast(FastSample &out, Stream &log)
+{
+    out = FastSample();
+    if (!s_installed) return false;
+
+    // 0x0D 차속 / 0x0C 회전수 / 0x11 스로틀. 전부 ≤0x20 이라 지원 마스크로 거를 수 있다.
+    static const uint8_t kFastPids[3] = { 0x0D, 0x0C, 0x11 };
+
+    uint8_t r[6];
+    bool anyAnswer  = false;
+    int  consecMiss = 0;
+
+    for (int i = 0; i < 3; i++) {
+        const uint8_t pid = kFastPids[i];
+        if (!supported(pid)) continue;
+
+        int n = requestPid(pid, r, 6, OBD2_REQ_TIMEOUT_MS);
+        if (n < 0) {
+            // 링크가 죽었으면 남은 PID 도 전부 타임아웃이다 — 1Hz 로 도는 경로라
+            // 전체 폴보다 더 공격적으로 끊는다(초당 스톨 누적 방지).
+            if (++consecMiss >= OBD2_POLL_ABORT_MISSES && !anyAnswer) break;
+            continue;
+        }
+        anyAnswer  = true;
+        consecMiss = 0;
+
+        switch (pid) {
+        case 0x0D:
+            if (n >= 1) { out.has_speed = true; out.speed = r[0]; }
+            break;
+        case 0x0C:
+            if (n >= 2) {
+                uint32_t raw = ((uint32_t)r[0] << 8) | r[1];
+                out.has_rpm = true; out.rpm = (uint16_t)(raw / 4);
+            }
+            break;
+        case 0x11:
+            // %  = A × 100/255. 창 집계·이벤트 판정에 소수점은 필요 없어 정수로 둔다.
+            if (n >= 1) { out.has_throttle = true; out.throttle = (uint8_t)((r[0] * 100 + 127) / 255); }
+            break;
+        default: break;
+        }
+    }
+
+    // 이 경로는 초당 1회라 성공 로그를 남기면 콘솔이 도배된다 — 창 요약은 'fast' 명령에서 본다.
+    if (!anyAnswer) LOGD(log, "[FAST] OBD 무응답 — 링크 확인\n");
+    return anyAnswer;
+}
+
 void print(const Data &d, Stream &log)
 {
     // 폴 1회분 전체 항목 덤프 — DEBUG 전용. 평상시 주요 값은 loop의 [STAT] 한 줄에 실린다.

@@ -22,6 +22,8 @@
 #define FEATURE_LTE         1   // 1단계: LTE+MQTT (LG U+ 유심)     [활성 — 증분 A]
 #define FEATURE_STATUS_LED  1   // 3단계: 상태표시 LED (외장, GPIO23) [활성]
 #define FEATURE_OTA         1   // 8단계: LTE OTA(ota_start) + config_update [활성]
+#define FEATURE_OFFLINE_BUF 1   // 오프라인 telemetry 적재·백필 (spiffs 파티션 raw 링) [활성]
+#define FEATURE_FAST_SAMPLE 1   // 고빈도(1Hz) OBD 샘플 스트림 [활성 — 런타임 fast_ms=0 로 차단 가능]
 
 // ===========================================================================
 // 모뎀 브링업 (setup) — 무응답/미식별로 부팅이 멈추지 않게 하는 상한
@@ -195,7 +197,7 @@
 // 펌웨어 버전 — 부팅 배너/info, telemetry meta, 프로비저닝 요청 body, OTA 결과 검증에
 // 모두 이 값이 쓰인다(단일 출처). OTA 로 새 이미지를 내릴 때는 서버가 기대하는 version 과
 // 반드시 일치시켜야 한다 — 불일치면 재부팅 후 ota ack 가 failed 로 나간다(ota.cpp).
-#define FW_VERSION                  "0.2.11"
+#define FW_VERSION                  "0.2.12"
 
 // ===========================================================================
 // UART 로그 레벨 (log.h)
@@ -265,6 +267,85 @@
 #endif
 #if (MQTT_KEEPALIVE_S * 1000UL < MQTT_PUBLISH_INTERVAL_MS * CFG_KEEPALIVE_TELE_RATIO)
 #error "MQTT_KEEPALIVE_S가 발행 주기 대비 너무 짧다 — 브로커가 먼저 세션을 끊는다"
+#endif
+
+// ===========================================================================
+// 오프라인 적재·백필 + 고빈도(1Hz) 샘플   설계: offline-telemetry-buffer.md §8.3
+// ===========================================================================
+
+// --- 시각 기준(Clk) ---------------------------------------------------------
+// base 갱신 이후 이 시간이 지나면 출처를 DERIVED(millis 외삽)로 표시한다.
+// telemetry 발행 주기(기본 30초)마다 갱신되므로, 그 2~3배를 넘겼다면 실제로
+// 시각 소스가 끊긴 상태다. 드리프트 자체는 ±20ppm(하루 ±1.7초)라 값은 계속 쓸 만하다.
+#define CLK_SRC_FRESH_MS            (120000UL)
+
+// --- 오프라인 적재 ----------------------------------------------------------
+// 주행 30초 → 19.5시간 / 정차 120초 → 77.9시간(3.2일) 보관.
+#define OFFLINE_LOG_MS_DRIVING      (30000UL)
+#define OFFLINE_LOG_MS_PARKED       (120000UL)
+
+// ⚠️ SPIFFS 로 마운트하지 않는다 — esp_partition_* raw 전용(buffer.h 헤더 주석).
+#define BUF_PARTITION_LABEL         "spiffs"
+#define BUF_RECORD_SIZE             (56)
+#define BUF_SECTOR_SIZE             (4096)
+#define BUF_SECTOR_HEADER_SIZE      (8)         // magic u32 + sector_seq u32
+// (4096 − 8헤더) / 56 = 73. 실제로는 4096 − 8 = 4088 = 56×73 정확히 나누어떨어진다.
+#define BUF_RECS_PER_SECTOR         (73)
+// 섹터 수는 런타임에 part->size 에서 계산한다(파티션 재설계 대비). 이 값은 정적 배열
+// 상한일 뿐이며, 현 파티션 표(128KB)에서는 32 가 나온다. 1,408KB 재설계안(352섹터)까지 수용.
+#define BUF_MAX_SECTORS             (352)
+// NVS 커서 저장 간격 — 전원 단절 시 최대 (이 값−1)건이 재전송된다.
+// 서버 telemetry PK 가 (device_id, ts) + ON CONFLICT DO NOTHING 이라 중복은 흡수된다.
+#define BUF_CURSOR_SAVE_EVERY       (32)
+
+// --- 백필 페이싱 (실시간 발행이 절대 우선) ----------------------------------
+#define BACKFILL_START_DELAY_MS     (15000UL)  // 접속 후 백필 시작까지
+#define BACKFILL_MIN_GAP_MS         (1000UL)   // 백필 발행 최소 간격(틱당 1건)
+#define BACKFILL_GUARD_MS           (2000UL)   // 다음 실시간 발행 직전 금지 구간
+
+// --- 고빈도 샘플 ------------------------------------------------------------
+// ⚠️ 런타임 기본값은 0(비활성)이다. 서버 EMQX Rule(`v1/+/telemetry/fast`)과
+//    /ingest/telemetry/fast 가 배포되기 전에 발행하면 브로커에서 조용히 버려진다
+//    — 무해하지만 데이터·전력 낭비다. 서버 준비 후 config_update {"fast_ms":1000}
+//    으로 OTA 없이 켠다. 발행 부하가 의심되면 같은 방법으로 즉시 끌 수 있다.
+#define CFG_DEFAULT_FAST_MS         (0UL)
+#define FAST_SAMPLE_MS              (1000UL)   // 1Hz — fast_ms 활성화 시 권장값
+#define CFG_FAST_MS_MIN             (1000UL)   // 1Hz 보다 빠르게는 올리지 않는다(폴 듀티·발행량)
+#define CFG_FAST_MS_MAX             (10000UL)  // 0.1Hz — 이보다 느리면 고빈도의 의미가 없다
+#define FAST_WINDOW_MAX             (64)       // 창 최대 원본 샘플 수 (RAM 384B)
+#define FAST_PUBLISH_MIN_N          (2)        // 이 미만이면 발행 생략
+#define FAST_PUBLISH_DELAY_MS       (1000UL)   // 실시간 telemetry 발행 후 이만큼 뒤 발행
+#define FAST_PAYLOAD_BUF            (2048)     // n=64 에서 약 1.2KB (모뎀 상한 10,240B)
+#define FAST_MISS_ABORT             (2)        // 연속 무응답 시 고빈도 폴 중단
+// 가감속 계산 시 인정하는 최대 샘플 간격. 이보다 벌어졌으면(발행 블로킹·폴 지연)
+// Δspd 를 그 간격으로 나눠도 의미가 없어 가감속을 계산하지 않는다 — 결측 구간을
+// 1초로 가정하면 가짜 급가속이 나온다.
+#define FAST_ACCEL_MAX_GAP_MS       (5000UL)
+
+// 오프라인 집계용 이벤트 임계 (온라인 구간은 서버가 1Hz 원본으로 판정한다).
+// ⚠️ 이 값들은 단말에 박히므로 변경에 OTA 가 필요하다. 서버측 event_rules 와 어긋날 수
+//    있어, 서버는 agg 유래 이벤트를 source='agg' 로 구분해 저장한다.
+//
+// 지속 조건(*_MIN_S)은 서버 event_rules 기본값(min_s)과 맞춘 것이다. 임계를 스치는
+// 1샘플로 이벤트를 세우면 서버 판정과 크게 어긋난다 — 신호등 정차 한 번에 공회전
+// 비트가 서고, 노면 요철 한 번이 급제동이 된다.
+#define FAST_HARSH_ACCEL_MS2_X10    (30)       // +3.0 m/s²
+#define FAST_HARSH_DECEL_MS2_X10    (-35)      // -3.5 m/s²
+#define FAST_HARSH_MIN_S            (2)        // 서버 harsh_accel / harsh_brake 의 min_s
+#define FAST_OVERSPEED_KMH          (110)
+#define FAST_OVERSPEED_MIN_S        (10)       // 서버 overspeed 의 min_s
+#define FAST_IDLE_RPM_MIN           (500)
+// ⚠️ 서버 idling 기본값은 min_s=180 이지만 여기서는 30 이다. 주행 창이 30초라
+//    180초 지속은 창 안에서 관측 자체가 불가능하다(정차 창 120초에서도 못 채운다).
+//    → agg 유래 공회전은 서버 판정보다 느슨하다. source='agg' 로 구분되므로 허용한다.
+#define FAST_IDLE_MIN_S             (30)
+
+// 컴파일 타임 정합성 — 레코드/섹터 산술이 어긋나면 링 전체가 조용히 깨진다.
+#if (BUF_RECS_PER_SECTOR * BUF_RECORD_SIZE + 8 > BUF_SECTOR_SIZE)
+#error "BUF_RECS_PER_SECTOR × BUF_RECORD_SIZE + 헤더 8B 가 섹터 크기를 넘는다"
+#endif
+#if (BUF_RECORD_SIZE % 4 != 0)
+#error "BUF_RECORD_SIZE 는 4의 배수여야 한다 (esp_partition_write 정렬 요구)"
 #endif
 
 // ===========================================================================

@@ -28,6 +28,16 @@ uint32_t telemetryIntervalMs();
 // MQTT keepalive(초) — 다음 접속에 반영. mqtt connect가 참조.
 int keepaliveS();
 
+/**
+ * 고빈도(1Hz) OBD 샘플 주기(ms). **0 = 비활성**.
+ *
+ * 0 을 별도 의미로 정의한 이유: 서버가 OTA 없이 원격으로 고빈도 스트림을 끌 수 있어야
+ * 롤아웃 안전판이 된다(발행 부하가 의심되면 즉시 차단). 반대로 서버 준비가 끝나면
+ * config_update {"fast_ms":1000} 한 번으로 켠다 — 펌웨어 교체가 필요 없다.
+ * 0 이 아닌 값은 CFG_FAST_MS_MIN~MAX 로 클램프된다.
+ */
+uint32_t fastMs();
+
 // config_update payload 반영. jsonBody에서 알려진 키만 파싱→검증→NVS 저장·런타임 갱신.
 // 반환: 반영된 키 수(0이면 호출측이 failed ack).
 int applyUpdate(const char *jsonBody, Stream &log);
