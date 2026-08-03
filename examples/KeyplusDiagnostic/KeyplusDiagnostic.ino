@@ -1284,12 +1284,21 @@ void loop()
                 g_backoff = MQTT_RECONNECT_CAP_MS;
             } else {
                 Led::set(Led::State::PROVISIONING); // 접속/발급 시도 중 → 느린 점멸
+                // 링크 판정은 생존 확인부터 한다(R4). Lte::isUp 은 isNetworkConnected +
+                // isGprsConnected 두 AT 왕복인데, 죽은 모뎀에서는 둘 다 타임아웃을 다
+                // 태우고 나서야 결론이 난다 — 실측 "연결 끊김" 인지에서 "모뎀 무응답"
+                // 판정까지 15초. 짧은 프로브로 그 자리에서 갈라 곧장 리셋 경로로 보낸다.
+                bool alive    = Lte::modemAlive(modem, MODEM_PROBE_TIMEOUT_MS);
+                bool linkDown = !alive || !Lte::isUp(modem);
                 // LTE 재브링업은 자체 백오프로 페이싱한다. 등록 시도는 모뎀이 최대 출력으로
                 // 송신하는 구간이라, 전원 마진이 부족하면 몰아칠수록 전압이 더 내려앉는다.
-                if (!Lte::isUp(modem) && (g_lastLteTry == 0 || now - g_lastLteTry >= g_lteRetryDelay)) {
+                if (linkDown && (g_lastLteTry == 0 || now - g_lastLteTry >= g_lteRetryDelay)) {
                     g_lastLteTry = now;
-                    LOGW(SerialMon, "[LTE] 링크 다운 — 재브링업\n");
-                    if (Lte::begin(modem, SerialMon)) {
+                    LOGW(SerialMon, "[LTE] 링크 다운 — 재브링업%s\n",
+                         alive ? "" : " (모뎀 무응답 — 리셋 경로)");
+                    // 무응답이면 Lte::begin 을 부르지 않는다. begin 도 진입에서 같은 확인을
+                    // 하고 false 를 내지만, 그 전에 SIM 폴링/APN 왕복이 또 붙는다.
+                    if (alive && Lte::begin(modem, SerialMon)) {
                         g_lteFailStreak = 0;
                         g_lteRetryDelay = 0;
                     } else {
@@ -1301,7 +1310,10 @@ void loop()
                         // 100% 같은 자리에서 실패한다. 백오프는 "등록이 안 붙는" 상황(전원 마진)
                         // 을 위한 것이지, 죽은 모뎀을 살리지는 못한다 → 즉시 리셋으로 승격.
                         // (실측: 무응답 확인 후 30초 백오프 + 소프트 리셋 30초를 통째로 버렸다.)
-                        bool dead = !Lte::modemAlive(modem);
+                        // 위 게이트에서 이미 무응답으로 갈렸으면 다시 묻지 않는다. 살아 있다고
+                        // 봤는데 브링업이 실패한 경우만, 리셋 직전에 넉넉한 기본 타임아웃으로
+                        // 한 번 더 확인한다(짧은 프로브의 오탐으로 전원 사이클을 돌리지 않게).
+                        bool dead = !alive || !Lte::modemAlive(modem);
                         if (dead || g_lteFailStreak >= LTE_FAIL_BEFORE_RESET) {
                             // AT를 못 받는 모뎀에 AT+CFUN=1,1 은 닿지 않는다 → 소프트 리셋을
                             // 건너뛰고 곧장 PWRKEY 전원 사이클.
