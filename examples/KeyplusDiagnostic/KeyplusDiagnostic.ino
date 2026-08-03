@@ -247,6 +247,13 @@ static void pollGps(uint32_t now)
         g_gpsFailStreak = 0;
         if (!Gps::isEnabled(modem)) {
             LOGW(SerialMon, "[GPS] GNSS 가 꺼져 있음(모뎀 리셋 추정) — 재활성화\n");
+#if FEATURE_LTE
+            // GNSS 가 꺼졌다 = AT+CGNSSPWR 이 0 으로 돌아갔다 = 모뎀이 리부팅됐다.
+            // 260804 로그에서 이 신호는 매 사이클 publish 실패보다 55초 먼저 떴는데,
+            // 여기서 GNSS 만 되살리고 끝내는 바람에 그 55초를 그냥 흘려보냈다.
+            // MQTT 세션도 같이 죽었다고 보고 재접속 경로를 즉시 연다(R2).
+            noteModemRestarted("GNSS 꺼짐");
+#endif
             if (Gps::begin(modem)) LOGI(SerialMon, "[GPS] GNSS 재활성화됨\n");
             else                   LOGE(SerialMon, "[GPS] GNSS 재활성화 실패 — 다음 폴에 재시도\n");
         }
