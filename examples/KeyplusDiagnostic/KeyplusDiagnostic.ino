@@ -218,9 +218,15 @@ static void pollGps(uint32_t now)
     g_lastGpsPoll = now;
 
 #if FEATURE_LTE
-    // 모뎀 무응답으로 미뤄둔 GNSS 재활성화(R3). 모뎀이 살아났으면 여기서 되살린다.
+    // 미뤄둔 GNSS 재활성화(R3/R5). 모뎀이 살아났으면 여기서 되살린다.
     // 실패하면 플래그를 유지해 다음 폴에 다시 시도한다.
-    if (g_gpsReenablePending && Lte::modemAlive(modem, MODEM_PROBE_TIMEOUT_MS)) {
+    // ⚠️ Gps::begin 은 최대 15초 블로킹이다 — 다음 실시간 발행이 코앞이면 미룬다.
+    //    발행 직전에 이걸 물리면 telemetry 가 그만큼 통째로 밀린다(백필·status 가드와
+    //    같은 규칙). 미접속 구간에는 발행 예정 자체가 없으므로 바로 켠다.
+    bool gnssRecoverGate = !Mqtt::isConnected(modem)
+                        || (int32_t)(g_nextPubAt - now) >= (int32_t)GPS_REENABLE_PUB_GUARD_MS;
+    if (g_gpsReenablePending && gnssRecoverGate
+            && Lte::modemAlive(modem, MODEM_PROBE_TIMEOUT_MS)) {
         if (Gps::begin(modem)) {
             g_gpsReenablePending = false;
             LOGI(SerialMon, "[GPS] GNSS 재활성화됨(모뎀 복구 후)\n");
@@ -1327,13 +1333,12 @@ void loop()
                             Cmd::markUnsubscribed();
 
 #if FEATURE_GPS
-                            // 모뎀 리셋은 GNSS 도 끈다(AT+CGNSSPWR=0 상태로 복귀).
-                            // 여기서 되살리지 않으면 다음 폴들이 전부 미측위가 되고,
-                            // pollGps 의 연속실패 확인이 뒤늦게 고칠 때까지 위치가 빈다.
-                            if (revived) {
-                                if (Gps::begin(modem)) LOGI(SerialMon, "[GPS] 모뎀 리셋 후 GNSS 재활성화됨\n");
-                                else                   LOGW(SerialMon, "[GPS] 모뎀 리셋 후 GNSS 재활성화 실패 — 폴에서 재시도\n");
-                            }
+                            // 모뎀 리셋은 GNSS 도 끈다(AT+CGNSSPWR=0 상태로 복귀) — 되살려야
+                            // 하지만 **여기서는 아니다**(R5). Gps::begin 은 최대 15초 블로킹이라
+                            // 이 자리에 두면 갓 살아난 모뎀을 그만큼 놀리고 재브링업이 밀린다
+                            // (실측 08:28:53 AT 복구 → 08:29:00 GNSS → 08:29:10 재브링업).
+                            // 플래그만 세우고 재접속을 먼저 끝낸 뒤 다음 GPS 폴에서 켠다.
+                            if (revived) g_gpsReenablePending = true;
 #endif
                             if (revived) {
                                 // 모뎀이 방금 재부팅돼 깨끗한 상태다 — 실패 이력으로 쌓인

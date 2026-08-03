@@ -61,6 +61,10 @@
 // AGPS(AT+CAGPS) — 망 보조 데이터로 콜드스타트 단축. LTE(PDP) up 이후 1회 시도.
 // 실패해도 측위는 진행되므로 best-effort. 0 이면 시도하지 않는다.
 #define GPS_USE_AGPS                (1)
+// 모뎀 리셋 후 미뤄둔 GNSS 재활성화(R5)를 실행하려면 다음 실시간 발행까지 이만큼은
+// 남아 있어야 한다. Gps::begin 은 enableGPS 를 최대 15초 폴링하므로, 발행 직전에
+// 물리면 telemetry 가 그만큼 통째로 밀린다(백필/status 재발행 가드와 같은 규칙).
+#define GPS_REENABLE_PUB_GUARD_MS   (16000UL)
 
 // ===========================================================================
 // LTE / MQTT 설정 (1단계)   설계: lte-mqtt-device-design.md
