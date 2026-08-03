@@ -1,0 +1,66 @@
+{
+  "product": "keyplus-diagnostic",
+  "board": "LILYGO T-A7670E (ESP32-WROVER, Flash 4MB / PSRAM 8MB)",
+  "version": "0.2.12",
+  "file": "keyplus-diagnostic-0.2.12.bin",
+  "size": 404752,
+  "md5": "547435a429e143bd2f3fedf524d528d3",
+  "sha256": "a0352b133e9a6e96b64b13159185a6e922f01d8c82e5c9eab51db85982603d2d",
+  "partition": {
+    "table": "min_spiffs.csv",
+    "ota_slot_bytes": 1966080,
+    "usage_pct": 20.6,
+    "note": "spiffs 파티션(0x3D0000, 128KB)을 오프라인 링버퍼로 전용한다. SPIFFS 로 마운트하지 않는다 — 이후 파일시스템이 필요해지면 파티션 표 재설계가 선행돼야 한다."
+  },
+  "url": "https://REPLACE-ME/fw/keyplus-diagnostic-0.2.12.bin",
+  "verify": {
+    "device_checks": "md5",
+    "note": "단말은 md5만 검증한다(Update.setMD5). sha256은 배포 경로 무결성 확인용."
+  },
+  "supersedes": {
+    "version": "0.2.6",
+    "reason": "0.2.6 이미지는 FW_VERSION 이 0.2.5 로 남아 있어 OTA ack 가 failed 로 나간다(실기 확인). 0.2.7 에서 수정."
+  },
+  "changes_since_0_2_11": [
+    "오프라인 telemetry 적재·백필 — 음영 구간 telemetry 를 단말 플래시(spiffs 128KB raw 링)에 최대 2,336건 적재했다가 재접속 후 실시간 발행을 방해하지 않는 속도로 올린다. 주행 30초 주기 19.5시간 / 정차 120초 주기 3.2일분",
+    "시각 기준(Clk) 신설 — (epoch, millis) base 를 유지해 시각 소스가 끊긴 구간도 millis 외삽으로 발생 시각을 남긴다(드리프트 하루 ±1.7초)",
+    "고빈도(1Hz) OBD 샘플 스트림 — 차속·회전수·스로틀을 초당 수집해 창 단위로 v1/{id}/telemetry/fast 에 발행. 이벤트 판정은 서버가 원본으로 하므로 임계값 튜닝에 OTA 가 불필요하다",
+    "오프라인 창 집계 — 음영 구간은 1Hz 원본 대신 창 요약 8바이트(최고/최저 속도, 최고 회전수, 최대 가감속, 이벤트 비트)를 백필 telemetry 의 agg 로 싣는다",
+    "config_update 키 fast_ms 추가 — 0=비활성. 서버가 OTA 없이 고빈도 스트림을 켜고 끌 수 있다(롤아웃 안전판)",
+    "콘솔 명령 buf / buf clear / fast 추가, [STAT] 한 줄에 buf= fast= 필드 추가",
+    "백필 ts 소급 복원에서 '아직 시각을 모름'과 '복원 불가'를 분리(Buf::TsFix) — 접속 직후 GPS fix·모뎀 NITZ 가 둘 다 없는 구간에서 복원 가능한 레코드를 조기 폐기하던 것을 대기로 바꿨다. 폐기 조건은 설계 §4.2 대로 '다른 부팅 세션' 하나뿐이다"
+  ],
+  "server_prerequisites": {
+    "backfill": "없음 — 기존 telemetry 토픽·스키마 그대로이고 ts 만 과거다. telemetry PK (device_id, ts) + ON CONFLICT DO NOTHING, vehicle_state UPSERT 의 ts 가드가 이미 처리한다",
+    "fast_stream": [
+      "EMQX Rule `v1/+/telemetry/fast` (MQTT + 는 한 레벨만 매칭 — allTelemetry 로는 잡히지 않는다)",
+      "POST /ingest/telemetry/fast 라우트",
+      "telemetry_fast 테이블 (014)",
+      "ingestTelemetry() 픽 목록에 agg 추가"
+    ],
+    "note": "고빈도는 런타임 기본이 꺼져 있다(fast_ms=0). 위 서버 작업 완료 후 config_update 로 켠다."
+  },
+  "deploy_order": [
+    "0단계: UART 진단 앱 STAT_KEYS 에 'buf','fast' 추가 — 펌웨어보다 먼저. 순서가 뒤집히면 현장 [STAT] 표시가 깨진다",
+    "1단계: 이 펌웨어 OTA — 백필만 활성(fast_ms=0). 서버 작업 없이 오프라인 유실이 해소된다",
+    "2단계: 서버 고빈도 경로 배포 후 config_update {\"fast_ms\":1000} — OTA 불필요"
+  ],
+  "breaking": {
+    "uart_app": "⚠️ [STAT] 한 줄에 buf=/fast= 토큰이 추가된다. UART 앱(main.py)의 STAT_KEYS 는 닫힌 목록이고 STAT_RE 가 이 목록을 '다음 키 경계'로도 쓰므로, 앱을 먼저 갱신하지 않으면 미지 토큰이 앞 필드 값에 흡수돼 obd/seq 표시가 오염된다",
+    "spiffs": "⚠️ spiffs 파티션을 raw 로 전용한다. 이 펌웨어는 SPIFFS/LittleFS 를 호출하지 않으므로 현재 충돌은 없으나, 이후 파일시스템 도입 시 파티션 표 재설계가 필요하다"
+  },
+  "known_unfixed": [
+    "오프라인 구간은 1Hz 원본이 남지 않는다 — 창 집계로 '급제동이 있었다'는 알 수 있으나 그 순간의 파형은 복원되지 않는다(플래시 128KB 상한. 1Hz 원본은 39분이면 링을 소진한다)",
+    "온·오프라인 이벤트 판정 불일치 — 온라인은 서버가 1Hz 원본으로, 오프라인은 단말이 config.h 상수로 판정한다. 서버는 source='series'|'agg' 로 구분해 저장해야 한다",
+    "부팅 직후 콜드 음영(시각을 한 번도 못 얻은 채 적재 후 재부팅) 구간은 ts 복원이 불가해 폐기된다 — ts=0 으로 보내면 서버 PK (device_id,0) 에 여러 건이 한 행으로 붕괴한다",
+    "발행 건수가 창당 1건 늘어난다(고빈도 활성 시). 모뎀 publish 직렬화가 이 펌웨어의 최대 취약점이므로 실시간 발행 주기가 밀리지 않는지 관찰이 필요하다",
+    "미측위 중에도 gps.fix=true + 마지막 좌표가 계속 발행된다(0.2.11 부터 기지). 서버가 터널/음영을 구분할 수 없다",
+    "gps.spd 는 노트 단위 무변환(TinyGSM getGPS) — km/h 대비 1.852배 작다. 속도는 OBD2 PID 0x0D 가 권위"
+  ],
+  "limits": {
+    "cmd_payload_bytes": 1000,
+    "fast_payload_bytes": 2048,
+    "offline_records": 2336,
+    "note": "래퍼가 토픽+페이로드를 한 버퍼에 담는다. 1024B에서 토픽 24B 제외 ≈1000B. 고빈도 창은 별도 버퍼(2048B)이며 모뎀 +CMQTTPAYLOAD 상한은 10240B."
+  }
+}
