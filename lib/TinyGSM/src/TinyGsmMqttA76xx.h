@@ -31,7 +31,29 @@ protected:
     bool _isConnected = false;
     uint32_t _lastCheckConnect = 0;
 
+    // --- publish 완료(+CMQTTPUB URC) 추적 -----------------------------------
+    // mqtt_publish() 는 AT+CMQTTPUB 이 OK 를 내면 곧바로 true 를 돌려준다. 실제 발행
+    // 결과는 그 뒤 비동기로 오는 URC `+CMQTTPUB: <client_index>,<err>` 에만 들어 있고,
+    // 원본 래퍼는 그걸 파싱하지 않아 "### Unhandled" 로 버렸다 — 즉 반환값 true 는
+    // "AT 를 받아들였다"이지 "브로커에 전달됐다"가 아니다.
+    // 아래 값들을 waitResponse 의 URC 분기가 채우고, 응용이 조회해 실제 완료를 판정한다.
+    bool     _pubAckPending = false;   // 발행을 내보내고 결과 URC 를 기다리는 중
+    int8_t   _lastPubErr    = -1;      // 마지막 결과 코드 (0=성공, -1=아직 없음)
+    uint32_t _pubSentAt     = 0;       // 발행 시각(millis) — 응용이 타임아웃 판정에 쓴다
+
 public:
+    // 결과 URC 수신 — waitResponse 의 `+CMQTTPUB:` 분기가 호출한다.
+    void mqttNotePubAck(int8_t err)
+    {
+        _lastPubErr    = err;
+        _pubAckPending = false;
+    }
+    // 발행을 내보낸 뒤 아직 결과 URC 가 오지 않았는가.
+    bool     mqttPubAckPending() const { return _pubAckPending; }
+    // 마지막 발행 결과 코드. 0 = 성공, 그 외 = 모뎀 에러, -1 = 아직 결과 없음.
+    int8_t   mqttLastPubErr()    const { return _lastPubErr; }
+    // 마지막 발행을 내보낸 시각(millis).
+    uint32_t mqttPubSentAt()     const { return _pubSentAt; }
     /*
      * Basic functions
      */
@@ -285,6 +307,12 @@ public:
         if (thisModem().waitResponse() != 1) {
             return false;
         }
+        // ⚠️ 여기서의 true 는 "모뎀이 발행 요청을 받아들였다"까지다. 실제 전달 결과는
+        //    비동기 URC `+CMQTTPUB: <client_index>,<err>` 로 온다 — 아래 플래그를 세워
+        //    응용이 그 URC 도착 여부로 진짜 완료를 판정하게 한다.
+        _pubAckPending = true;
+        _lastPubErr    = -1;
+        _pubSentAt     = millis();
         return true;
     }
 

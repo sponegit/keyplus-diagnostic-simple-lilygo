@@ -521,6 +521,14 @@ class TinyGsmA7670 :  public TinyGsmA76xx<TinyGsmA7670>,
           DBG("### Network error!");
           if (!isGprsConnected()) { gprsDisconnect(); }
           data = "";
+        } else if (data.endsWith(GF("+CMQTTPUB:"))) {
+          // 발행 결과 URC: `+CMQTTPUB: <client_index>,<err>` (err 0 = 성공).
+          // 원본은 이걸 파싱하지 않아 "### Unhandled" 로 버렸다 — mqtt_publish 의
+          // 반환값은 AT 수락까지만 뜻하므로, 실제 전달 확인은 이 URC 가 유일한 근거다.
+          streamSkipUntil(',');  // <client_index>
+          int8_t err = streamGetIntBefore('\n');
+          mqttNotePubAck(err);
+          data = "";
         }
       }
     } while (millis() - startMillis < timeout_ms);

@@ -72,6 +72,19 @@ bool     publishGapElapsed(uint32_t now, uint32_t gapMs);
 //   what: 로그에 찍을 발행 종류("telemetry" / "ack" 등).
 bool publishReady(TinyGsm &modem, const char *what, Stream &log);
 
+// --- 발행 완료 확인 (P3) ----------------------------------------------------
+// 래퍼 mqtt_publish() 의 true 는 "모뎀이 요청을 받아들였다"까지다. 실제 전달 결과는
+// 비동기 URC `+CMQTTPUB: <idx>,<err>` 로 오고, 그걸 파싱해 두는 건 패치한 래퍼다
+// (lib/TinyGSM TinyGsmMqttA76xx.h / TinyGsmClientA7670.h).
+//
+// 발행을 내보낸 뒤 MQTT_PUB_ACK_TIMEOUT_MS 안에 결과가 오지 않았는가.
+// 참이면 세션이 죽은 것으로 본다 — 모뎀이 URC 조차 못 낼 상태라는 뜻이다.
+// ⚠️ Mqtt::handle() 이 URC 를 펌핑한 **뒤에** 물어야 한다. 안 그러면 도착한 결과를
+//    아직 읽지 않은 채로 "미도착"이라 판정한다.
+bool pubAckOverdue(TinyGsm &modem, uint32_t now);
+// 마지막 발행 결과 코드. 0=성공, -1=아직 결과 없음, 그 외=모뎀 에러.
+int  lastPubErr(TinyGsm &modem);
+
 /**
  * status 재발행 (F1/F3) — `connectSession()` 의 online 발행과 **같은 토픽·QoS1·retain=1**.
  *   {"online":true[,"sub":true],"power_mode":"...","ignition_on":...}

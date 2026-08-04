@@ -85,6 +85,15 @@ static bool modemResponsive(TinyGsm &modem)
     return modem.testAT(MODEM_PROBE_TIMEOUT_MS);
 }
 
+bool pubAckOverdue(TinyGsm &modem, uint32_t now)
+{
+    if (!s_connected) return false;
+    if (!modem.mqttPubAckPending()) return false;
+    return (int32_t)(now - modem.mqttPubSentAt()) >= (int32_t)MQTT_PUB_ACK_TIMEOUT_MS;
+}
+
+int lastPubErr(TinyGsm &modem) { return (int)modem.mqttLastPubErr(); }
+
 // 발행 진입 공통 가드 — 무응답이면 세션을 사망 처리하고 즉시 false.
 // s_connected 를 내려야 loop 가 다음 틱에 재접속 경로로 들어간다.
 bool publishReady(TinyGsm &modem, const char *what, Stream &log)
@@ -157,6 +166,11 @@ static bool connectSession(TinyGsm &modem, Stream &log)
         s_connected = false;
         return false;
     }
+
+    // 새 세션 — 이전 세션의 발행 대기 흔적을 지운다(P3). mqtt_publish 는 마지막 단계까지
+    // 가야 플래그를 세우므로, 앞 단계에서 실패한 발행의 pending=true 와 낡은 _pubSentAt
+    // 이 그대로 남을 수 있다. 안 지우면 접속 직후 곧바로 "결과 URC 미도착" 오판이 난다.
+    modem.mqttNotePubAck(-1);
 
     // 접속 알림: status online, retained.
     // ⚠️ 여기서는 power_mode·ignition_on 을 싣지 않는다 — 이 모듈은 OBD 상태를 모른다.
