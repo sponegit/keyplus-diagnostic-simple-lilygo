@@ -82,6 +82,9 @@ bool publishReady(TinyGsm &modem, const char *what, Stream &log);
 // ⚠️ Mqtt::handle() 이 URC 를 펌핑한 **뒤에** 물어야 한다. 안 그러면 도착한 결과를
 //    아직 읽지 않은 채로 "미도착"이라 판정한다.
 bool pubAckOverdue(TinyGsm &modem, uint32_t now);
+// 내보낸 발행의 결과 URC 를 아직 기다리는 중인가. 거짓이면 모뎀이 그 발행을 끝냈다는 뜻.
+// 접속 직후 구독 시점을 "추측 대기" 대신 이 신호로 잡는 데 쓴다.
+bool pubAckPending(TinyGsm &modem);
 // 마지막 발행 결과 코드. 0=성공, -1=아직 결과 없음, 그 외=모뎀 에러.
 int  lastPubErr(TinyGsm &modem);
 

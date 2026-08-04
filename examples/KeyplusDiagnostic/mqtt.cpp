@@ -93,6 +93,8 @@ static bool modemResponsive(TinyGsm &modem)
     return modem.testAT(MODEM_PROBE_TIMEOUT_MS);
 }
 
+bool pubAckPending(TinyGsm &modem) { return modem.mqttPubAckPending(); }
+
 bool pubAckOverdue(TinyGsm &modem, uint32_t now)
 {
     if (!s_connected) return false;

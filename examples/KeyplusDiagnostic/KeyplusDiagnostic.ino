@@ -108,6 +108,9 @@ static bool     g_provRejected = false;
 // cmd 구독 페이싱 — 접속 직후 지연 + 실패 시 지수 백오프 재시도.
 static uint32_t g_nextSubAt     = 0;
 static uint32_t g_subRetryDelay = 0;
+// 접속 직후 첫 구독만 발행 ACK 기반으로 앞당긴다. 재시도에는 적용하지 않는다 —
+// 적용하면 발행이 없는 재시도 구간에서 백오프가 통째로 무력화된다.
+static bool     g_subAckGate    = false;
 // LTE 재브링업 페이싱/복구 상태.
 //   연속 실패마다 간격을 늘리고(전원이 약할 때 모뎀이 쉬는 시간을 준다),
 //   LTE_FAIL_BEFORE_RESET 회에 닿으면 모뎀 자체를 리셋한다.
@@ -1354,8 +1357,9 @@ void loop()
         // clean_session=1 → 재접속마다 재구독. 단 발행 ACK가 빠질 시간을 주고 시도한다.
         // 이전 세션의 구독 플래그가 남아 있으면 재구독을 건너뛰므로 먼저 내린다.
         Cmd::markUnsubscribed();
-        g_nextSubAt     = now + CMD_SUB_DELAY_MS;
+        g_nextSubAt     = now + CMD_SUB_DELAY_MS;   // 이제는 상한(데드라인)이다
         g_subRetryDelay = 0;
+        g_subAckGate    = true;                     // ACK 도착 시 앞당김 허용
     }
     if (!connected && g_wasConnected) {
         // 끊김은 상태 전이 — 조용히 백오프에 들어가면 로그만 보고는 멈춘 것과 구분이 안 된다.
@@ -1369,8 +1373,18 @@ void loop()
     // 상승엣지가 오지 않으므로, 여기서 재시도하지 않으면 다운링크가 영영 죽은 채로 남는다.
     // ⚠️ 반드시 상승엣지 처리 "뒤"에 둔다. 앞에 두면 이전 세션의 낡은 g_nextSubAt(과거 시각)
     //    으로 즉시 한 번 구독하고, 곧이어 엣지가 플래그를 내려 5초 뒤 또 구독한다(중복 발행).
-    if (connected && !Cmd::isSubscribed()
-            && g_nextSubAt != 0 && (int32_t)(now - g_nextSubAt) >= 0) {
+    // 구독 시점: 원래는 CMD_SUB_DELAY_MS(5초) 고정 대기였다 — connectSession 의
+    // status online 발행 ACK(+CMQTTPUB URC)가 스트림에서 빠질 시간을 **추측으로** 준
+    // 값이다. P3 로 그 URC 를 실제로 파싱하므로 더는 추측할 이유가 없다: ACK 가 도착했고
+    // 발행 간격 가드까지 지났으면 즉시 구독한다. 5초는 상한으로만 남긴다(URC 유실 대비).
+    // ⚠️ 앞당김은 접속 직후 첫 구독에만 적용한다(g_subAckGate). 재시도에도 적용하면
+    //    발행이 없는 재시도 구간에서 ACK 조건이 항상 참이라 백오프가 통째로 무력화된다.
+    bool subDeadline = (g_nextSubAt != 0 && (int32_t)(now - g_nextSubAt) >= 0);
+    bool subAckReady = (g_nextSubAt != 0 && g_subAckGate
+                        && !Mqtt::pubAckPending(modem)
+                        && Mqtt::publishGapElapsed(now, PUBLISH_MIN_GAP_MS));
+    if (connected && !Cmd::isSubscribed() && (subDeadline || subAckReady)) {
+        g_subAckGate = false;   // 시도했으면 이후는 백오프 규칙만 따른다
         Cmd::subscribe(modem, SerialMon);
         if (Cmd::isSubscribed()) {
             g_subRetryDelay = 0;
