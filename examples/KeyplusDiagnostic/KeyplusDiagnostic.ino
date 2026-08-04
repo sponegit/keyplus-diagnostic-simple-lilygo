@@ -120,6 +120,9 @@ static uint32_t g_connectedAt   = 0;
 // 모뎀 생존 프로브(R1) — 발행과 무관하게 세션 사망을 잡는다.
 static uint32_t g_lastProbeAt     = 0;
 static int      g_probeFailStreak = 0;
+// 세션이 끊긴 시각 — GNSS 재활성화를 재접속 창 뒤로 미루는 기준(R5 가드).
+// 0 은 "부팅 이후"로 자연스럽게 동작한다(millis 가 그대로 경과시간이 된다).
+static uint32_t g_disconnectedAt  = 0;
 #endif
 
 #if FEATURE_PWR_MONITOR
@@ -268,13 +271,23 @@ static void pollGps(uint32_t now)
     // ⚠️ Gps::begin 은 최대 15초 블로킹이다 — 다음 실시간 발행이 코앞이면 미룬다.
     //    발행 직전에 이걸 물리면 telemetry 가 그만큼 통째로 밀린다(백필·status 가드와
     //    같은 규칙). 미접속 구간에는 발행 예정 자체가 없으므로 바로 켠다.
-    // ⚠️ 발행 가드만 FEATURE_LTE 에 걸고, 재활성화 자체는 항상 돈다. 이 경로를 통째로
+    // ⚠️ 가드만 FEATURE_LTE 에 걸고, 재활성화 자체는 항상 돈다. 이 경로를 통째로
     //    LTE 로 감싸면 FEATURE_LTE=0 빌드에서 보류 플래그를 세우기만 하고 아무도 소진하지
     //    않아 GNSS 가 영영 꺼진 채 남는다.
     bool gnssRecoverGate = true;
 #if FEATURE_LTE
-    gnssRecoverGate = !Mqtt::isConnected(modem)
-                   || (int32_t)(g_nextPubAt - now) >= (int32_t)GPS_REENABLE_PUB_GUARD_MS;
+    if (Mqtt::isConnected(modem)) {
+        // 접속 중 — 다음 실시간 발행이 코앞이면 미룬다.
+        gnssRecoverGate = (int32_t)(g_nextPubAt - now) >= (int32_t)GPS_REENABLE_PUB_GUARD_MS;
+    } else {
+        // ⚠️ 미접속을 "발행 예정이 없으니 안전"으로 봤던 것이 틀렸다. 미접속 구간이
+        //    바로 **재접속 창**이라, 여기서 15초짜리 Gps::begin 을 물리면 그게 그대로
+        //    복구 지연이 된다(실측 7초가 재브링업 앞에 끼었다). 재접속에 먼저 기회를
+        //    주고, 그래도 오래 못 붙으면(음영/권외) 오프라인 적재를 위해 그때 켠다.
+        //    g_disconnectedAt 기본값 0 은 "부팅 이후"로 자연스럽게 동작한다.
+        gnssRecoverGate = (int32_t)(now - g_disconnectedAt)
+                              >= (int32_t)GPS_REENABLE_OFFLINE_DELAY_MS;
+    }
 #endif
     if (g_gpsReenablePending && gnssRecoverGate
             && modem.testAT(MODEM_PROBE_TIMEOUT_MS)) {
@@ -1297,6 +1310,8 @@ void loop()
     if (!connected && g_wasConnected) {
         // 끊김은 상태 전이 — 조용히 백오프에 들어가면 로그만 보고는 멈춘 것과 구분이 안 된다.
         LOGW(SerialMon, "[MQTT] 연결 끊김 — 백오프 재접속 시작\n");
+        // GNSS 재활성화를 재접속 창 뒤로 미루는 기준(R5 가드).
+        g_disconnectedAt = now;
     }
     g_wasConnected = connected;
 
