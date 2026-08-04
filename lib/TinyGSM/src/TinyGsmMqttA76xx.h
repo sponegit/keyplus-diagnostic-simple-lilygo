@@ -37,6 +37,11 @@ protected:
     // 원본 래퍼는 그걸 파싱하지 않아 "### Unhandled" 로 버렸다 — 즉 반환값 true 는
     // "AT 를 받아들였다"이지 "브로커에 전달됐다"가 아니다.
     // 아래 값들을 waitResponse 의 URC 분기가 채우고, 응용이 조회해 실제 완료를 판정한다.
+    // 인증서를 이번 부팅에 이미 모뎀에 올렸는가. CCERTDOWN 은 모뎀 플래시에 쓰므로
+    // 재접속마다 반복할 이유가 없다 — PEM 전송(UART) + 플래시 쓰기를 매번 되풀이하면
+    // 재접속이 느려지고 모뎀 플래시 수명만 깎인다.
+    bool     _certUploaded  = false;
+
     bool     _pubAckPending = false;   // 발행을 내보내고 결과 URC 를 기다리는 중
     int8_t   _lastPubErr    = -1;      // 마지막 결과 코드 (0=성공, -1=아직 없음)
     uint32_t _pubSentAt     = 0;       // 발행 시각(millis) — 응용이 타임아웃 판정에 쓴다
@@ -111,10 +116,19 @@ public:
                               const char *clientCertFile = NULL,
                               const char *clientCertKey = NULL)
     {
+        // 인증서 내용이 바뀌면 모뎀에 다시 올려야 한다 — 포인터가 달라질 때만 무효화한다.
+        // 같은 포인터로 매 접속 재지정하는 흔한 사용법에서는 재업로드가 일어나지 않는다.
+        if (caFile != this->cert_pem || clientCertFile != this->client_cert_pem ||
+            clientCertKey != this->client_key_pem) {
+            _certUploaded = false;
+        }
         this->cert_pem = caFile;
         this->client_cert_pem = clientCertFile;
         this->client_key_pem = clientCertKey;
     }
+
+    // 다음 mqtt_connect 에서 인증서를 강제로 다시 올린다(모뎀 파일 손실/공장초기화 대비).
+    void mqttInvalidateCert() { _certUploaded = false; }
 
     void setWillMessage(const char *topic, const char *msg, uint8_t qos)
     {
@@ -139,14 +153,21 @@ public:
 
         if (this->cert_pem || this->client_cert_pem || this->client_key_pem) {
             if (this->cert_pem) {
-                thisModem().sendAT("+CCERTDOWN=\"ca_cert.pem\",", strlen(this->cert_pem));
-                if (thisModem().waitResponse(10000UL, ">") == 1) {
-                    thisModem().stream.write(this->cert_pem);
+                // 업로드는 부팅당 1회. 모뎀 플래시에 남으므로 모뎀 리셋도 견딘다.
+                // 실패하면 플래그를 세우지 않아 다음 시도가 자동으로 다시 올린다.
+                if (!_certUploaded) {
+                    thisModem().sendAT("+CCERTDOWN=\"ca_cert.pem\",", strlen(this->cert_pem));
+                    if (thisModem().waitResponse(10000UL, ">") == 1) {
+                        thisModem().stream.write(this->cert_pem);
+                    }
+                    if (thisModem().waitResponse() != 1) {
+                        ESP_LOGE("A76XX", "Write ca_cert pem failed!");
+                        return false;
+                    }
+                    _certUploaded = true;
                 }
-                if (thisModem().waitResponse() != 1) {
-                    ESP_LOGE("A76XX", "Write ca_cert pem failed!");
-                    return false;
-                }
+                // ⚠️ CSSLCFG 는 매번 보낸다. 파일은 플래시에 남지만 SSL 컨텍스트 설정은
+                //    휘발성이라, 모뎀이 리셋되면 "어느 파일을 CA 로 쓸지"가 사라진다.
                 thisModem().sendAT("+CSSLCFG=\"cacert\",0,\"ca_cert.pem\"");
                 thisModem().waitResponse();
 
@@ -234,14 +255,18 @@ public:
         } else {
             thisModem().sendAT("+CMQTTCONNECT=", clientIndex, ',', "\"tcp://", server, ':', port, "\",", keepalive_time, ',', 1);
         }
-        if (thisModem().waitResponse(30000UL) != 1)return false;
+        // ⚠️ 접속이 실패하면 인증서 캐시를 무효화한다. 모뎀 파일이 사라졌거나(공장초기화,
+        //    플래시 손상) CA 가 잘못 올라간 경우, 캐시를 믿고 재업로드를 건너뛰면 영영
+        //    TLS 가 안 붙는다 — 다음 시도가 다시 올리게 해 스스로 회복시킨다.
+        if (thisModem().waitResponse(30000UL) != 1) { _certUploaded = false; return false; }
 
         if (thisModem().waitResponse(30000UL, "+CMQTTCONNECT: ") != 1) {
+            _certUploaded = false;
             return false;
         }
         thisModem().streamSkipUntil(',');
         int res = thisModem().stream.read();
-        if (res != '0')return false;
+        if (res != '0') { _certUploaded = false; return false; }
         return true;
 
     }

@@ -135,6 +135,10 @@ static bool connectSession(TinyGsm &modem, Stream &log)
 {
     // 서버 CA 지정 → mqtt_connect가 AT+CCERTDOWN 업로드 + authMethod=1(서버검증).
     // 포인터 저장만 하므로 매 접속 재지정해도 무해. 평문(MQTT_USE_TLS=0)이면 생략.
+    // ⚠️ 업로드 자체는 패치한 래퍼가 부팅당 1회로 줄인다(P4). 단 mqtt_begin 이 cert 포인터를
+    //    NULL 로 되돌리므로, 모뎀 리셋으로 서비스를 다시 띄우는 경로에서는 다시 올라간다
+    //    — 모뎀 파일이 살아남았는지 확신할 수 없는 자리라 그 편이 안전하다.
+    //    NAT 드롭 같은 "모뎀은 멀쩡한 재접속"에서만 업로드가 생략된다.
 #if MQTT_USE_TLS
     modem.mqtt_set_certificate(kCaPem);
   #if MQTT_TLS_RELAX
