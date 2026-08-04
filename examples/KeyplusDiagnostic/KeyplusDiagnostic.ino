@@ -217,16 +217,21 @@ static void pollGps(uint32_t now)
 {
     g_lastGpsPoll = now;
 
-#if FEATURE_LTE
     // 미뤄둔 GNSS 재활성화(R3/R5). 모뎀이 살아났으면 여기서 되살린다.
     // 실패하면 플래그를 유지해 다음 폴에 다시 시도한다.
     // ⚠️ Gps::begin 은 최대 15초 블로킹이다 — 다음 실시간 발행이 코앞이면 미룬다.
     //    발행 직전에 이걸 물리면 telemetry 가 그만큼 통째로 밀린다(백필·status 가드와
     //    같은 규칙). 미접속 구간에는 발행 예정 자체가 없으므로 바로 켠다.
-    bool gnssRecoverGate = !Mqtt::isConnected(modem)
-                        || (int32_t)(g_nextPubAt - now) >= (int32_t)GPS_REENABLE_PUB_GUARD_MS;
+    // ⚠️ 발행 가드만 FEATURE_LTE 에 걸고, 재활성화 자체는 항상 돈다. 이 경로를 통째로
+    //    LTE 로 감싸면 FEATURE_LTE=0 빌드에서 보류 플래그를 세우기만 하고 아무도 소진하지
+    //    않아 GNSS 가 영영 꺼진 채 남는다.
+    bool gnssRecoverGate = true;
+#if FEATURE_LTE
+    gnssRecoverGate = !Mqtt::isConnected(modem)
+                   || (int32_t)(g_nextPubAt - now) >= (int32_t)GPS_REENABLE_PUB_GUARD_MS;
+#endif
     if (g_gpsReenablePending && gnssRecoverGate
-            && Lte::modemAlive(modem, MODEM_PROBE_TIMEOUT_MS)) {
+            && modem.testAT(MODEM_PROBE_TIMEOUT_MS)) {
         if (Gps::begin(modem)) {
             g_gpsReenablePending = false;
             LOGI(SerialMon, "[GPS] GNSS 재활성화됨(모뎀 복구 후)\n");
@@ -234,7 +239,6 @@ static void pollGps(uint32_t now)
             LOGW(SerialMon, "[GPS] GNSS 재활성화 실패 — 다음 폴에 재시도\n");
         }
     }
-#endif
 
     GpsFix fix;
     bool got = Gps::read(modem, fix);
@@ -281,7 +285,9 @@ static void pollGps(uint32_t now)
             //    폴링하는데(gps.cpp), AT 자체를 못 받는 모뎀에 던지면 그 15초 + AT 대기가
             //    통째로 복구 경로를 밀어낸다 — 실측 사이클당 30초 × 2회를 버렸다.
             //    죽었으면 재활성화는 복구된 뒤로 미룬다.
-            if (!Lte::modemAlive(modem, MODEM_PROBE_TIMEOUT_MS)) {
+            // ⚠️ Lte::modemAlive 가 아니라 modem.testAT 를 직접 쓴다 — 이 경로는
+            //    FEATURE_LTE=0 빌드에서도 살아 있어야 하는데 lte.h 는 그때 포함되지 않는다.
+            if (!modem.testAT(MODEM_PROBE_TIMEOUT_MS)) {
                 LOGW(SerialMon, "[GPS] 모뎀 무응답 — GNSS 재활성화는 복구 후로 미룸\n");
                 g_gpsReenablePending = true;
             } else if (Gps::begin(modem)) {
