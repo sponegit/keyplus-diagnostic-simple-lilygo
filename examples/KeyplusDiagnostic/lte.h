@@ -49,11 +49,11 @@ bool modemAlive(TinyGsm &modem, uint32_t timeoutMs = LTE_AT_PROBE_MS);
 //    "사망 직전 값"을 확보하는 방식으로만 쓸 수 있다.
 int modemTempC(TinyGsm &modem);
 
-// 접속 기술을 config.h LTE_CNMP_MODE(기본 38 = LTE 전용)로 고정한다(AT+CNMP).
-// GSM 폴백은 TX 가 2A 급 버스트라 전원 마진이 얇은 보드에서 브라운아웃을 부른다.
+// 접속 기술을 config.h LTE_CNMP_MODE(기본 2 = 자동)로 맞춘다(AT+CNMP).
 // 이미 그 값이면 쓰지 않는다 — CNMP 쓰기는 망 재탐색을 유발해 등록을 늦춘다.
 // begin() 이 등록 폴링 직전에 호출한다. 실패해도 브링업은 계속된다(best-effort).
-bool lockLteOnly(TinyGsm &modem, Stream &log);
+// ⚠️ 한때 38(LTE 전용) 고정이었다가 되돌렸다 — 배경은 config.h LTE_CNMP_MODE 주석.
+bool applyNetworkMode(TinyGsm &modem, Stream &log);
 
 // 모뎀 소프트 리셋(AT+CFUN=1,1) 후 AT 재개까지 대기. 성공 시 true.
 // ⚠️ 최대 LTE_MODEM_RESET_WAIT_MS 동안 블로킹한다 — 복구 경로 전용.

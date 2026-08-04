@@ -78,13 +78,25 @@ int modemTempC(TinyGsm &modem)
     return (int)modem.getTemperature();
 }
 
-bool lockLteOnly(TinyGsm &modem, Stream &log)
+// CNMP 값 → 사람이 읽는 문자열 (로깅용).
+static const char *cnmpStr(int m)
 {
-    if (LTE_CNMP_MODE == 0) return true;   // 고정 안 함(설정으로 끔)
+    switch (m) {
+    case 2:  return "자동";
+    case 13: return "GSM 전용";
+    case 38: return "LTE 전용";
+    case 51: return "GSM+LTE";
+    default: return "기타";
+    }
+}
+
+bool applyNetworkMode(TinyGsm &modem, Stream &log)
+{
+    if (LTE_CNMP_MODE == 0) return true;   // 건드리지 않음(설정으로 끔)
 
     // ⚠️ 먼저 조회한다. CNMP 쓰기는 망 재탐색을 유발해 등록을 늦추므로, 이미 원하는
     //    값이면 쓰지 않는다. 값은 모뎀 NV 에 남아 재부팅해도 유지된다 — 그래서 브링업
-    //    때마다 불러도 실제 쓰기는 모뎀 공장초기화/리셋 직후 한 번뿐이다.
+    //    때마다 불러도 실제 쓰기는 값이 달라진 직후 한 번뿐이다.
     String res;
     modem.sendAT("+CNMP?");
     if (modem.waitResponse(2000L, res) == 1) {
@@ -94,9 +106,9 @@ bool lockLteOnly(TinyGsm &modem, Stream &log)
 
     modem.sendAT("+CNMP=", LTE_CNMP_MODE);
     bool ok = (modem.waitResponse(10000L) == 1);
-    // 실패해도 브링업은 계속한다 — 자동 모드로도 등록 자체는 된다.
-    LOGI(log, "[LTE] 접속모드 고정 CNMP=%d %s\n", LTE_CNMP_MODE,
-         ok ? "적용됨(LTE 전용)" : "적용 실패 — 자동 모드로 계속");
+    // 실패해도 브링업은 계속한다 — 모뎀에 남아 있는 값으로도 등록 자체는 된다.
+    LOGI(log, "[LTE] 접속모드 CNMP=%d(%s) %s\n", LTE_CNMP_MODE, cnmpStr(LTE_CNMP_MODE),
+         ok ? "적용됨" : "적용 실패 — 기존 값으로 계속");
     return ok;
 }
 
@@ -113,8 +125,8 @@ bool begin(TinyGsm &modem, Stream &log)
     // 유심이 없으면(또는 PIN 잠김) 등록 폴링은 90초를 버리고 실패할 뿐이다 — 조기 차단.
     if (!simReady(modem, log)) return false;
 
-    // 접속 기술 고정 — 등록 폴링 전에. GSM 폴백의 2A 버스트를 없애 전원 마진을 지킨다.
-    lockLteOnly(modem, log);
+    // 접속 기술 적용 — 등록 폴링 전에. 값이 이미 맞으면 AT 1왕복으로 끝난다.
+    applyNetworkMode(modem, log);
 
     // APN을 등록 전에 지정 — 일부 통신사는 APN이 없으면 등록을 거부한다.
     LOGD(log, "[LTE] set APN: %s\n", LTE_APN);
