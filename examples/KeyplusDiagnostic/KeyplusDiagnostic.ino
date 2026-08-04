@@ -632,7 +632,39 @@ static bool modemHardReset()
     LOGE(SerialMon, "[MODEM] 하드 리셋 후에도 무응답 — 전원 마진(5V 공급/배선) 확인 필요\n");
     return false;
 }
+
+#if FEATURE_LTE
+// 모뎀을 리셋한 **뒤** 반드시 따라야 하는 상태 정리. 리셋 경로가 둘(브링업 실패 승격 /
+// CMQTT 서비스 시작 실패 승격)이라 한 곳으로 모은다.
+// ⚠️ 모뎀이 리셋되면 CMQTT 서비스와 구독이 모두 사라진다. 펌웨어 플래그를 같이
+//    내려주지 않으면 begin()이 CMQTTSTART를 건너뛰어 "접속 실패"만 무한 반복한다.
+static void afterModemReset(bool revived)
+{
+    Mqtt::resetServiceState();
+    Mqtt::clearServiceStartFails();   // 리셋으로 상태가 확실히 정리됐다 — 다시 센다
+    Cmd::markUnsubscribed();
+    g_lteFailStreak = 0;              // 리셋했으니 다시 센다
+    if (!revived) return;
+
+#if FEATURE_GPS
+    // 모뎀 리셋은 GNSS 도 끈다(AT+CGNSSPWR=0 상태로 복귀) — 되살려야 하지만 **여기서는
+    // 아니다**(R5). Gps::begin 은 최대 15초 블로킹이라 이 자리에 두면 갓 살아난 모뎀을
+    // 그만큼 놀리고 재브링업이 밀린다(실측 08:28:53 AT 복구 → 08:29:00 GNSS →
+    // 08:29:10 재브링업). 플래그만 세우고 재접속을 먼저 끝낸 뒤 GPS 폴에서 켠다.
+    g_gpsReenablePending = true;
 #endif
+    // 모뎀이 방금 재부팅돼 깨끗한 상태다 — 실패 이력으로 쌓인 백오프를 그대로 쓰면
+    // (실측 60초) 살아난 모뎀을 그만큼 놀린다. 부팅 URC(+CPIN: READY 등)가 정리될
+    // 짧은 시간만 두고 바로 붙는다.
+    g_lastLteTry    = millis();
+    g_lteRetryDelay = LTE_POST_RESET_DELAY_MS;
+    // 바깥 재접속 게이트도 같은 시점에 열어준다. 안 그러면 LTE는 5초 뒤 붙을 준비가
+    // 됐는데 MQTT 백오프(최대 15초)가 막는다.
+    g_lastConnTry   = g_lastLteTry;
+    g_backoff       = LTE_POST_RESET_DELAY_MS;
+}
+#endif  // FEATURE_LTE
+#endif  // (FEATURE_LTE || FEATURE_GPS)
 
 // AT 응답이 올 때까지 대기. 30회 실패 시 PWRKEY 재펄스.
 // MODEM_AT_READY_TIMEOUT_MS 를 넘기면 포기하고 false — 모뎀이 죽어도 부팅은 끝나야 한다
@@ -1443,32 +1475,7 @@ void loop()
                             // 건너뛰고 곧장 PWRKEY 전원 사이클.
                             bool revived = dead ? modemHardReset()
                                                 : (Lte::softReset(modem, SerialMon) || modemHardReset());
-                            g_lteFailStreak = 0;   // 리셋했으니 다시 센다
-                            // ⚠️ 모뎀이 리셋되면 CMQTT 서비스와 구독이 모두 사라진다.
-                            //    펌웨어 플래그를 같이 내려주지 않으면 begin()이 CMQTTSTART를
-                            //    건너뛰어 "접속 실패"만 무한 반복한다(실측 확인된 증상).
-                            Mqtt::resetServiceState();
-                            Cmd::markUnsubscribed();
-
-#if FEATURE_GPS
-                            // 모뎀 리셋은 GNSS 도 끈다(AT+CGNSSPWR=0 상태로 복귀) — 되살려야
-                            // 하지만 **여기서는 아니다**(R5). Gps::begin 은 최대 15초 블로킹이라
-                            // 이 자리에 두면 갓 살아난 모뎀을 그만큼 놀리고 재브링업이 밀린다
-                            // (실측 08:28:53 AT 복구 → 08:29:00 GNSS → 08:29:10 재브링업).
-                            // 플래그만 세우고 재접속을 먼저 끝낸 뒤 다음 GPS 폴에서 켠다.
-                            if (revived) g_gpsReenablePending = true;
-#endif
-                            if (revived) {
-                                // 모뎀이 방금 재부팅돼 깨끗한 상태다 — 실패 이력으로 쌓인
-                                // 백오프를 그대로 쓰면(실측 60초) 살아난 모뎀을 놀린다.
-                                // 부팅 URC(+CPIN: READY 등)가 정리될 짧은 시간만 두고 바로 붙는다.
-                                g_lastLteTry    = millis();   // 리셋 완료 시점 기준으로 다시 센다
-                                g_lteRetryDelay = LTE_POST_RESET_DELAY_MS;
-                                // 바깥 재접속 게이트도 같은 시점에 열어준다. 안 그러면 LTE는
-                                // 5초 뒤 붙을 준비가 됐는데 MQTT 백오프(최대 15초)가 막는다.
-                                g_lastConnTry   = g_lastLteTry;
-                                g_backoff       = LTE_POST_RESET_DELAY_MS;
-                            }
+                            afterModemReset(revived);
                         }
                         LOGW(SerialMon, "[LTE] 다음 재브링업 %lus 후\n",
                              (unsigned long)(g_lteRetryDelay / 1000UL));
@@ -1489,6 +1496,19 @@ void loop()
                     g_backoff = g_backoff ? g_backoff * 2 : 1000;
                     if (g_backoff > MQTT_RECONNECT_CAP_MS) g_backoff = MQTT_RECONNECT_CAP_MS;
                     Led::set(Led::State::COMM_ERROR); // 접속/발급 실패 → 통신오류(3회 버스트)
+
+                    // ── CMQTT 서비스 시작 실패 → 모뎀 리셋 승격 ──────────────────
+                    // CMQTTSTART 가 연속 실패한다는 건 펌웨어와 모뎀의 상태가 어긋났다는
+                    // 뜻이다(펌웨어 "꺼짐" vs 모뎀 "켜짐"). 그 상태에서는 재시도가 100%
+                    // 같은 자리에서 실패하는데, LTE(PDP)는 멀쩡해서 위의 재브링업·리셋
+                    // 경로도 안 탄다 — **스스로는 빠져나올 수 없다.**
+                    // 실측(260804 로그5): 10:14:21~10:14:50 에 7회 실패하고, 모뎀이
+                    // 우연히 다시 죽어준 덕분에야 풀렸다(10:16:02, 107초 손실).
+                    if (Mqtt::serviceStartFails() >= MQTT_SERVICE_FAIL_BEFORE_RESET) {
+                        LOGE(SerialMon, "[MQTT] 서비스 시작 %d회 연속 실패 — "
+                                        "모뎀 리셋으로 상태 재동기\n", Mqtt::serviceStartFails());
+                        afterModemReset(modemHardReset());
+                    }
                 }
             }
         }

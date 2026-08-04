@@ -50,6 +50,14 @@ static const uint8_t kClientIdx = 0;
 static bool s_serviceStarted = false;   // mqtt_begin(CMQTTSTART) 완료 — 부팅당 1회만
 static bool s_connected      = false;   // 세션 접속 여부
 
+// CMQTT 서비스 시작(CMQTTSTART) 연속 실패 횟수.
+// 이게 쌓인다는 건 펌웨어와 모뎀의 상태가 어긋났다는 뜻이다 — 펌웨어는 "서비스 꺼짐",
+// 모뎀은 "켜짐". resetServiceState() 는 설계상 AT 를 보내지 않으므로(갓 리셋된 모뎀에
+// 무의미한 블로킹을 만들지 않으려고), 모뎀이 멀쩡한 채로 이 경로를 타면 어긋난 상태가
+// 그대로 남는다. 그 뒤 CMQTTSTART 는 "이미 시작됨"을 돌려주고 래퍼는 실패로 판정한다.
+// LTE(PDP)는 멀쩡해서 재브링업·리셋 경로도 안 타므로 스스로는 못 빠져나온다.
+static int  s_svcStartFails  = 0;
+
 // 마지막 발행 시점의 망 상태. [STAT] 한 줄이 이 값을 재사용해 AT 왕복을 늘리지 않는다.
 static int s_lastRssi = 0;
 static int s_lastReg  = 0;
@@ -235,10 +243,12 @@ bool begin(TinyGsm &modem, Stream &log)
                  MQTT_RX_BUFFER_SIZE);
         }
         if (!modem.mqtt_begin(MQTT_USE_TLS, /*sni=*/MQTT_USE_TLS)) {
-            LOGE(log, "[MQTT] mqtt_begin 실패\n");
+            s_svcStartFails++;
+            LOGE(log, "[MQTT] mqtt_begin 실패 (연속 %d회)\n", s_svcStartFails);
             return false;
         }
         s_serviceStarted = true;
+        s_svcStartFails  = 0;
     }
 
     bool ok = connectSession(modem, log);
@@ -259,6 +269,9 @@ void resetServiceState()
     s_serviceStarted = false;
     s_connected      = false;
 }
+
+int  serviceStartFails()      { return s_svcStartFails; }
+void clearServiceStartFails() { s_svcStartFails = 0; }
 
 int lastRssi() { return s_lastRssi; }
 int lastReg()  { return s_lastReg; }

@@ -85,6 +85,16 @@ bool pubAckOverdue(TinyGsm &modem, uint32_t now);
 // 마지막 발행 결과 코드. 0=성공, -1=아직 결과 없음, 그 외=모뎀 에러.
 int  lastPubErr(TinyGsm &modem);
 
+// --- CMQTT 서비스 시작 연속 실패 --------------------------------------------
+// begin() 안의 mqtt_begin(CMQTTSTART)이 연속 몇 번 실패했는가. 성공하면 0 이 된다.
+// 이게 쌓인다는 건 펌웨어와 모뎀의 상태가 어긋났다는 뜻이다 — 펌웨어는 "서비스 꺼짐",
+// 모뎀은 "켜짐". resetServiceState() 가 AT 를 보내지 않는 설계라 모뎀이 멀쩡한 채로
+// 그 경로를 타면 어긋난 채 남고, 이후 CMQTTSTART 는 계속 실패한다. LTE(PDP)는 정상이라
+// 재브링업·모뎀 리셋 경로도 안 타므로 **스스로는 빠져나오지 못한다**.
+//   → 호출측(loop)이 임계에 닿으면 모뎀 리셋으로 상태를 강제 재동기한다.
+int  serviceStartFails();
+void clearServiceStartFails();
+
 /**
  * status 재발행 (F1/F3) — `connectSession()` 의 online 발행과 **같은 토픽·QoS1·retain=1**.
  *   {"online":true[,"sub":true],"power_mode":"...","ignition_on":...}
