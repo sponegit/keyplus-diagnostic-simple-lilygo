@@ -120,7 +120,20 @@ static uint32_t g_connectedAt   = 0;
 // 모뎀 생존 프로브(R1) — 발행과 무관하게 세션 사망을 잡는다.
 static uint32_t g_lastProbeAt     = 0;
 static int      g_probeFailStreak = 0;
+#endif
 
+#if FEATURE_PWR_MONITOR
+// 전원·발열 계측(P2) — 반복 모뎀 사망이 과열인지 전원 마진인지 가른다.
+// 마지막 표본을 들고 있다가 사망 시점에 함께 찍는다. 모뎀이 죽으면 AT 는 못 읽으므로
+// "사망 직전 값"은 이 캐시가 유일한 근거다.
+static uint32_t g_pwrSampleAt = 0;
+static uint32_t g_pwrLogAt    = 0;
+static int      g_lastTempC   = 0;   // 0 = 미상(AT 실패/미지원)
+static int      g_lastVbatMv  = 0;   // 0 = 미상(ADC 미구성)
+static int      g_minVbatMv   = 0;   // 관측 최저 — 딥의 흔적을 남긴다
+#endif
+
+#if FEATURE_LTE
 // --- status 전이 재발행 (F1) + 구독 완료 통지 (F3) --------------------------
 // status 는 원래 접속당 1회(connectSession)라 시동 on/off 를 따라가지 못했다. 그래서
 // power_mode·ignition_on 이 DB 기본값에서 한 번도 움직이지 않았고, 서버가 telemetry 의
@@ -190,12 +203,45 @@ static const char *statusPowerMode()
 static void noteModemRestarted(const char *why)
 {
     LOGW(SerialMon, "[MODEM] 리셋 정황 감지(%s) — 세션 사망 처리·재접속 즉시 시도\n", why);
+#if FEATURE_PWR_MONITOR
+    // 사망 직전 표본. 이 한 줄이 "과열 vs 전원" 을 가르는 근거다 — 모뎀이 죽은 뒤엔
+    // AT 로 온도를 못 읽으므로, 최대 PWR_SAMPLE_INTERVAL_MS 이전 값이 유일한 증거다.
+    LOGW(SerialMon, "[PWR] 사망 직전 temp=%dC vbat=%dmV vbat_min=%dmV\n",
+         g_lastTempC, g_lastVbatMv, g_minVbatMv);
+    g_minVbatMv = 0;   // 사이클마다 다시 관측한다
+#endif
     Mqtt::resetServiceState();
     Cmd::markUnsubscribed();
     // 쌓인 재접속 백오프(최대 15초)를 그대로 쓰면 이미 확인된 사망을 그만큼 더 기다린다.
     // LTE 재브링업 백오프(g_lteRetryDelay)는 건드리지 않는다 — 그건 "등록이 안 붙는"
     // 전원 마진 상황을 위한 페이싱이라, 여기서 풀면 브라운아웃을 몰아치게 만든다.
     g_backoff = 0;
+}
+#endif
+
+#if FEATURE_PWR_MONITOR
+// VBAT ADC 1회 읽기 → mV. IO35 는 입력 전용 핀(ADC1_CH7)이라 pinMode 가 필요 없다.
+// analogReadMilliVolts 는 eFuse 교정값을 써서 mV 로 환산해 준다(감쇠 기본 11dB).
+static int readVbatMv()
+{
+#ifdef BOARD_BAT_ADC_PIN
+    return (int)(analogReadMilliVolts(BOARD_BAT_ADC_PIN) * PWR_VBAT_DIVIDER);
+#else
+    return 0;   // 이 보드에는 분압이 없다
+#endif
+}
+
+// 표본 1회 — 모뎀 온도 1왕복 + ADC. 호출측이 주기·URC 가드를 책임진다.
+static void samplePwr(TinyGsm &modem)
+{
+    int t = Lte::modemTempC(modem);
+    if (t > 0 && t < 150) g_lastTempC = t;   // 0/이상치는 미상으로 두고 직전 값을 지킨다
+
+    int v = readVbatMv();
+    if (v > 0) {
+        g_lastVbatMv = v;
+        if (g_minVbatMv == 0 || v < g_minVbatMv) g_minVbatMv = v;
+    }
 }
 #endif
 
@@ -872,6 +918,20 @@ static void statusModem(Stream &io)
     io.printf("  %-14s: %s\n", "IP", st.ip.length() ? st.ip.c_str() : "-");
     io.printf("  %-14s: %s\n", "APN", LTE_APN);
     io.printf("  %-14s: %s\n", "모뎀 AT응답", Lte::modemAlive(modem) ? "정상" : "무응답(전원 확인)");
+#if FEATURE_PWR_MONITOR
+    // 사람이 status 를 쳤을 때는 신선한 값을 보여준다(주기 표본을 기다리지 않는다).
+    samplePwr(modem);
+    io.printf("  %-14s: %dC %s\n", "모뎀 온도", g_lastTempC,
+              g_lastTempC == 0  ? "(조회 실패)"
+            : g_lastTempC >= 80 ? "⚠️ 열 보호 영역 — 방열/설치위치 확인"
+            : g_lastTempC >= 65 ? "(높음)" : "(정상)");
+    // VV_BAT = ORing 이후 모뎀 공급 레일. LiPo 미장착이면 CN3065 충전 출력이 그대로
+    // 모뎀 부하를 받는다 — TX 피크를 받아줄 저수지가 없어 여기서 무너진다.
+    io.printf("  %-14s: %dmV (관측 최저 %dmV) %s\n", "모뎀 레일", g_lastVbatMv, g_minVbatMv,
+              g_lastVbatMv == 0    ? "(분압 미탑재/미상)"
+            : g_lastVbatMv < 3500  ? "⚠️ 마진 부족 — 배터리/벌크캡 확인"
+            : g_lastVbatMv < 3800  ? "(낮음)" : "(정상)");
+#endif
     if (!st.registered) {
         io.printf("  %-14s: %d회 (%d회에 모뎀 리셋)\n", "연속 등록실패",
                   g_lteFailStreak, LTE_FAIL_BEFORE_RESET);
@@ -1184,6 +1244,25 @@ void loop()
             noteModemRestarted("AT 프로브 무응답");
         }
     }
+
+#if FEATURE_PWR_MONITOR
+    // ── 전원·발열 표본 (P2) ────────────────────────────────────────────────
+    // 프로브와 같은 가드를 쓴다(URC 없음 + 발행 간격). 모뎀 AT 1왕복이라 주기를
+    // 따로 두어 프로브(5초)보다 성기게 돈다.
+    // ⚠️ 미접속 구간에도 돈다 — 죽기 직전이 아니라 "죽어 있는 동안"의 레일 전압도
+    //    판별에 필요하다(부하가 빠졌는데도 낮으면 공급 자체가 모자란 것이다).
+    if ((int32_t)(now - g_pwrSampleAt) >= (int32_t)PWR_SAMPLE_INTERVAL_MS
+            && !modem.stream.available()
+            && Mqtt::publishGapElapsed(now, MODEM_PROBE_PUB_GUARD_MS)) {
+        g_pwrSampleAt = now;
+        samplePwr(modem);
+        if ((int32_t)(now - g_pwrLogAt) >= (int32_t)PWR_LOG_INTERVAL_MS) {
+            g_pwrLogAt = now;
+            LOGI(SerialMon, "[PWR] temp=%dC vbat=%dmV vbat_min=%dmV\n",
+                 g_lastTempC, g_lastVbatMv, g_minVbatMv);
+        }
+    }
+#endif
 
     bool connected = Mqtt::isConnected(modem);
 

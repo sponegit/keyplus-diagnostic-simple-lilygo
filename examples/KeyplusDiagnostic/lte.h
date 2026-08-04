@@ -42,6 +42,13 @@ bool begin(TinyGsm &modem, Stream &log);
 // 같은 짧은 값을 넘겨 죽은 모뎀에 초 단위를 태우지 않는다.
 bool modemAlive(TinyGsm &modem, uint32_t timeoutMs = LTE_AT_PROBE_MS);
 
+// 모뎀 PMU 다이 온도(°C, AT+CPMUTEMP). 실패/미지원이면 0.
+// ⚠️ 주변 온도가 아니라 모뎀 내부 온도다. 열 셧다운 가설을 가리는 계측용
+//    (A7670 계열은 대략 80°C 대에서 보호 동작에 들어간다).
+// ⚠️ AT 왕복이므로 모뎀이 죽은 뒤엔 못 읽는다 — 주기적으로 표본을 남겨
+//    "사망 직전 값"을 확보하는 방식으로만 쓸 수 있다.
+int modemTempC(TinyGsm &modem);
+
 // 접속 기술을 config.h LTE_CNMP_MODE(기본 38 = LTE 전용)로 고정한다(AT+CNMP).
 // GSM 폴백은 TX 가 2A 급 버스트라 전원 마진이 얇은 보드에서 브라운아웃을 부른다.
 // 이미 그 값이면 쓰지 않는다 — CNMP 쓰기는 망 재탐색을 유발해 등록을 늦춘다.

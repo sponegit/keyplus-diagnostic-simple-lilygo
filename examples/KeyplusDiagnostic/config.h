@@ -115,6 +115,28 @@
 #define MODEM_PROBE_FAILS_TO_DOWN   (2)        // 연속 무응답 몇 회에 세션 사망 판정
 // 직전 발행 이후 이만큼 지나야 프로브한다 — 발행 ACK(+CMQTTPUB) URC 가 빠질 시간.
 #define MODEM_PROBE_PUB_GUARD_MS    (2000UL)
+// --- 전원·발열 계측 (P2) ----------------------------------------------------
+// 260804 로그의 반복 모뎀 사망을 "과열"과 "전원 마진" 중 어느 쪽인지 가르기 위한 계측.
+// V1.4 회로도 기준 두 값 모두 부품 추가 없이 읽힌다:
+//   temp : AT+CPMUTEMP (모뎀 PMU 다이 온도)
+//   vbat : IO35 = R7/R9 100K 1% 분압 + C57 10nF → VV_BAT(ORing 이후 모뎀 공급 레일)
+// ⚠️ vbat 는 배터리 커넥터가 아니라 **모뎀이 실제로 먹는 레일**이다. 브라운아웃이
+//    일어나는 바로 그 노드라 이 용도에 정확하다(ReadBattery 예제의 "USB 연결 시
+//    부정확" 경고는 'LiPo 전압을 알고 싶을 때' 이야기라 여기엔 해당하지 않는다).
+// ⚠️ R7∥R9(50K) × C57(10nF) = τ 500us 저역통과가 걸려 있다. 마이크로초 단위 순간
+//    딥은 뭉개지고, 등록/발행 TX 구간의 지속적 sag 는 보인다.
+#define FEATURE_PWR_MONITOR         (1)
+#if (FEATURE_PWR_MONITOR && !FEATURE_LTE)
+  // 온도는 모뎀 AT 조회다 — LTE 없이는 절반만 남아 의미가 없다. 조용히 끈다.
+  #undef  FEATURE_PWR_MONITOR
+  #define FEATURE_PWR_MONITOR       (0)
+#endif
+#define PWR_SAMPLE_INTERVAL_MS      (10000UL)  // 표본 주기(모뎀 AT 1왕복 + ADC)
+#define PWR_LOG_INTERVAL_MS         (60000UL)  // [PWR] 한 줄 출력 주기
+// ⚠️ 이 값들은 [STAT] 에 얹지 않는다. UART 진단 앱(main.py)의 STAT_KEYS 가 닫힌
+//    목록이라 미등록 토큰이 앞 필드 값에 흡수돼 obd/seq 표시가 깨진다(printStatusLine
+//    주석). 앱이 확장될 때까지 독립 태그 [PWR] 로 낸다.
+#define PWR_VBAT_DIVIDER            (2)        // 하드웨어 분압비(100K/100K → ×2)
 // 데이터패스 검증용 평문 HTTP GET 대상 (안정적·경량 엔드포인트)
 #define LTE_TEST_HOST               "example.com"
 #define LTE_TEST_PORT               (80)

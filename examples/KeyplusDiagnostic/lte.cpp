@@ -71,6 +71,13 @@ static bool simReady(TinyGsm &modem, Stream &log)
     return false;
 }
 
+int modemTempC(TinyGsm &modem)
+{
+    // TinyGSM 의 getTemperature() = AT+CPMUTEMP. 모뎀 PMU 다이 온도(주변 온도 아님).
+    // 실패(무응답/미지원) 시 래퍼가 0 을 돌려주므로 그대로 "미상"으로 흘린다.
+    return (int)modem.getTemperature();
+}
+
 bool lockLteOnly(TinyGsm &modem, Stream &log)
 {
     if (LTE_CNMP_MODE == 0) return true;   // 고정 안 함(설정으로 끔)
