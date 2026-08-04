@@ -71,6 +71,28 @@ static bool simReady(TinyGsm &modem, Stream &log)
     return false;
 }
 
+bool lockLteOnly(TinyGsm &modem, Stream &log)
+{
+    if (LTE_CNMP_MODE == 0) return true;   // 고정 안 함(설정으로 끔)
+
+    // ⚠️ 먼저 조회한다. CNMP 쓰기는 망 재탐색을 유발해 등록을 늦추므로, 이미 원하는
+    //    값이면 쓰지 않는다. 값은 모뎀 NV 에 남아 재부팅해도 유지된다 — 그래서 브링업
+    //    때마다 불러도 실제 쓰기는 모뎀 공장초기화/리셋 직후 한 번뿐이다.
+    String res;
+    modem.sendAT("+CNMP?");
+    if (modem.waitResponse(2000L, res) == 1) {
+        int i = res.indexOf("+CNMP:");
+        if (i >= 0 && res.substring(i + 6).toInt() == LTE_CNMP_MODE) return true;
+    }
+
+    modem.sendAT("+CNMP=", LTE_CNMP_MODE);
+    bool ok = (modem.waitResponse(10000L) == 1);
+    // 실패해도 브링업은 계속한다 — 자동 모드로도 등록 자체는 된다.
+    LOGI(log, "[LTE] 접속모드 고정 CNMP=%d %s\n", LTE_CNMP_MODE,
+         ok ? "적용됨(LTE 전용)" : "적용 실패 — 자동 모드로 계속");
+    return ok;
+}
+
 bool begin(TinyGsm &modem, Stream &log)
 {
     // 모뎀이 죽어 있으면 등록 폴링(최대 LTE_REG_TIMEOUT_MS)이 통째로 낭비다.
@@ -83,6 +105,9 @@ bool begin(TinyGsm &modem, Stream &log)
 
     // 유심이 없으면(또는 PIN 잠김) 등록 폴링은 90초를 버리고 실패할 뿐이다 — 조기 차단.
     if (!simReady(modem, log)) return false;
+
+    // 접속 기술 고정 — 등록 폴링 전에. GSM 폴백의 2A 버스트를 없애 전원 마진을 지킨다.
+    lockLteOnly(modem, log);
 
     // APN을 등록 전에 지정 — 일부 통신사는 APN이 없으면 등록을 거부한다.
     LOGD(log, "[LTE] set APN: %s\n", LTE_APN);
