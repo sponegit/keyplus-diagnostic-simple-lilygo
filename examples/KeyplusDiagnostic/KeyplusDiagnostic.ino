@@ -299,6 +299,16 @@ static void pollGps(uint32_t now)
         }
     }
 
+    // GNSS 가 꺼져 있는 게 확실하면 조회하지 않는다. 아래 Gps::read(getGPS) 와
+    // Gps::raw(getGPSraw) 는 GNSS 가 꺼져 있으면 응답 없이 타임아웃만 먹는데, 이게
+    // 하필 복구 경로 한가운데서 반복된다 — 실측(260804 로그7):
+    //   11:01:26 GNSS 재활성화 보류 → 11:01:36 acquiring fix(응답 없음) → 11:01:37 재브링업
+    // 사망 감지에서 재브링업 착수까지 15초 중 10초가 여기서 갔다. 리셋 직후에도 반복된다.
+    if (g_gpsReenablePending) {
+        LOGD(SerialMon, "[GPS] GNSS 꺼짐(재활성화 대기) — 폴 생략\n");
+        return;
+    }
+
     GpsFix fix;
     bool got = Gps::read(modem, fix);
 
