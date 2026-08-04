@@ -83,6 +83,15 @@ static GpsFix g_lastFix;
 static bool g_gpsFixNow = false;
 #endif
 
+#if FEATURE_GPS
+// GNSS 재활성화 보류 플래그 — 지금 GNSS 가 꺼져 있다(또는 꺼졌다고 봐야 한다)는 뜻.
+// 서 있는 동안 GPS 폴을 통째로 건너뛴다: getGPS/getGPSraw 가 응답 없이 타임아웃만
+// 먹는데, 하필 그 구간이 모뎀 복구 경로 한가운데다.
+// ⚠️ 선언이 여기까지 올라온 이유는 noteModemRestarted() 가 이 값을 세우기 때문이다
+//    (모뎀 리셋 = CGNSSPWR 0 복귀). GPS 블록에 두면 그 함수보다 뒤에 온다.
+static bool g_gpsReenablePending = false;
+#endif
+
 // 최신 OBD2 샘플 캐시 — telemetry가 참조. 링크 없으면 valid=false 유지(항상 존재).
 static Obd2::Data g_obd;
 
@@ -230,6 +239,16 @@ static void noteModemRestarted(const char *why)
     // 갈아끼우게 예약만 한다.
     g_minVbatRearm = true;
 #endif
+#if FEATURE_GPS
+    // 모뎀이 리부팅됐다는 판정 = AT+CGNSSPWR 이 0 으로 돌아갔다는 뜻이다. 그러니 이
+    // 순간부터 GNSS 는 꺼진 것으로 확정하고 폴을 멈춘다.
+    // ⚠️ 종전에는 이 플래그를 GNSS ensure 경로에서만 세웠는데, 그 경로는 연속 미측위
+    //    GPS_ENSURE_AFTER_FAILS(3)회를 채워야 발화한다. 그래서 R1 프로브가 사망을
+    //    먼저 잡으면 플래그가 안 서고, 그 사이 GPS 폴이 죽은 모뎀에 타임아웃을 먹었다
+    //    — 실측(260804 로그8) 11:25:10 연결 끊김 → 11:25:21 재브링업, 그 11초가 통째로
+    //    오프라인 적재 직전의 pollGps 한 번이었다.
+    g_gpsReenablePending = true;
+#endif
     Mqtt::resetServiceState();
     Cmd::markUnsubscribed();
     // 쌓인 재접속 백오프(최대 15초)를 그대로 쓰면 이미 확인된 사망을 그만큼 더 기다린다.
@@ -278,9 +297,7 @@ static uint32_t g_lastGpsPoll = 0;   // 마지막 GPS 폴 시각(주기 폴 / �
 static int      g_gpsFailStreak = 0;
 static uint32_t g_gpsNofixSince = 0;   // 미측위가 시작된 시각(진행 리포트용)
 static uint32_t g_gpsNofixLogAt = 0;   // 마지막 미측위 리포트 시각
-// GNSS 재활성화 보류 플래그(R3) — 모뎀이 무응답이라 지금 켤 수 없을 때 세운다.
-// Gps::begin 은 최대 15초 블로킹이라, 죽은 모뎀에 던지면 복구 경로를 그만큼 밀어낸다.
-static bool     g_gpsReenablePending = false;
+// (g_gpsReenablePending 은 파일 앞쪽에 있다 — noteModemRestarted 가 먼저 참조한다)
 
 // GPS 1회 폴 → g_lastFix 갱신. 폴 시각도 같이 갱신하므로, 발행 직전에 호출하면
 // 바로 뒤따르는 주기 폴이 중복 실행되지 않는다.
