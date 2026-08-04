@@ -329,9 +329,17 @@ static void pollGps(uint32_t now)
 
     // GNSS 가 실제로 켜져 있는지 확인. 매 폴마다 AT 를 더 쏘면 낭비라 연속 실패
     // 임계에 닿았을 때만 본다. 꺼져 있으면(모뎀 리셋) 다시 켠다.
+    //
+    // ⚠️ 보류 중(g_gpsReenablePending)이면 통째로 건너뛴다. 그 상태의 "GNSS 꺼짐"은
+    //    모뎀이 죽었다는 뜻이 아니라 **우리가 R5 로 일부러 미뤄둔 것**이다. 이걸
+    //    사망 신호로 읽으면 갓 붙은 세션을 같은 초에 스스로 끊는다 —
+    //    실측(260804 로그5): 10:14:15 [MQTT] 접속됨 → 같은 초에 리셋 정황 감지 →
+    //    이후 mqtt_begin 이 7회 연속 실패하고 모뎀이 우연히 죽어서야 풀렸다(107초).
+    //    재활성화 책임도 위쪽 보류 경로가 진다 — 여기서 중복으로 켜지 않는다.
+    //    (isEnabled 조회 AT 도 함께 아낀다 — 단축평가라 보류 중엔 나가지 않는다.)
     if (++g_gpsFailStreak >= GPS_ENSURE_AFTER_FAILS) {
         g_gpsFailStreak = 0;
-        if (!Gps::isEnabled(modem)) {
+        if (!g_gpsReenablePending && !Gps::isEnabled(modem)) {
             LOGW(SerialMon, "[GPS] GNSS 가 꺼져 있음(모뎀 리셋 추정) — 재활성화\n");
 #if FEATURE_LTE
             // GNSS 가 꺼졌다 = AT+CGNSSPWR 이 0 으로 돌아갔다 = 모뎀이 리부팅됐다.
