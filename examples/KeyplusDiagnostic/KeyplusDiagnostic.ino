@@ -137,6 +137,7 @@ static uint32_t g_pwrLogAt    = 0;
 static int      g_lastTempC   = 0;   // 0 = 미상(AT 실패/미지원)
 static int      g_lastVbatMv  = 0;   // 0 = 미상(ADC 미구성)
 static int      g_minVbatMv   = 0;   // 관측 최저 — 딥의 흔적을 남긴다
+static bool     g_minVbatRearm = false;  // 다음 표본에서 최저 관측 창을 새로 연다
 #endif
 
 #if FEATURE_LTE
@@ -208,13 +209,26 @@ static const char *statusPowerMode()
 //    begin() 이 CMQTTSTART 를 건너뛰고 영영 "접속 실패"만 반복한다.
 static void noteModemRestarted(const char *why)
 {
+    // 감지 경로가 셋이다(R1 프로브 / R2 GNSS 꺼짐 / P3 발행 URC 미도착). 같은 사망을
+    // 둘 이상이 잡는 게 정상인데, 그때마다 아래 "[PWR] 사망 직전" 이 다시 찍혀 두 번째
+    // 부터는 무의미한 값이 남는다 — 실측(260804 로그7) 11:03:48 은 vbat_min=0mV 였다.
+    // 그 줄은 과열/전원 판별의 근거로 쓰는 데이터라 정확해야 한다.
+    //   → 정리할 대상이 남아 있을 때만 처리한다. 이미 사망 처리된 상태면 조용히 무시.
+    if (!Mqtt::isConnected(modem) && !Mqtt::serviceStarted()) {
+        LOGD(SerialMon, "[MODEM] 리셋 정황(%s) — 이미 사망 처리됨, 무시\n", why);
+        return;
+    }
+
     LOGW(SerialMon, "[MODEM] 리셋 정황 감지(%s) — 세션 사망 처리·재접속 즉시 시도\n", why);
 #if FEATURE_PWR_MONITOR
     // 사망 직전 표본. 이 한 줄이 "과열 vs 전원" 을 가르는 근거다 — 모뎀이 죽은 뒤엔
     // AT 로 온도를 못 읽으므로, 최대 PWR_SAMPLE_INTERVAL_MS 이전 값이 유일한 증거다.
     LOGW(SerialMon, "[PWR] 사망 직전 temp=%dC vbat=%dmV vbat_min=%dmV\n",
          g_lastTempC, g_lastVbatMv, g_minVbatMv);
-    g_minVbatMv = 0;   // 사이클마다 다시 관측한다
+    // 사이클마다 창을 새로 연다. ⚠️ 여기서 0 으로 비우지 않는다 — 비워두면 다음 표본이
+    // 뜨기 전에 찍히는 줄이 vbat_min=0mV 라는 무의미한 값을 남긴다. 다음 표본이 창을
+    // 갈아끼우게 예약만 한다.
+    g_minVbatRearm = true;
 #endif
     Mqtt::resetServiceState();
     Cmd::markUnsubscribed();
@@ -246,7 +260,12 @@ static void samplePwr(TinyGsm &modem)
     int v = readVbatMv();
     if (v > 0) {
         g_lastVbatMv = v;
-        if (g_minVbatMv == 0 || v < g_minVbatMv) g_minVbatMv = v;
+        if (g_minVbatRearm) {            // 사망 직후 — 여기서 창을 갈아끼운다
+            g_minVbatMv    = v;
+            g_minVbatRearm = false;
+        } else if (g_minVbatMv == 0 || v < g_minVbatMv) {
+            g_minVbatMv = v;
+        }
     }
 }
 #endif
