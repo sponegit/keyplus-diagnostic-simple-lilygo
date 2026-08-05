@@ -522,12 +522,21 @@ class TinyGsmA7670 :  public TinyGsmA76xx<TinyGsmA7670>,
           if (!isGprsConnected()) { gprsDisconnect(); }
           data = "";
         } else if (data.endsWith(GF("+CMQTTPUB:"))) {
+          // 아래 +CMQTTRXSTART 분기와 짝이다 — 발행/수신 URC 는 둘 다 AT 왕복 중에
+          // 끼어들 수 있어서, 여기서 걷어내지 않으면 진행 중인 응답 파싱을 오염시킨다.
           // 발행 결과 URC: `+CMQTTPUB: <client_index>,<err>` (err 0 = 성공).
           // 원본은 이걸 파싱하지 않아 "### Unhandled" 로 버렸다 — mqtt_publish 의
           // 반환값은 AT 수락까지만 뜻하므로, 실제 전달 확인은 이 URC 가 유일한 근거다.
           streamSkipUntil(',');  // <client_index>
           int8_t err = streamGetIntBefore('\n');
           mqttNotePubAck(err);
+          data = "";
+        } else if (data.endsWith(GF("+CMQTTRXSTART:"))) {
+          // 수신 URC 블록의 첫 줄. 여기서 잡지 않으면 이 waitResponse 가 기다리던
+          // 응답(OK 등)을 만나는 순간 누적분과 함께 **조용히 버려지고**, 첫 줄을 잃은
+          // 나머지 블록은 뒤이은 mqtt_handle 이 못 알아봐 "### Unhandled" 로 사라진다
+          // — 다운링크 명령 유실(실측: ota_start 무반응). 그 자리에서 끝까지 읽는다.
+          mqtt_read_rx_urc();
           data = "";
         }
       }

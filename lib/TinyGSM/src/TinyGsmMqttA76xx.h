@@ -11,6 +11,12 @@
 
 #define TINY_GSM_MQTT_CLI_COUNT 2
 
+// 수신 URC 블록(RXTOPIC/RXPAYLOAD/RXEND) 각 단계의 대기 상한. 블록은 모뎀이 연속으로
+// 뱉으므로 정상이면 즉시 매칭되고, 이 값은 "모뎀이 중간에 끊겼을 때 얼마나 기다렸다
+// 포기하나"만 정한다. AT 왕복 도중에 호출될 수 있어(mqtt_read_rx_urc 주석) 과하게 크면
+// 그 왕복을 그만큼 붙잡는다 — 넉넉하되 짧게.
+#define TINY_GSM_MQTT_RX_URC_TIMEOUT_MS 500
+
 template <class modemType, uint8_t muxCount>
 class TinyGsmMqttA76xx
 {
@@ -41,6 +47,8 @@ protected:
     // 재접속마다 반복할 이유가 없다 — PEM 전송(UART) + 플래시 쓰기를 매번 되풀이하면
     // 재접속이 느려지고 모뎀 플래시 수명만 깎인다.
     bool     _certUploaded  = false;
+
+    bool     _inRxUrc       = false;   // 수신 URC 블록을 읽는 중(재진입 가드)
 
     bool     _pubAckPending = false;   // 발행을 내보내고 결과 URC 를 기다리는 중
     int8_t   _lastPubErr    = -1;      // 마지막 결과 코드 (0=성공, -1=아직 없음)
@@ -480,69 +488,120 @@ public:
     {
         //TODO:More than 1500 bytes will carry the Modem return flag
         // +CMQTTCONNLOST: 1,1
+        // ⚠️ timeout 은 "메시지가 오나 보는" 첫 단계에만 쓴다. 일단 RXSTART 를 봤으면
+        //    나머지 블록은 **반드시 오게 돼 있으므로** 짧은 상한으로 중간에 끊으면 안 된다
+        //    (실측: 20ms 로 줄였다가 메시지를 통째로 놓쳐 100ms 로 되돌린 이력 — 커밋
+        //    1dff1a0. 그건 창을 넓혔을 뿐 끊길 여지는 남아 있었다).
+        //    → 뒷단계는 mqtt_read_rx_urc 의 기본 상한을 쓴다. 정상이면 즉시 매칭되므로
+        //      이 값이 커도 평상시 비용은 0 이다.
         if (thisModem().waitResponse(timeout, "+CMQTTRXSTART:") == 1) {
-            thisModem().streamSkipUntil(',');
-            size_t topicSize = 0;
-            size_t plyloadSize = 0;
-            size_t topic_total_len =  thisModem().streamGetIntBefore(',');
-            size_t payload_total_len =  thisModem().streamGetIntBefore('\n');
-            if (thisModem().waitResponse(timeout, "+CMQTTRXTOPIC:") == 1) {
-
-                thisModem().streamSkipUntil('\n');
-                topicSize = topic_total_len > bufferSize ? bufferSize - 1 : topic_total_len;
-                thisModem().stream.readBytes(buffer, topicSize);
-                buffer[topicSize] = '\0';
-                topicSize += 1;
-
-                if (topicSize == bufferSize) {
-                    DBG("Buffer overflow!");
-                    thisModem().waitResponse(10000UL);
-                    return false;
-                }
-                size_t recvSize = 0;
-                size_t remainingSize = bufferSize - topicSize;
-                size_t bufferOffset = topicSize;
-
-                do {
-                    if (thisModem().waitResponse(timeout, "+CMQTTRXPAYLOAD:") == 1) {
-                        thisModem().streamSkipUntil(',');
-                        int packetSize = thisModem().streamGetIntBefore('\n');
-
-                        plyloadSize = packetSize > remainingSize ? remainingSize : packetSize;
-
-                        if (bufferOffset >= bufferSize) {
-                            DBG("Buffer overflow!");
-                            break;
-                        }
-                        thisModem().stream.readBytes(buffer + bufferOffset, plyloadSize);
-
-                        remainingSize -= plyloadSize;
-                        bufferOffset += plyloadSize;
-                        recvSize += packetSize;
-
-                    } else {
-                        // URC 가 끊기면 recvSize 가 영영 payload_total_len 에 닿지 못해
-                        // do-while 이 무한 루프가 된다(→ 워치독 리셋). 끊기면 중단한다.
-                        DBG("### CMQTTRXPAYLOAD 누락 — 수신 중단");
-                        break;
-                    }
-                } while (recvSize != payload_total_len);
-
-                if (thisModem().waitResponse(timeout, "+CMQTTRXEND: 0") == 1) {
-                    if (this->callback) {
-                        this->callback((const char *)buffer, buffer + topicSize, recvSize);
-                    }
-                    memset(this->buffer, 0, bufferSize);
-                    return true;
-                }
-
-            }
+            return mqtt_read_rx_urc();
         }
         return false;
     }
 
+    // "+CMQTTRXSTART:" 를 **이미 소비한 상태**에서 나머지 블록(RXTOPIC/RXPAYLOAD/RXEND)을
+    // 읽어 콜백까지 부른다.
+    //
+    // ⚠️ 왜 mqtt_handle 에서 떼어냈나 — 수신 URC 는 우리가 mqtt_handle 을 부르는 순간이
+    //    아니라 **아무 때나** 온다. AT 왕복(CGNSSINFO·CSQ·CCLK…)이 진행 중이면 그쪽
+    //    waitResponse 가 "+CMQTTRXSTART:" 를 모르는 문자열로 누적했다가, 기다리던 OK 를
+    //    만나는 순간 누적분을 통째로 버린다(index!=0 이라 로그도 안 남는다).
+    //    그러면 첫 줄만 사라진 채 나머지가 스트림에 남고, 뒤이어 도는 mqtt_handle 은
+    //    RXSTART 를 못 찾아 블록 전체를 "### Unhandled" 로 흘려버린다 —
+    //    **명령이 통째로 유실된다**(실측: ota_start 무반응).
+    //    → 모뎀 클라이언트의 waitResponse URC 분기가 RXSTART 를 보는 즉시 이 함수를
+    //      불러 그 자리에서 블록을 걷어낸다. 그러면 어느 AT 왕복 중에 도착하든 안전하고,
+    //      진행 중이던 AT 응답 파싱도 URC 로 오염되지 않는다.
+    //
+    // ⚠️ 콜백은 이 문맥(AT 응답 파싱 중)에서 불린다 — 복사·플래그 세팅만 하고 AT 를
+    //    보내지 말 것(cmd.cpp onMessage 주석과 같은 계약).
+    bool mqtt_read_rx_urc(uint32_t timeout = TINY_GSM_MQTT_RX_URC_TIMEOUT_MS)
+    {
+        // mqtt_begin 전(버퍼 미할당)에 들어온 URC 는 담을 곳이 없다.
+        if (!this->buffer || bufferSize < 2) return false;
+        // 재진입 금지 — 아래 waitResponse 들이 다시 RXSTART 분기로 들어오는 걸 막는다.
+        if (_inRxUrc) {
+            DBG("### CMQTTRXSTART 중첩 — 무시");
+            return false;
+        }
+        _inRxUrc = true;
+        bool ok = readRxBlock(timeout);
+        _inRxUrc = false;
+        return ok;
+    }
+
 
 protected:
+    // mqtt_read_rx_urc 의 알맹이. 진입 시점: "+CMQTTRXSTART:" 까지 소비된 상태.
+    bool readRxBlock(uint32_t timeout)
+    {
+        thisModem().streamSkipUntil(',');
+        size_t topicSize = 0;
+        size_t plyloadSize = 0;
+        size_t topic_total_len =  thisModem().streamGetIntBefore(',');
+        size_t payload_total_len =  thisModem().streamGetIntBefore('\n');
+        if (thisModem().waitResponse(timeout, "+CMQTTRXTOPIC:") == 1) {
+
+            thisModem().streamSkipUntil('\n');
+            topicSize = topic_total_len > bufferSize ? bufferSize - 1 : topic_total_len;
+            thisModem().stream.readBytes(buffer, topicSize);
+            buffer[topicSize] = '\0';
+            topicSize += 1;
+
+            if (topicSize == bufferSize) {
+                DBG("Buffer overflow!");
+                thisModem().waitResponse(10000UL);
+                return false;
+            }
+            size_t recvSize = 0;
+            size_t remainingSize = bufferSize - topicSize;
+            size_t bufferOffset = topicSize;
+
+            do {
+                if (thisModem().waitResponse(timeout, "+CMQTTRXPAYLOAD:") == 1) {
+                    thisModem().streamSkipUntil(',');
+                    int packetSize = thisModem().streamGetIntBefore('\n');
+
+                    plyloadSize = packetSize > remainingSize ? remainingSize : packetSize;
+
+                    if (bufferOffset >= bufferSize) {
+                        DBG("Buffer overflow!");
+                        break;
+                    }
+                    thisModem().stream.readBytes(buffer + bufferOffset, plyloadSize);
+
+                    remainingSize -= plyloadSize;
+                    bufferOffset += plyloadSize;
+                    recvSize += packetSize;
+
+                } else {
+                    // URC 가 끊기면 recvSize 가 영영 payload_total_len 에 닿지 못해
+                    // do-while 이 무한 루프가 된다(→ 워치독 리셋). 끊기면 중단한다.
+                    DBG("### CMQTTRXPAYLOAD 누락 — 수신 중단");
+                    break;
+                }
+            } while (recvSize != payload_total_len);
+
+            if (thisModem().waitResponse(timeout, "+CMQTTRXEND: 0") == 1) {
+                if (this->callback) {
+                    // 잘린 경우 recvSize(모뎀이 보냈다고 알린 양)가 실제 버퍼에 담긴 양보다
+                    // 크다 — 콜백에 그대로 넘기면 버퍼 밖을 읽는다. 담긴 만큼만 넘긴다.
+                    size_t stored = bufferOffset - topicSize;
+                    if (recvSize > stored) {
+                        DBG("### RX 페이로드 잘림:", recvSize, "→", stored);
+                        recvSize = stored;
+                    }
+                    this->callback((const char *)buffer, buffer + topicSize, recvSize);
+                }
+                memset(this->buffer, 0, bufferSize);
+                return true;
+            }
+
+        }
+        return false;
+    }
+
     bool mqttWillTopic(uint8_t clientIndex, const char *topic)
     {
         if (clientIndex > muxCount) {
