@@ -1,0 +1,60 @@
+{
+  "product": "keyplus-diagnostic",
+  "board": "LILYGO T-A7670E (ESP32-WROVER, Flash 4MB / PSRAM 8MB)",
+  "version": "0.3.7",
+  "file": "keyplus-diagnostic-0.3.7.bin",
+  "size": 425072,
+  "md5": "e6290463ba9daf70f4d76606c5252f60",
+  "sha256": "e7b7f5deb343c7a39e4fd7a974f195b5ad58f18e25e0d52baf030348eac853f3",
+  "partition": {
+    "table": "min_spiffs.csv",
+    "ota_slot_bytes": 1966080,
+    "usage_pct": 21.6,
+    "note": "spiffs 파티션(0x3D0000, 128KB)을 오프라인 링버퍼로 전용한다. SPIFFS 로 마운트하지 않는다 — 이후 파일시스템이 필요해지면 파티션 표 재설계가 선행돼야 한다."
+  },
+  "url": "https://REPLACE-ME/fw/keyplus-diagnostic-0.3.7.bin",
+  "verify": {
+    "device_checks": "md5",
+    "note": "단말은 md5만 검증한다(Update.setMD5). sha256은 배포 경로 무결성 확인용."
+  },
+  "supersedes": {
+    "version": "0.3.0",
+    "reason": "0.3.1~0.3.6 은 배포 패키지를 만들지 않았다 — 이 릴리스가 그 전부를 포함한다."
+  },
+  "headline": "통신사 자동 판별 — LG U+ 전용이던 APN 을 유심(IMSI/ICCID)에서 스스로 정한다. KT/SKT 유심 지원.",
+  "changes_since_0_3_0": [
+    "통신사 자동 판별(apn.{h,cpp}) — APN 을 ① 콘솔 수동 고정 ② NVS 캐시(ICCID 일치) ③ IMSI(MCC+MNC) 표 ④ 후보 회전 순으로 정하고, PDP 실패 시 ⑤ 망 할당 APN(CGDCONT) ⑥ 나머지 후보 ⑦ 빈 APN 까지 훑는다. 붙은 값은 ICCID 와 함께 NVS 에 굳어 다음 부팅부터 첫 시도에 붙는다. 등록은 유심의 홈망으로 자동이므로 재등록 없이 gprsConnect 만 반복한다",
+    "콘솔 'apn' / 'apn set <값>' / 'apn clear' — 요금제 지정 APN 을 재플래싱 없이 현장에서 고정한다(NVS 영구)",
+    "0.3.6 — telemetry sys 에 vbat_mv 발행(모뎀 공급 레일을 서버가 본다)",
+    "0.3.5 — 사망 판정 시점에 GNSS 도 꺼진 것으로 확정(복구 10초 회수)",
+    "0.3.4 — 사망 감지 중복 발화 억제 / 구독 5초 고정 대기를 발행 ACK 기반으로(4초 회수) / 꺼진 GNSS 를 폴하지 않는다(10초 회수)",
+    "0.3.3 — CMQTT 서비스 시작 연속 실패를 모뎀 리셋으로 승격 / R2 오탐(보류 중인 GNSS 꺼짐을 사망 신호로 읽지 않는다)",
+    "0.3.2 — R5 가드(미접속 구간이 곧 재접속 창) / P1 철회로 CNMP 자동(2) 복원",
+    "0.3.1 — P2 모뎀 온도·공급 레일 계측 / P3 +CMQTTPUB 결과 URC 파싱 / P4 CA PEM 재업로드를 부팅당 1회로 / R1~R6 모뎀 사망 감지·복구"
+  ],
+  "server_prerequisites": {
+    "apn": "없음. 단말 내부 동작이며 페이로드·토픽·계약 변경이 없다",
+    "note": "0.3.0 README 의 후속 작업(F3 sub 분기, F1 telemetry 파생 제거)이 아직이라면 그건 그대로 유효하다"
+  },
+  "breaking": {
+    "uart_app": "없음 — [STAT] 한 줄 포맷 불변",
+    "status_payload": "없음",
+    "config_h": "LTE_APN 은 이제 '기본값 겸 1순위 후보'다. 고정 동작이 필요하면 LTE_APN_AUTO=0 으로 되돌린다"
+  },
+  "known_unfixed": [
+    "KT/SKT APN 이 실기 검증되지 않았다(해당 유심 미보유). LTE_APN_SKT='lte.sktelecom.com' / LTE_APN_KT='lte.ktfwing.com' 는 소매 LTE 표준값이라 M2M/IoT 요금제에서는 사업자 지정 APN 일 수 있다. 틀리면 폴백(망 할당 APN → 후보 순회 → 빈 APN)이 받아내고, 그래도 안 되면 콘솔 'apn set' 으로 고정해야 한다",
+    "IMSI 표에 45005(SKT)·45006(LG U+)·45008(KT) 만 넣었다. 레거시/부가 MNC 는 확신이 없어 제외했다 — 표에 없으면 후보 순회로 흘러가 3개를 다 시도한다",
+    "빈 APN 으로 붙은 경우는 저장하지 않는다(빈 값이 '캐시 없음'과 구분되지 않는다). 매 브링업마다 순회를 반복하므로 'apn set' 으로 굳혀야 한다",
+    "KT/SKT 신규 단말은 붙기 전이라 OTA 를 받을 수 없다 — 초기 투입은 USB 플래싱이어야 한다",
+    "0.3.0 의 known_unfixed(차키 TTL 10초, OBD 기반 차량상태 한계, 미측위 중 gps.fix=true, gps.spd 노트 단위 등)는 그대로 유효하다"
+  ],
+  "limits": {
+    "cmd_payload_bytes": 1000,
+    "cmd_rx_queue": 4,
+    "fast_payload_bytes": 2048,
+    "offline_records": 2336,
+    "publish_min_gap_ms": 1000,
+    "apn_sweep_budget_ms": 90000,
+    "note": "APN 순회는 브링업당 90초로 묶인다 — 예산이 다하면 남은 후보는 다음 브링업에서 이어 본다."
+  }
+}
