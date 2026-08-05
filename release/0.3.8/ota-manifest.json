@@ -1,0 +1,53 @@
+{
+  "product": "keyplus-diagnostic",
+  "board": "LILYGO T-A7670E (ESP32-WROVER, Flash 4MB / PSRAM 8MB)",
+  "version": "0.3.8",
+  "file": "keyplus-diagnostic-0.3.8.bin",
+  "size": 425776,
+  "md5": "0f74cbdd93ac18b2befb47d5dd507438",
+  "sha256": "e724aacb3c734bba5e8055bfad566f18378cac9d67c9e4b3e37e468f767407f5",
+  "partition": {
+    "table": "min_spiffs.csv",
+    "ota_slot_bytes": 1966080,
+    "usage_pct": 21.6,
+    "note": "spiffs 파티션(0x3D0000, 128KB)을 오프라인 링버퍼로 전용한다. SPIFFS 로 마운트하지 않는다 — 이후 파일시스템이 필요해지면 파티션 표 재설계가 선행돼야 한다."
+  },
+  "url": "https://REPLACE-ME/fw/keyplus-diagnostic-0.3.8.bin",
+  "verify": {
+    "device_checks": "md5",
+    "note": "단말은 md5만 검증한다(Update.setMD5). sha256은 배포 경로 무결성 확인용."
+  },
+  "supersedes": {
+    "version": "0.3.7",
+    "reason": "0.3.7 은 실기에 내려가지 못했다 — 현장 단말은 0.3.5 다. 그 배포를 막은 수신 URC 유실이 이 릴리스의 내용이므로 0.3.7 패키지는 폐기하고 이것을 쓴다."
+  },
+  "headline": "MQTT 수신 URC 유실 수정 — 다른 AT 왕복과 겹쳐 도착한 다운링크 명령이 통째로 사라지던 문제. ota_start·door_lock 등 모든 명령에 해당.",
+  "changes_since_0_3_7": [
+    "수신 URC(+CMQTTRXSTART)를 waitResponse 의 URC 분기에서 직접 처리한다(TinyGsmClientA7670.h). 종전에는 mqtt_handle() 을 부르는 순간에만 파싱해, 그 사이 다른 AT 왕복(CGNSSINFO·CSQ·CCLK·CMQTT 발행)이 진행 중이면 그쪽 waitResponse 가 URC 첫 줄을 모르는 문자열로 누적했다가 기다리던 OK 와 함께 조용히 버렸다 — 첫 줄을 잃은 나머지 블록은 '### Unhandled' 로 사라져 명령이 통째로 유실됐다",
+    "RXSTART 를 본 뒤에는 짧은 상한으로 파싱을 끊지 않는다 — 뒷단계(RXTOPIC/RXPAYLOAD/RXEND)는 반드시 오게 돼 있으므로 단계당 500ms 상한으로 끝까지 읽는다. 0.3.4 의 20ms→100ms 조정(창 넓히기)이 남겨둔 잔여 유실 경로를 닫는다",
+    "수신 블록 재진입 가드 + 버퍼 미할당(mqtt_begin 전) 가드",
+    "페이로드가 버퍼 상한에 걸려 잘린 경우 콜백에 '실제로 담긴 만큼'만 넘긴다 — 종전에는 모뎀이 알려준 길이를 그대로 넘겨 버퍼 밖을 읽을 수 있었다"
+  ],
+  "server_prerequisites": {
+    "note": "없음. 단말 내부 수신 경로 수정이며 페이로드·토픽·계약이 바뀌지 않았다"
+  },
+  "breaking": {
+    "uart_app": "없음 — [STAT] 한 줄 포맷 불변",
+    "status_payload": "없음",
+    "config_h": "없음 (FW_VERSION 만 0.3.8)"
+  },
+  "known_unfixed": [
+    "이 수정은 OTA 수신 경로 자체를 고치는 것이라, 0.3.8 을 OTA 로 내리는 명령 자체는 여전히 구버전(0.3.5)의 유실 확률을 안고 간다. 유실은 상시가 아니라 AT 왕복과 겹칠 때만이므로 재발행하면 대체로 통과하지만, 확실히 하려면 USB 플래싱이다",
+    "OTA 다운로드 경로(HTTPS)는 SSL ctx 0 를 MQTT 와 공유한다 — https_set_url 이 CA/authmode 를 따로 세팅하지 않고 MQTT 가 올려둔 설정(cacert, authmode=1)을 그대로 물려받는다. 배포 호스트 인증서가 같은 CA 가 아니면 '[OTA] HTTP GET 실패 code=...' 로 떨어진다. 실기 미검증",
+    "0.3.7 의 known_unfixed(KT/SKT APN 미검증, IMSI 표 범위, 빈 APN 미저장 등)와 0.3.0 의 known_unfixed 는 그대로 유효하다"
+  ],
+  "limits": {
+    "cmd_payload_bytes": 1000,
+    "cmd_rx_queue": 4,
+    "fast_payload_bytes": 2048,
+    "offline_records": 2336,
+    "publish_min_gap_ms": 1000,
+    "apn_sweep_budget_ms": 90000,
+    "mqtt_rx_urc_stage_timeout_ms": 500
+  }
+}
