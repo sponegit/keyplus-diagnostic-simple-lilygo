@@ -311,7 +311,7 @@ void stopService(TinyGsm &modem)
 }
 
 bool publishTelemetry(TinyGsm &modem, const GpsFix &fix, bool fixFresh, const Obd2::Data &obd,
-                      uint32_t seq, bool withMeta, Stream &log)
+                      uint32_t seq, bool withMeta, int vbatMv, Stream &log)
 {
     // ⚠️ 반드시 첫 줄이다. 아래 getSignalQuality/getRegistrationStatus 도 AT 왕복이라
     //    죽은 모뎀에서는 여기서부터 타임아웃을 태우기 시작한다.
@@ -367,8 +367,17 @@ bool publishTelemetry(TinyGsm &modem, const GpsFix &fix, bool fixFresh, const Ob
             fix.lat, fix.lon, fix.speed, fix.vsat);
     }
     n += snprintf(buf + n, sizeof(buf) - n,
-        "},\"net\":{\"rssi\":%d,\"reg\":%d},\"sys\":{\"up_s\":%u}",
+        "},\"net\":{\"rssi\":%d,\"reg\":%d},\"sys\":{\"up_s\":%u",
         rssi, reg, up_s);
+
+    // vbat — 있을 때만. 0 은 "미상"이지 "0V"가 아니다(ADC 미구성 / FEATURE_PWR_MONITOR off).
+    // 0 을 실어 보내면 서버가 관측값으로 받아 방전 그래프가 바닥을 찍는다.
+    // ⚠️ 이건 ORing 이후 모뎀 공급 레일(VV_BAT)이다 — 배터리 커넥터도, 차량 B+ 도 아니다.
+    //    차량 배터리 전압은 현 HW 로 측정 불가다(상용화 전 회로 추가 필요).
+    if (vbatMv > 0) {
+        n += snprintf(buf + n, sizeof(buf) - n, ",\"vbat_mv\":%d", vbatMv);
+    }
+    n += snprintf(buf + n, sizeof(buf) - n, "}");
 
     // OBD2 실시간 PID — 링크 확립 시에만, 지원(응답 받은) 필드만 포함(6단계).
     if (obd.valid) {

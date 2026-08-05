@@ -120,8 +120,14 @@ bool publishStatus(TinyGsm &modem, const char *powerMode, bool ignitionOn,
 //    마지막 값을 유지하는 캐시라(g_lastFix) fix.valid 로는 신선도를 알 수 없다. ts 를
 //    캐시 좌표의 UTC 로 계산하면 미측위 구간 내내 같은 ts 가 나가고, 서버 PK
 //    (device_id, ts) 중복제거로 그 구간 telemetry 가 통째로 사라진다.
+//
+// vbatMv — 전원 계측(P2)의 마지막 표본(g_lastVbatMv). **0 이면 sys 에서 통째로 생략**한다.
+//   0/-1 을 보내면 서버가 "전압 0V"를 관측값으로 오인해 방전 그래프가 바닥을 찍는다
+//   (agg 를 "샘플 없으면 통째 생략"하는 것과 같은 규약).
+//   지금껏 이 값은 [PWR] 로그로만 나가 UART 를 붙여야 볼 수 있었다 — 서버는 배터리를
+//   추가하고도 전압을 하나도 못 봤다(260805 점검: vehicle_state.voltage 전부 NULL).
 bool publishTelemetry(TinyGsm &modem, const GpsFix &fix, bool fixFresh, const Obd2::Data &obd,
-                      uint32_t seq, bool withMeta, Stream &log);
+                      uint32_t seq, bool withMeta, int vbatMv, Stream &log);
 
 /**
  * 백필 1건 발행 — **기존 telemetry 토픽·스키마 그대로**, ts 만 과거 시각이다.

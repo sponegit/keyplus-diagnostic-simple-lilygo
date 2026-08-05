@@ -1590,8 +1590,16 @@ void loop()
         // g_gpsFixNow(= 방금 폴에서 실제로 측위됐는가)를 함께 넘긴다. g_lastFix 는 미측위
         // 중에도 마지막 값을 유지하는 캐시라, 이걸 안 넘기면 ts 가 얼어붙어 서버에서
         // 그 구간 telemetry 가 PK 중복으로 사라진다(mqtt.cpp publishTelemetry 주석).
+        // vbat 는 전원 계측(P2)의 마지막 표본이다. 표본 주기가 10초라 발행 시점보다 최대
+        // 그만큼 낡았지만 배터리 전압은 그 정도로 급변하지 않으므로 그대로 싣는다.
+        // 계측이 꺼져 있으면 0 → publishTelemetry 가 필드를 통째로 생략한다("0V"가 아니다).
+#if FEATURE_PWR_MONITOR
+        const int vbatMv = g_lastVbatMv;
+#else
+        const int vbatMv = 0;
+#endif
         bool pubOk = Mqtt::publishTelemetry(modem, g_lastFix, g_gpsFixNow, g_obd,
-                                            g_seq, withMeta, SerialMon);
+                                            g_seq, withMeta, vbatMv, SerialMon);
         if (pubOk) {
             if (withMeta) g_metaSent = true;
             g_seq++;
