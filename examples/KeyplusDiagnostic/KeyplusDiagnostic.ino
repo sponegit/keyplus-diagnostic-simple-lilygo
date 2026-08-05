@@ -50,6 +50,7 @@
 
 #if FEATURE_LTE
 #include "lte.h"
+#include "apn.h"    // 통신사(APN) 자동 판별 — 3사 유심 지원
 #include "mqtt.h"
 #include "cmd.h"
 #if FEATURE_OTA
@@ -544,6 +545,9 @@ static void printDeviceInfo(TinyGsm &modem, const char *modemName)
     SerialMon.printf("  modem      : %s\n", modemName);
 #if FEATURE_LTE
     SerialMon.printf("  sim        : %d (1=ready 2=locked)\n", modem.getSimStatus());
+    // 어느 통신사/APN 으로 붙는지는 3사 유심 지원 후 현장 1순위 확인 대상이다.
+    // (부팅 배너 시점엔 저장값/기본값 — 실제 판별 결과는 아래 LTE 브링업 로그에 나온다)
+    SerialMon.printf("  apn        : %s (%s)\n", Apn::current(), Apn::sourceStr());
     SerialMon.printf("  broker     : %s:%d (%s)\n", MQTT_HOST, MQTT_PORT,
                      MQTT_USE_TLS ? "TLS" : "평문");
     SerialMon.printf("  telemetry  : %lums   keepalive %ds\n",
@@ -828,6 +832,12 @@ void setup()
     // 런타임 설정 로드(NVS "cfg") — config_update로 변경된 telemetry 주기/keepalive 복원.
     Cfg::begin();
 
+#if FEATURE_LTE
+    // APN(통신사) 저장값 로드(NVS "apn"). 모뎀 AT를 쓰지 않으므로 전원 인가 전에 불러도 된다
+    // — 실제 판별은 Lte::begin이 SIM을 읽은 뒤 Apn::select에서 한다.
+    Apn::begin();
+#endif
+
 #if FEATURE_OFFLINE_BUF
     // 오프라인 링버퍼 — 파티션 탐색 + 섹터 헤더 스캔으로 head/tail 복원.
     // 실패해도(파티션 없음) 부팅은 계속한다 — 적재만 비활성되고 나머지는 정상 동작한다.
@@ -885,7 +895,7 @@ void setup()
     // SIM 상태는 위 배너에 이미 실렸다. SIM PIN이 걸려 있으면 아래 주석 해제:
     // modem.simUnlock("0000");
 
-    // 증분 A: 등록 → PDP → 평문 HTTP GET 으로 LG U+ 유심 데이터패스 검증.
+    // 증분 A: APN 판별 → 등록 → PDP → 평문 HTTP GET 으로 유심 데이터패스 검증(3사 지원).
     Led::set(Led::State::PROVISIONING);   // 망 등록/접속 시도 중 — 느린 점멸
     if (modemReady && Lte::begin(modem, SerialMon)) {
         LteStatus st;
@@ -1018,7 +1028,7 @@ static void statusModem(Stream &io)
               st.rssi == 99 ? "(측정불가)" : st.rssi >= 15 ? "(양호)" : "(약함)");
     io.printf("  %-14s: %s\n", "사업자", st.oper.length() ? st.oper.c_str() : "-");
     io.printf("  %-14s: %s\n", "IP", st.ip.length() ? st.ip.c_str() : "-");
-    io.printf("  %-14s: %s\n", "APN", LTE_APN);
+    io.printf("  %-14s: %s (%s)\n", "APN", Apn::current(), Apn::sourceStr());
     io.printf("  %-14s: %s\n", "모뎀 AT응답", Lte::modemAlive(modem) ? "정상" : "무응답(전원 확인)");
 #if FEATURE_PWR_MONITOR
     // 사람이 status 를 쳤을 때는 신선한 값을 보여준다(주기 표본을 기다리지 않는다).
@@ -1162,6 +1172,11 @@ static void appPrintHelp(Stream &io)
     io.println("[APP]  명령: info                        단말 정보(부팅 배너와 동일)");
     io.println("             status [gps|modem|server|obd|key]  상태 조회(생략 시 전체)");
     io.println("             at <명령>                    모뎀 AT 직접 전송(예: at+cgnssinfo)");
+#if FEATURE_LTE
+    io.println("             apn                          통신사/APN 판별 상태");
+    io.println("             apn set <apn>                APN 수동 고정(NVS, 재부팅 후 적용)");
+    io.println("             apn clear                    저장 APN 삭제(재부팅 시 재판별)");
+#endif
 #if FEATURE_OFFLINE_BUF
     io.println("             buf                          오프라인 백로그/링 상태");
     io.println("             buf clear                    ⚠️ 링 전체 삭제(미전송 주행데이터 소실)");
@@ -1203,6 +1218,14 @@ static bool appConsole(const String &cmd, const String &arg, Stream &io)
         statusAll(io, w);
         return true;
     }
+#if FEATURE_LTE
+    // 'apn' — 조회에 AT+CGDCONT? 왕복이 있으므로 URC 를 먼저 비운다(info/status 와 같은 이유).
+    if (cmd == "apn") {
+        drainModemUrc();
+        Apn::console(arg, modem, io);
+        return true;
+    }
+#endif
 #if FEATURE_OFFLINE_BUF
     // 'buf' / 'buf clear' — 모뎀 AT 를 쓰지 않으므로 URC 배수가 필요 없다.
     if (Buf::tryConsole(cmd, arg, io)) return true;

@@ -2,13 +2,16 @@
  * @file      lte.cpp
  * @brief     증분 A LTE 브링업 구현 — Network/HttpClient 예제의 검증된 흐름을 모듈화.
  *
- * 흐름: setNetworkAPN → getRegistrationStatus 폴링(타임아웃) → gprsConnect(PDP)
- *       → TinyGsmClient + ArduinoHttpClient 로 평문 GET 검증.
+ * 흐름: Apn::select → setNetworkAPN → getRegistrationStatus 폴링(타임아웃)
+ *       → gprsConnect(PDP, 실패 시 APN 폴백 순회) → TinyGsmClient + ArduinoHttpClient
+ *       로 평문 GET 검증.
  */
 #include "lte.h"
 #include "config.h"
 #include "log.h"
+#include "apn.h"
 #include <ArduinoHttpClient.h>
+#include <string.h>
 
 namespace Lte {
 
@@ -112,6 +115,67 @@ bool applyNetworkMode(TinyGsm &modem, Stream &log)
     return ok;
 }
 
+// PDP(gprs) 활성 1회 시도. gprsConnect 가 내부에서 gprsDisconnect → CGDCONT 재설정까지
+// 하므로, 다른 APN 으로 다시 부르는 것만으로 재시도가 성립한다(재등록 불필요).
+static bool pdpTry(TinyGsm &modem, const char *apn, Stream &log)
+{
+    LOGD(log, "[LTE] PDP 활성 시도 (apn=%s)...\n", apn);
+    if (!modem.gprsConnect(apn, LTE_GPRS_USER, LTE_GPRS_PASS)) return false;
+    if (!modem.isGprsConnected()) {
+        LOGD(log, "[LTE] PDP 활성 직후 gprs 미연결 (apn=%s)\n", apn);
+        return false;
+    }
+    return true;
+}
+
+// 1순위 APN 으로 PDP 가 안 붙었을 때의 폴백. 성공한 APN 을 out 에 담고 true.
+//
+// 순서: ① 망이 attach 때 내려준 APN(CGDCONT) — 표가 틀렸을 때 이게 정답인 경우가 많다
+//       ② 나머지 후보(LG U+/SKT/KT) 순회
+// ⚠️ 등록은 이미 끝났다 — 여기서 다시 90초 등록 폴링을 태우지 않는다. 통신사가 갈리는
+//    지점은 APN 뿐이라 PDP 만 돌리면 된다.
+// ⚠️ 총 소요를 LTE_APN_SWEEP_BUDGET_MS 로 묶는다. 예산이 다하면 남은 후보는 다음
+//    브링업에서 이어서 본다(무한정 붙잡고 있으면 재시도 백오프가 통째로 밀린다).
+static bool pdpSweep(TinyGsm &modem, const char *tried, String &out, Stream &log)
+{
+    uint32_t start = millis();
+    String   netApn = Apn::networkApn(modem);
+
+    if (netApn.length() && netApn != tried) {
+        LOGI(log, "[LTE] APN 폴백 — 망 할당값 시도: %s\n", netApn.c_str());
+        if (pdpTry(modem, netApn.c_str(), log)) { out = netApn; return true; }
+    }
+
+    for (int i = 0; i < Apn::candidateCount(); ++i) {
+        const char *c = Apn::candidate(i);
+        if (!c || !*c) continue;
+        if (strcmp(c, tried) == 0)   continue;          // 1순위로 이미 해봤다
+        if (netApn == c)             continue;          // 바로 위에서 해봤다
+        if (millis() - start > LTE_APN_SWEEP_BUDGET_MS) {
+            LOGW(log, "[LTE] APN 순회 예산(%lus) 소진 — 남은 후보는 다음 시도에서\n",
+                 (unsigned long)(LTE_APN_SWEEP_BUDGET_MS / 1000UL));
+            break;
+        }
+        LOGI(log, "[LTE] APN 폴백 — 후보 시도: %s\n", c);
+        if (pdpTry(modem, c, log)) { out = c; return true; }
+    }
+
+    // 최후: 빈 APN(CGDCONT 를 비워 망이 정한 기본 APN 을 쓰게 한다). 요금제 지정 APN 을
+    // 모르는 상태에서 유일하게 남은 자동 수단이다.
+    // ⚠️ 성공해도 저장하지 않는다(빈 값은 "캐시 없음"과 구분되지 않는다) — 매 브링업마다
+    //    여기까지 오게 되므로, 붙었다면 콘솔에서 실제 APN 을 확인해 'apn set' 으로 굳힐 것.
+    if (millis() - start <= LTE_APN_SWEEP_BUDGET_MS) {
+        LOGI(log, "[LTE] APN 폴백 — 빈 APN(망 기본값) 시도\n");
+        if (pdpTry(modem, "", log)) {
+            out = "";
+            LOGW(log, "[LTE] 빈 APN 으로 접속됨 — 'at+cgdcont?' 로 실제 APN 확인 후 "
+                      "'apn set <값>' 으로 고정하면 이후 브링업이 빨라진다\n");
+            return true;
+        }
+    }
+    return false;
+}
+
 bool begin(TinyGsm &modem, Stream &log)
 {
     // 모뎀이 죽어 있으면 등록 폴링(최대 LTE_REG_TIMEOUT_MS)이 통째로 낭비다.
@@ -128,9 +192,13 @@ bool begin(TinyGsm &modem, Stream &log)
     // 접속 기술 적용 — 등록 폴링 전에. 값이 이미 맞으면 AT 1왕복으로 끝난다.
     applyNetworkMode(modem, log);
 
+    // 이번 브링업에 쓸 APN 결정 — 유심(ICCID/IMSI)을 보고 3사 중에서 고른다(apn.h).
+    // ⚠️ SIM 확인 뒤에 부른다(SIM_READY 여야 CIMI/CICCID 가 나온다).
+    String apn = Apn::select(modem, log);
+
     // APN을 등록 전에 지정 — 일부 통신사는 APN이 없으면 등록을 거부한다.
-    LOGD(log, "[LTE] set APN: %s\n", LTE_APN);
-    if (!modem.setNetworkAPN(LTE_APN)) {
+    LOGD(log, "[LTE] set APN: %s\n", apn.c_str());
+    if (!modem.setNetworkAPN(apn.c_str())) {
         LOGW(log, "[LTE] setNetworkAPN 실패 (계속 시도)\n");
     }
 
@@ -145,11 +213,13 @@ bool begin(TinyGsm &modem, Stream &log)
         }
         if (status == REG_DENIED) {
             LOGE(log, "[LTE] 등록 거부(DENIED) — APN/요금제/잔액 확인 필요\n");
+            Apn::noteBringupFailed();   // 통신사 미확정이면 다음 시도는 다른 후보로
             return false;
         }
         if (millis() - start > LTE_REG_TIMEOUT_MS) {
             LOGE(log, "[LTE] 등록 타임아웃(%lus) — 마지막 상태 %s\n",
                  LTE_REG_TIMEOUT_MS / 1000, regStr(status));
+            Apn::noteBringupFailed();
             return false;
         }
         // 검색 중에는 신호 세기를 함께 찍어 안테나/수신 문제를 조기 진단.
@@ -162,16 +232,21 @@ bool begin(TinyGsm &modem, Stream &log)
     LOGI(log, "[LTE] 망 등록됨 (%s, rssi=%d)\n", regStr(status), modem.getSignalQuality());
 
     // PDP(gprs) 컨텍스트 활성 — TinyGsmClient TCP가 사용할 데이터 세션.
-    LOGD(log, "[LTE] PDP 활성 시도...\n");
-    if (!modem.gprsConnect(LTE_APN, LTE_GPRS_USER, LTE_GPRS_PASS)) {
-        LOGE(log, "[LTE] PDP 활성 실패\n");
-        return false;
+    // 여기가 통신사가 실제로 갈리는 유일한 지점이다: 등록은 유심의 홈망으로 자동이지만,
+    // APN 이 틀리면 딱 이 단계에서 떨어진다. → 실패하면 폴백으로 다른 APN 을 훑는다.
+    if (!pdpTry(modem, apn.c_str(), log)) {
+        String worked;
+        if (!pdpSweep(modem, apn.c_str(), worked, log)) {
+            LOGE(log, "[LTE] PDP 활성 실패 — 모든 후보 APN 실패(현재 '%s')\n", apn.c_str());
+            LOGE(log, "[LTE] 요금제 지정 APN 이면 콘솔 'apn set <값>' 후 재부팅\n");
+            Apn::noteBringupFailed();
+            return false;
+        }
+        apn = worked;
     }
-
-    if (!modem.isGprsConnected()) {
-        LOGE(log, "[LTE] PDP 활성 직후 gprs 미연결\n");
-        return false;
-    }
+    // 붙은 APN 을 NVS 에 굳힌다 — 다음 부팅부터는 첫 시도에 바로 붙는다.
+    // (값이 그대로면 쓰지 않는다 — 재접속마다 플래시를 쓰지 않기 위해)
+    Apn::commit(apn.c_str(), log);
 
     // 모뎀 시계 UTC(TZ=0) NTP 동기 — cmd 만료판정/ack ts, telemetry ts용.
     // LG U+가 NITZ 시각을 안 줘서 CCLK가 기본값(1970→+2000=2070)이 되는 문제 보정.

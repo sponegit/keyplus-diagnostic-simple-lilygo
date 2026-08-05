@@ -77,12 +77,35 @@
 // ===========================================================================
 // LTE / MQTT 설정 (1단계)   설계: lte-mqtt-device-design.md
 // ===========================================================================
-// --- 증분 A: LTE 브링업 (서버 무관, LG U+ 유심 데이터패스 검증) ---
+// --- 증분 A: LTE 브링업 (서버 무관, 유심 데이터패스 검증) ---
 // LG U+ 표준 동적IP APN. 단말은 outbound 접속이라 정적 공인IP APN 불필요.
 // M2M 요금제 유심이면 개통 후 AT+CGDCONT? 로 실제 값 확인해 교체할 것.
+// ⚠️ 이 값은 이제 "기본값 겸 1순위 후보"다 — 실제 사용 APN 은 apn.h 가 유심을 보고 정한다.
 #define LTE_APN                     "internet.lguplus.co.kr"
 #define LTE_GPRS_USER               ""
 #define LTE_GPRS_PASS               ""
+
+// --- 통신사 자동 판별 (apn.h) ----------------------------------------------
+// 0 이면 예전 동작(LTE_APN 고정). 1 이면 유심을 보고 3사 중에서 고른다.
+// 통신사가 갈리는 지점은 APN 하나뿐이다 — 망 등록은 유심의 홈망으로 자동으로 된다.
+#define LTE_APN_AUTO                (1)
+// KT/SKT 후보 APN.
+// ⚠️ **실기 검증 안 됨**(KT/SKT 유심 미보유). 소매 LTE 표준값이라 M2M/IoT 요금제에서는
+//    사업자가 지정한 별도 APN 일 수 있다. 틀려도 PDP 실패 후 폴백(망 할당 APN → 후보
+//    순회)이 받아내고, 그래도 안 되면 콘솔 'apn set <값>' 으로 현장에서 박으면 된다.
+#define LTE_APN_SKT                 "lte.sktelecom.com"
+#define LTE_APN_KT                  "lte.ktfwing.com"
+// IMSI 앞 5자리(MCC+MNC). 한국 MCC=450. 확신 있는 주력 코드만 적는다 — 표에 없으면
+// 후보 순회로 흘러가 어차피 3개를 다 시도하므로, 틀린 코드를 넣는 것보다 안전하다.
+#define LTE_MNC_LGU                 "45006"
+#define LTE_MNC_SKT                 "45005"
+#define LTE_MNC_KT                  "45008"
+// APN 문자열 버퍼(3GPP 는 최대 100자지만 실사용은 30자 미만).
+#define LTE_APN_MAX_LEN             (64)
+// PDP 실패 후 후보 APN 순회에 쓸 총 예산(ms). 틀린 APN 은 대개 CGACT 에서 수 초 만에
+// 떨어지지만, NETOPEN 이 최대 75초까지 물릴 수 있다 — 여기서 끊어야 재시도 백오프가
+// 통째로 밀리지 않는다. 예산이 다하면 남은 후보는 다음 브링업에서 이어서 본다.
+#define LTE_APN_SWEEP_BUDGET_MS     (90000UL)
 // 망 등록 대기 상한 (콜드 등록은 수십 초 소요 가능)
 #define LTE_REG_TIMEOUT_MS          (90000UL)
 // 접속 기술 (AT+CNMP). 2=자동, 38=LTE only, 13=GSM only, 51=GSM+LTE.

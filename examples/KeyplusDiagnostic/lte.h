@@ -2,7 +2,7 @@
  * @file      lte.h
  * @brief     1단계 (증분 A) — A7670E LTE 브링업 모듈
  *
- * 유심(LG U+) 데이터패스 검증까지 담당한다: APN 설정 → 망 등록 → PDP(gprs)
+ * 유심 데이터패스 검증까지 담당한다: APN 결정(apn.h) → 망 등록 → PDP(gprs)
  * 컨텍스트 → 평문 HTTP GET 1회로 인터넷 도달 확인. 서버(EMQX)와 무관하게
  * "이 유심으로 인터넷이 되는가"를 검증하는 단계.
  *
@@ -27,7 +27,8 @@ struct LteStatus {
 
 namespace Lte {
 
-// 망 등록 + PDP 컨텍스트까지 올린다. APN은 config.h(LTE_APN) 사용.
+// 망 등록 + PDP 컨텍스트까지 올린다. APN 은 Apn::select 가 유심을 보고 정하고,
+// PDP 가 실패하면 망 할당 APN → 나머지 후보 순으로 훑는다(재등록 없이 PDP 만 재시도).
 // LTE_REG_TIMEOUT_MS 내 등록 실패 또는 등록 거부(REG_DENIED) 시 false.
 // 등록은 필드 실패 1순위(APN/신호)라 진행상황을 log에 출력한다.
 // ⚠️ 진입 시 modemAlive()로 모뎀 응답을 먼저 확인한다 — 무응답이면 등록 폴링
