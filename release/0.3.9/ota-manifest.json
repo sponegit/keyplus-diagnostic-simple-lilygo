@@ -1,0 +1,66 @@
+{
+  "product": "keyplus-diagnostic",
+  "board": "LILYGO T-A7670E (ESP32-WROVER, Flash 4MB / PSRAM 8MB)",
+  "version": "0.3.9",
+  "file": "keyplus-diagnostic-0.3.9.bin",
+  "size": 426640,
+  "md5": "d09ed5b31900b17f1e278dbda74d8afc",
+  "sha256": "3a7a00a389d64287b4bf55553ce773979da1f07fc9aa5178f8cd60bf9374d29d",
+  "partition": {
+    "table": "min_spiffs.csv",
+    "ota_slot_bytes": 1966080,
+    "usage_pct": 21.7,
+    "note": "spiffs 파티션(0x3D0000, 128KB)을 오프라인 링버퍼로 전용한다. SPIFFS 로 마운트하지 않는다 — 이후 파일시스템이 필요해지면 파티션 표 재설계가 선행돼야 한다."
+  },
+  "url": "https://REPLACE-ME/fw/keyplus-diagnostic-0.3.9.bin",
+  "verify": {
+    "device_checks": "md5",
+    "note": "단말은 md5만 검증한다(Update.setMD5). sha256은 배포 경로 무결성 확인용."
+  },
+  "headline": "고빈도(1Hz) 수집이 실제로는 0.5Hz 였다 — 페이싱·결측·시동 OFF 세 구멍을 함께 막는다. driving_events 가 한 건도 안 나오던 직접 원인.",
+  "changes_since_0_3_8": [
+    "샘플 페이싱을 고정 격자(직전 격자 + periodMs)로. 종전에는 다음 시각을 now 로 되잡아 실효 주기가 periodMs + 그 틱의 loop 지터였다",
+    "슬롯 유실 회수(retrySoon) — 폴 실패·차속 미응답이 슬롯을 쓰고 다음 격자까지 1초를 통째로 버리던 것을 150ms 뒤 재시도로 건진다. 격자를 당기기만 하므로 실패해도 원래 주기로 복귀하고 o 오프셋(반올림 초)도 흔들리지 않는다",
+    "PID 미응답을 0 이 아니라 결측으로 보존(Sample.miss) — 발행은 그 자리에 JSON null 을 싣는다. 집계·공회전 판정에서도 결측 초를 제외한다. miss 는 rpm(uint16_t) 정렬의 꼬리 패딩에 들어가 구조체가 6바이트 그대로다(RAM 증가 0, static_assert 로 고정)",
+    "시동 OFF 게이트 신설 — rpm 확정 0 + 정지가 5샘플 연속이면 수집을 중지하고 5초 주기로 재시동만 확인한다. 차량 CAN 은 시동을 꺼도 한동안 깨어 있어 obd.valid 로는 안 걸러졌다",
+    "fast 콘솔에 'PID 결측' 카운터(rpm/thr)와 '중지(시동 OFF)' 상태 표시 추가"
+  ],
+  "measurements_260806": {
+    "sample_rate_driving": "33샘플/분 (1.8초 간격)",
+    "sample_rate_parked": "58샘플/분 (1.03초 간격)",
+    "engine_off_tail": "13:06 시동 OFF 후 13:34 까지 28분간 수집 지속 — 그 시간대 1,942건 중 1,678건(86%)이 정차분",
+    "false_zero": "시속 48km 주행 중 rpm 0 인 telemetry_fast 행 존재",
+    "driving_events": "유효 주행 구간에서 산출 0건"
+  },
+  "server_prerequisites": {
+    "required": true,
+    "note": "keyplus-diagnostic-backend 의 numOrNull 수정이 **선행 또는 동시 배포**되어야 한다. Number(null)===0 때문에 단말이 보낸 결측 null 이 서버에서 도로 0 으로 굳는다 — 안 고치면 결측 보존이 통째로 무효다(펌웨어만 올려도 회귀는 없다. 0.3.8 과 같은 상태가 될 뿐이다)",
+    "commit": "fix(gateway): 고빈도 결측을 0 으로 굳히던 numOrNull — 계약을 null 로 연다"
+  },
+  "breaking": {
+    "uart_app": "없음 — [STAT] 한 줄 포맷 불변",
+    "status_payload": "없음",
+    "telemetry_fast_payload": "rpm/thr 배열에 null 이 섞일 수 있다. 배열 길이는 여전히 o 와 같다. 소비자가 null 을 0 으로 접으면 고친 것을 도로 되돌리는 셈이다",
+    "config_h": "FAST_RETRY_MS / FAST_ENGINE_OFF_STOP_N / FAST_ENGINE_OFF_PROBE_MS 신설, FW_VERSION 0.3.9"
+  },
+  "known_unfixed": [
+    "실차 검증 전이다. 페이싱 개선폭은 실측으로 확인해야 한다 — 다음 주행 후 시간당 telemetry_fast 건수가 1,800 에 가까운지, driving_events 가 산출되는지가 판정 기준이다",
+    "driving_events 가 여전히 0 이면 다음 의심 지점은 임계값(harsh_accel a_ms2=3.0 / min_s=2)이다. 이 릴리스 전에는 샘플 간격 때문에 임계 판정 자체가 성립하지 않아 임계값을 검증할 수 없었다",
+    "partner-api /vehicles 응답은 rpm/thr 을 요청할 때 건수가 줄 수 있다 — 요청 필드 중 하나라도 null 이면 그 초를 통째로 빼는 기존 계약 때문이다. 가짜 0 이 사라지는 것이라 방향은 맞다",
+    "시동 OFF 판정은 rpm 이 확정 0 일 때만 선다. rpm PID 를 아예 안 주는 차량에서는 게이트가 서지 않아 종전처럼 CAN 이 깨어 있는 동안 수집이 이어진다",
+    "0.3.8 의 known_unfixed(OTA HTTPS 다운로드 경로 SSL ctx 공유 미검증)와 0.3.7 의 known_unfixed(KT/SKT APN 미검증)는 그대로 유효하다"
+  ],
+  "limits": {
+    "cmd_payload_bytes": 1000,
+    "cmd_rx_queue": 4,
+    "fast_payload_bytes": 2048,
+    "fast_window_max": 64,
+    "fast_retry_ms": 150,
+    "fast_engine_off_stop_n": 5,
+    "fast_engine_off_probe_ms": 5000,
+    "offline_records": 2336,
+    "publish_min_gap_ms": 1000,
+    "apn_sweep_budget_ms": 90000,
+    "mqtt_rx_urc_stage_timeout_ms": 500
+  }
+}
