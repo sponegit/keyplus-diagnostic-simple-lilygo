@@ -27,11 +27,25 @@
 namespace Fast {
 
 // 창 원본 샘플. 온라인 발행 전용(오프라인에는 싣지 않는다).
+//
+// ⚠️ rpm/thr 은 `miss` 를 **반드시 같이 본다**. ECU 가 그 PID 에 답하지 않은 초에도
+//    구조체에는 0 이 들어 있다(값 자체를 비울 수 없다) — miss 비트가 서지 않은 0 만
+//    실측 0 이다. 이 구분이 없던 0.3.8 까지는 미응답이 0 으로 굳어 DB 에 실측처럼
+//    저장됐다(260806 실측: 시속 48km 주행 중 rpm 0 인 행). 그러면 "엔진 정지"와
+//    "값 못 읽음"이 영영 구분되지 않고, 서버 이벤트 판정도 가짜 0 을 실측으로 읽는다.
 struct Sample {
     uint8_t  off;   // 창 시작(t0) 기준 초 오프셋 — loop 지터로 건너뛴 초가 있다
-    uint8_t  spd;   // km/h
-    uint16_t rpm;
-    uint8_t  thr;   // %
+    uint8_t  spd;   // km/h — 항상 실측이다(미응답 초는 샘플로 치지 않는다)
+    uint16_t rpm;   // ⚠️ miss & MISS_RPM 이면 무의미
+    uint8_t  thr;   // % — ⚠️ miss & MISS_THR 이면 무의미
+    uint8_t  miss;  // 결측 비트(MissBit). 0 = 전 필드 실측
+};
+
+// Sample.miss 비트 — 해당 PID 가 이 초에 응답하지 않았다는 뜻.
+// 발행 시 그 자리에 JSON null 을 싣는다(mqtt.cpp publishFast).
+enum MissBit : uint8_t {
+    MISS_RPM = 1 << 0,
+    MISS_THR = 1 << 1,
 };
 
 /**
@@ -59,10 +73,21 @@ enum EvBit : uint8_t {
     EV_IDLING      = 1 << 3,
 };
 
-// 1Hz 샘플러. loop 매 틱 호출(내부에서 주기를 스스로 판정한다).
-// 접속 여부와 무관하게 돈다 — 오프라인에서도 집계는 만들어야 하고, CAN 은 모뎀과 별개 버스라
-// 모뎀 부담이 0 이다. Cfg::fastMs()==0 이면 아무 것도 하지 않는다(원격 비활성화).
-// obd 는 직전 전체 폴 결과 — 링크가 살아있을 때만(obd.valid) 고빈도 폴을 돌리는 게이트다.
+/**
+ * 1Hz 샘플러. loop 매 틱 호출(내부에서 주기를 스스로 판정한다).
+ *
+ * 접속 여부와 무관하게 돈다 — 오프라인에서도 집계는 만들어야 하고, CAN 은 모뎀과 별개
+ * 버스라 모뎀 부담이 0 이다. Cfg::fastMs()==0 이면 아무 것도 하지 않는다(원격 비활성화).
+ *
+ * 게이트가 **둘**이다. obd 는 직전 전체 폴 결과다.
+ *   · obd.valid  — CAN 링크. 끊기면 폴 자체가 무의미하다.
+ *   · 시동(rpm)  — 링크가 살아 있어도 엔진이 꺼졌으면 수집하지 않는다.
+ * 링크와 시동을 나누는 근거는 KeyplusDiagnostic.ino 의 status 전이 판정과 같다 —
+ * 키가 ACC/ON 위치면 시동이 꺼져 있어도 CAN 은 살아 있고 그때 rpm 은 0 이다.
+ *
+ * 샘플 시각은 **고정 격자**다(직전 격자 + periodMs). now 로 되잡으면 loop 지터가
+ * 매 주기 누적된다 — 자세한 근거는 fast.cpp 의 페이싱 주석.
+ */
 void tick(uint32_t now, const Obd2::Data &obd, Stream &log);
 
 // 현재 창에 모인 원본 샘플 수.

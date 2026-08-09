@@ -533,13 +533,24 @@ bool publishFast(TinyGsm &modem, const Fast::Sample *win, int n, uint32_t t0, St
     for (int i = 0; i < n && p < (int)sizeof(buf); i++)
         p += snprintf(buf + p, sizeof(buf) - p, "%s%u", i ? "," : "", win[i].spd);
 
+    // ⚠️ ECU 가 그 초에 답하지 않은 PID 는 **null** 로 싣는다. 0 으로 채우면 서버가
+    //    "엔진 정지"로 읽고 DB 에 실측처럼 굳는다(0.3.8 까지의 동작 — 시속 48km 주행
+    //    중 rpm 0 인 행이 실제로 남았다). 배열 길이는 그대로 o 와 같다.
     p += snprintf(buf + p, sizeof(buf) - p, "],\"rpm\":[");
-    for (int i = 0; i < n && p < (int)sizeof(buf); i++)
-        p += snprintf(buf + p, sizeof(buf) - p, "%s%u", i ? "," : "", win[i].rpm);
+    for (int i = 0; i < n && p < (int)sizeof(buf); i++) {
+        if (win[i].miss & Fast::MISS_RPM)
+            p += snprintf(buf + p, sizeof(buf) - p, "%snull", i ? "," : "");
+        else
+            p += snprintf(buf + p, sizeof(buf) - p, "%s%u", i ? "," : "", win[i].rpm);
+    }
 
     p += snprintf(buf + p, sizeof(buf) - p, "],\"thr\":[");
-    for (int i = 0; i < n && p < (int)sizeof(buf); i++)
-        p += snprintf(buf + p, sizeof(buf) - p, "%s%u", i ? "," : "", win[i].thr);
+    for (int i = 0; i < n && p < (int)sizeof(buf); i++) {
+        if (win[i].miss & Fast::MISS_THR)
+            p += snprintf(buf + p, sizeof(buf) - p, "%snull", i ? "," : "");
+        else
+            p += snprintf(buf + p, sizeof(buf) - p, "%s%u", i ? "," : "", win[i].thr);
+    }
 
     p += snprintf(buf + p, sizeof(buf) - p, "]}");
 
