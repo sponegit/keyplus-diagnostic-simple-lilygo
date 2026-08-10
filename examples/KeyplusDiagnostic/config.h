@@ -202,6 +202,19 @@
 //    4단계 URC를 연달아 파싱하는데, 래퍼가 각 단계마다 이 타임아웃을 쓴다.
 //    중간에 한 번이라도 끊기면 메시지를 통째로 놓친다 → 래퍼 기본값과 같은 100ms 유지.
 #define MQTT_HANDLE_TIMEOUT_MS      (100)
+// --- 접속 실패가 loop 를 잡고 있는 시간 --------------------------------------
+// ⚠️ 이 세 값은 여기가 아니라 lib/TinyGSM/src/TinyGsmMqttA76xx.h 상단에 있다.
+//    래퍼가 config.h 를 include 하지 않고, mqtt.h 가 config.h 보다 먼저 TinyGSM 을
+//    끌어오기 때문이다 — 여기에 같은 이름을 두면 래퍼의 #ifndef 기본값이 이미 이겨서
+//    조용히 무시된다. 바꾸려면 그 헤더에서 고치거나 빌드 플래그(-D)로 덮을 것.
+//      TINY_GSM_MQTT_PROMPT_TIMEOUT_MS       (3000)  CCERTDOWN 의 '>' 프롬프트
+//      TINY_GSM_MQTT_CONNECT_ACK_TIMEOUT_MS  (5000)  CMQTTCONNECT 접수 OK
+//      TINY_GSM_MQTT_CERT_REUPLOAD_MIN_MS   (60000)  실패 후 CA 재업로드 최소 간격
+//    실측(260810 로그2) 재접속 실패 1건이 loop 를 11~44초 멈췄다. 그 구간에 OBD 5초
+//    폴·GPS 10초 폴이 통째로 빠지고 차키 응답도 밀린다 — 오프라인 수집의 존재 이유가
+//    "못 보내는 동안에도 계속 모은다"인데 정작 그때 수집이 멈추는 셈이었다.
+//    ⚠️ TLS 핸드셰이크·CONNACK 대기(+CMQTTCONNECT URC, 30초)는 줄이지 않았다.
+//       LTE 위 TLS 는 5~10초가 정상이라 줄이면 멀쩡한 접속이 실패한다.
 // --- 발행 완료 확인 (P3) ----------------------------------------------------
 // 래퍼 mqtt_publish() 는 AT+CMQTTPUB 이 OK 를 내면 곧바로 true 를 낸다. 실제 전달
 // 결과는 비동기 URC `+CMQTTPUB: <idx>,<err>` 에만 있고, 원본 래퍼는 그걸 파싱하지 않아

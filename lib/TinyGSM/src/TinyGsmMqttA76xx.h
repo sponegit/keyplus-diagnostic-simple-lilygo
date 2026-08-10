@@ -17,6 +17,31 @@
 // 그 왕복을 그만큼 붙잡는다 — 넉넉하되 짧게.
 #define TINY_GSM_MQTT_RX_URC_TIMEOUT_MS 500
 
+// --- mqtt_connect() 대기 상한 ------------------------------------------------
+// 접속이 실패하는 동안 loop 가 통째로 멈춘 시간이 여기서 나온다. 실측(260810 로그2,
+// OBD 5초 폴·GPS 10초 폴·[STAT] 30초 출력이 사라진 구간으로 산출): 1회차 11초,
+// 마지막 44초. 오프라인 버퍼의 존재 이유가 "못 보내는 동안에도 계속 수집한다"인데
+// 정작 그 구간에서 수집이 45초씩 멈췄다 — 차키 응답도 같이 밀린다.
+//   ⚠️ 값을 나눈 기준은 "무엇을 기다리는가"다. 망 왕복을 기다리는 자리는 줄이면
+//      멀쩡한 접속을 죽인다. 로컬 응답만 줄인다.
+//
+// 모뎀이 페이로드를 받겠다고 내는 '>' 프롬프트. 망이 아니라 모뎀 로컬 응답이라
+// 정상이면 수십 ms 안에 온다. 10초를 기다리는 건 "안 올 것"을 기다리는 시간이다.
+#ifndef TINY_GSM_MQTT_PROMPT_TIMEOUT_MS
+#define TINY_GSM_MQTT_PROMPT_TIMEOUT_MS 3000UL
+#endif
+// AT+CMQTTCONNECT 직후의 OK — "모뎀이 명령을 접수했다"는 로컬 응답이다.
+// ⚠️ TLS 핸드셰이크·CONNACK 를 기다리는 건 그 **다음** waitResponse("+CMQTTCONNECT: ")
+//    이고 그건 30초 그대로 둔다. LTE 위 TLS 는 5~10초가 정상이라 그쪽을 줄이면
+//    정상 접속이 실패한다.
+#ifndef TINY_GSM_MQTT_CONNECT_ACK_TIMEOUT_MS
+#define TINY_GSM_MQTT_CONNECT_ACK_TIMEOUT_MS 5000UL
+#endif
+// 접속 실패 뒤 CA PEM 을 다시 올리기까지의 최소 간격. 아래 noteConnectFail 주석 참고.
+#ifndef TINY_GSM_MQTT_CERT_REUPLOAD_MIN_MS
+#define TINY_GSM_MQTT_CERT_REUPLOAD_MIN_MS 60000UL
+#endif
+
 // mqtt_connect() 실패 지점 식별자 — 모뎀이 주는 +CMQTTCONNECT err(0 이상)와 겹치지
 // 않게 음수로 둔다. 응용이 "CA 업로드에서 막혔나 / 브로커가 거절했나"를 가르는 근거다.
 // ⚠️ enum 이다(클래스 static const 아님) — C++11 에서 odr-use 시 별도 정의가 필요 없다.
@@ -61,6 +86,7 @@ protected:
     // 재접속마다 반복할 이유가 없다 — PEM 전송(UART) + 플래시 쓰기를 매번 되풀이하면
     // 재접속이 느려지고 모뎀 플래시 수명만 깎인다.
     bool     _certUploaded  = false;
+    uint32_t _certUploadedAt = 0;      // 마지막 업로드 시각(millis) — 재업로드 페이싱 기준
 
     bool     _inRxUrc       = false;   // 수신 URC 블록을 읽는 중(재진입 가드)
 
@@ -75,6 +101,22 @@ protected:
     // 동안 원인을 좁힐 근거가 하나도 남지 않았다.
     //   0 이상 = 모뎀이 준 +CMQTTCONNECT 의 err (0=성공), 음수 = 아래 단계 식별자.
     int16_t  _lastConnErr   = MQTT_CONN_ERR_NONE;
+
+    // CONNECT 단계 실패 처리 — 실패 지점을 남기고, 인증서 캐시는 "다시 올릴 만할 때"만 비운다.
+    // 종전에는 CONNECT 실패마다 무조건 비웠다. 의도는 "CA 가 잘못 올라갔으면 다음 시도가
+    // 다시 올려 스스로 회복"인데, 15초 백오프에서는 실패 1회당 1.9KB PEM 을 모뎀 플래시에
+    // 다시 쓰는 것과 같다 — 실측 25분 교착이면 약 100회다. 그 교착은 결국 재부팅으로만
+    // 풀렸으니 재업로드는 회복에 기여하지 못했고, 모뎀 플래시 수명만 깎았다.
+    //   → 회복 경로는 남기되 최소 간격을 둔다(백오프 15초 기준 약 4회에 1번).
+    // ⚠️ 이 함수는 CONNECT 단계 실패에서만 부른다. 그 앞 단계(ACCQ/LWT)는 인증서를 쓰지도
+    //    않고 죽은 것이라 캐시를 비울 근거가 없다 — 거기서는 _lastConnErr 만 세운다.
+    void noteConnectFail(int16_t err)
+    {
+        _lastConnErr = err;
+        if ((uint32_t)(millis() - _certUploadedAt) >= TINY_GSM_MQTT_CERT_REUPLOAD_MIN_MS) {
+            _certUploaded = false;
+        }
+    }
 
 public:
     // 마지막 mqtt_connect() 결과. 0=성공, 음수는 위 MQTT_CONN_ERR_* 단계 식별자,
@@ -194,7 +236,7 @@ public:
                 // 실패하면 플래그를 세우지 않아 다음 시도가 자동으로 다시 올린다.
                 if (!_certUploaded) {
                     thisModem().sendAT("+CCERTDOWN=\"ca_cert.pem\",", strlen(this->cert_pem));
-                    if (thisModem().waitResponse(10000UL, ">") == 1) {
+                    if (thisModem().waitResponse(TINY_GSM_MQTT_PROMPT_TIMEOUT_MS, ">") == 1) {
                         thisModem().stream.write(this->cert_pem);
                     }
                     if (thisModem().waitResponse() != 1) {
@@ -202,7 +244,8 @@ public:
                         _lastConnErr = MQTT_CONN_ERR_CA;
                         return false;
                     }
-                    _certUploaded = true;
+                    _certUploaded   = true;
+                    _certUploadedAt = millis();
                 }
                 // ⚠️ CSSLCFG 는 매번 보낸다. 파일은 플래시에 남지만 SSL 컨텍스트 설정은
                 //    휘발성이라, 모뎀이 리셋되면 "어느 파일을 CA 로 쓸지"가 사라진다.
@@ -212,7 +255,7 @@ public:
             }
             if (this->client_cert_pem) {
                 thisModem().sendAT("+CCERTDOWN=\"cert.pem\",", strlen(this->client_cert_pem));
-                if (thisModem().waitResponse(10000UL, ">") == 1) {
+                if (thisModem().waitResponse(TINY_GSM_MQTT_PROMPT_TIMEOUT_MS, ">") == 1) {
                     thisModem().stream.write(this->client_cert_pem);
                 }
                 if (thisModem().waitResponse() != 1) {
@@ -226,7 +269,7 @@ public:
             }
             if (this->client_key_pem) {
                 thisModem().sendAT("+CCERTDOWN=\"key_cert.pem\",", strlen(this->client_key_pem));
-                if (thisModem().waitResponse(10000UL, ">") == 1) {
+                if (thisModem().waitResponse(TINY_GSM_MQTT_PROMPT_TIMEOUT_MS, ">") == 1) {
                     thisModem().stream.write(this->client_key_pem);
                 }
                 if (thisModem().waitResponse() != 1) {
@@ -283,8 +326,9 @@ public:
         }
 
         // Set MQTT3.1.1 , Default use MQTT 3.1
+        // 프로토콜 버전 설정은 모뎀 로컬 설정이다 — 망을 타지 않는데 30초를 기다렸다.
         thisModem().sendAT("+CMQTTCFG=\"version\",", clientIndex, ",4");
-        thisModem().waitResponse(30000UL);
+        thisModem().waitResponse(TINY_GSM_MQTT_CONNECT_ACK_TIMEOUT_MS);
 
         if (will_msg && will_topic) {
             if (!mqttWillTopic(clientIndex, will_topic)) {
@@ -305,15 +349,16 @@ public:
         // ⚠️ 접속이 실패하면 인증서 캐시를 무효화한다. 모뎀 파일이 사라졌거나(공장초기화,
         //    플래시 손상) CA 가 잘못 올라간 경우, 캐시를 믿고 재업로드를 건너뛰면 영영
         //    TLS 가 안 붙는다 — 다음 시도가 다시 올리게 해 스스로 회복시킨다.
-        if (thisModem().waitResponse(30000UL) != 1) {
-            _certUploaded = false;
-            _lastConnErr  = MQTT_CONN_ERR_CMD;
+        // 명령 접수(OK) — 로컬 응답이다. 종전 30초는 실패 시 그 시간을 통째로 버렸다.
+        if (thisModem().waitResponse(TINY_GSM_MQTT_CONNECT_ACK_TIMEOUT_MS) != 1) {
+            noteConnectFail(MQTT_CONN_ERR_CMD);
             return false;
         }
 
+        // ⚠️ 여기만은 30초를 유지한다 — TLS 핸드셰이크 + CONNACK 왕복이라 LTE 에서
+        //    5~10초가 정상이다. 줄이면 멀쩡한 접속을 실패로 만든다.
         if (thisModem().waitResponse(30000UL, "+CMQTTCONNECT: ") != 1) {
-            _certUploaded = false;
-            _lastConnErr  = MQTT_CONN_ERR_NO_URC;
+            noteConnectFail(MQTT_CONN_ERR_NO_URC);
             return false;
         }
         thisModem().streamSkipUntil(',');
@@ -322,8 +367,7 @@ public:
         //    줄 끝까지 정수로 읽어 값도 보존하고 스트림도 깨끗이 비운다.
         int res = thisModem().streamGetIntBefore('\n');
         if (res != 0) {
-            _certUploaded = false;
-            _lastConnErr  = (int16_t)res;
+            noteConnectFail((int16_t)res);
             return false;
         }
         _lastConnErr = 0;
@@ -665,7 +709,8 @@ protected:
         // +CMQTTWILLTOPIC: <client_index>,<req_length>
         thisModem().sendAT("+CMQTTWILLTOPIC=", clientIndex, ',', strlen(topic));
 
-        int response = thisModem().waitResponse(10000UL, ">");
+        // 로컬 '>' 프롬프트 — CCERTDOWN 과 같은 부류다(헤더 상단 주석).
+        int response = thisModem().waitResponse(TINY_GSM_MQTT_PROMPT_TIMEOUT_MS, ">");
         if (response != 1) {
             DBG("Error: Did not receive expected '>' prompt, response: ", response);
             return false;
@@ -695,7 +740,8 @@ protected:
         // +CMQTTWILLMSG: <client_index>,<req_length>,<qos>
         thisModem().sendAT("+CMQTTWILLMSG=", clientIndex, ',', strlen(message), ',', qos);
 
-        int response = thisModem().waitResponse(10000UL, ">");
+        // 로컬 '>' 프롬프트 — CCERTDOWN 과 같은 부류다(헤더 상단 주석).
+        int response = thisModem().waitResponse(TINY_GSM_MQTT_PROMPT_TIMEOUT_MS, ">");
         if (response != 1) {
             DBG("Error: Did not receive expected '>' prompt, response: ", response);
             return false;
