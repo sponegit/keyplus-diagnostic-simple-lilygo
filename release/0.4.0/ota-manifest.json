@@ -1,0 +1,81 @@
+{
+  "product": "keyplus-diagnostic",
+  "board": "LILYGO T-A7670E (ESP32-WROVER, Flash 4MB / PSRAM 8MB)",
+  "version": "0.4.0",
+  "file": "keyplus-diagnostic-0.4.0.bin",
+  "size": 428112,
+  "md5": "d4407b410814d6342400dfd6d7859152",
+  "sha256": "9809c0b1f9d36680f2f36e063b7933c97f112d7b68f4f5e86452d0d62bc984f5",
+  "partition": {
+    "table": "min_spiffs.csv",
+    "ota_slot_bytes": 1966080,
+    "usage_pct": 21.8,
+    "note": "spiffs 파티션(0x3D0000, 128KB)을 오프라인 링버퍼로 전용한다. SPIFFS 로 마운트하지 않는다 — 이후 파일시스템이 필요해지면 파티션 표 재설계가 선행돼야 한다."
+  },
+  "url": "https://REPLACE-ME/fw/keyplus-diagnostic-0.4.0.bin",
+  "verify": {
+    "device_checks": "md5",
+    "note": "단말은 md5만 검증한다(Update.setMD5). sha256은 배포 경로 무결성 확인용."
+  },
+  "versioning_note": "0.3.9 다음을 0.3.10 이 아니라 0.4.0 으로 올렸다. FW_VERSION 은 telemetry meta·프로비저닝 body·OTA 타깃으로 그대로 바깥에 나가는데, 버전을 문자열로 정렬하는 소비자가 하나라도 있으면 \"0.3.10\" < \"0.3.9\" 로 역전된다. 앞으로도 패치 자리는 한 자리로 유지한다.",
+  "headline": "MQTT 가 한번 못 붙기 시작하면 재부팅 전까지 영영 못 붙었다. 승격 경로가 아예 없어서다 — 자력 복구 경로를 넣고, 실패가 loop 를 45초씩 멈추던 것도 함께 막는다.",
+  "changes_since_0_3_9": [
+    "세션 접속(CMQTTCONNECT) 연속 실패를 세는 카운터 신설. 종전에는 이 축을 아무도 세지 않아 승격 트리거가 하나도 걸리지 않았다 — Lte::isUp()(등록+PDP)이 참이라 LTE 재브링업·리셋 경로에 진입하지 않고, s_serviceStarted 가 참이라 mqtt_begin 을 건너뛰어 serviceStartFails 는 영원히 0 이었다",
+    "단계 승격: ACCQ 실패는 즉시 CMQTT 서비스 재시작 / 4회 연속(약 1분)이면 데이터패스 실검증(HTTP GET) 후 PDP 재브링업 또는 서비스 재시작 / 그 뒤 4회 더(약 2분)면 모뎀 하드 리셋",
+    "부팅 때만 하던 데이터패스 실검증을 교착 판정에 재사용한다. Lte::isUp() 은 등록·PDP 만 보므로 캐리어가 세션을 반쯤 놓은 '좀비 PDP'(등록은 살아있고 패킷은 안 나감)를 통과시킨다",
+    "mqtt_connect() 의 여덟 갈래 실패에 지점 식별자(MQTT_CONN_ERR_*)를 붙였다. 종전에는 전부 같은 한 줄이라 CA·인증·망 중 무엇인지 좁힐 근거가 없었다 — 실패 로그가 'err=-13 (ACCQ) — 연속 3회' 로 나간다",
+    "+CMQTTCONNECT 의 err 을 stream.read() 한 바이트로 읽던 버그 수정. err 이 두 자리(19, 21 등)면 뒷자리가 스트림에 남아 다음 waitResponse 를 오염시켰다 → streamGetIntBefore 로 교체",
+    "재접속 실패의 대기 상한 축소 — 모뎀 로컬 '>' 프롬프트 5곳 10초→3초, 로컬 설정 OK 2곳 30초→5초. TLS 핸드셰이크·CONNACK 대기(+CMQTTCONNECT URC, 30초)는 그대로 둔다",
+    "접속 실패마다 CA PEM 을 모뎀 플래시에 다시 쓰던 것을 최소 60초 간격으로 페이싱. ACCQ/LWT 실패는 인증서를 쓰기도 전에 죽은 것이라 애초에 캐시를 비우지 않는다",
+    "콘솔 status server 에 '연속 접속실패 N회 (M회에 …)' 와 '마지막 실패 <err>' 추가 — 백오프 포화 상태에서 재부팅 없이 원인을 좁힐 수 있어야 한다"
+  ],
+  "measurements_260810": {
+    "episode_a": "09:12 무렵부터 09:38 사용자 재부팅까지 25분 넘게 mqtt=OFF. 15초 간격으로 같은 실패 한 줄만 반복, 미전송 백로그 1,507건",
+    "episode_b": "재부팅 후 7분 26초 정상(telemetry seq 0~14, 백필 약 250건 배출, 1507→1263) → 09:46:10 부터 로그 끝(09:49:14)까지 다시 영구 실패",
+    "recovery": "두 번 다 재부팅으로만 풀렸다. 같은 CA·비번·APN 으로 5초 만에 재접속 — 크리덴셜이 아니라 모뎀 쪽 상태 문제",
+    "modem_alive": "미접속 구간에도 [STAT] 이 rssi 를, [PWR] 이 온도를 AT 로 읽고 있었다. 모뎀은 멀쩡히 응답 중이었고 rssi 24~29, vbat 4274~4286mV, 34~37C — 망·전원·발열 모두 정상",
+    "loop_stall": "실패 1건이 loop 를 11초(1회차)~44초(마지막) 멈췄다. 그 구간에 OBD 5초 폴·GPS 10초 폴·[STAT] 30초 출력이 통째로 빠진다",
+    "failure_fingerprint": "1회차 11초 → 후반 1초 미만. 타임아웃에서 즉시 ERROR 로 바뀌었다는 뜻이다. mqtt_connect 안에서 10초 대기는 CCERTDOWN 의 '>' 프롬프트뿐이라 CA 업로드(err=-10) 또는 ACCQ(err=-13) 단계로 좁혀지나, 에러코드 없는 로그라 확정 불가"
+  },
+  "server_prerequisites": {
+    "required": false,
+    "note": "서버 변경 없이 단독 배포 가능하다. 페이로드·토픽·계약 변경이 없다."
+  },
+  "breaking": {
+    "uart_app": "[STAT] 한 줄 포맷 불변. 단 '[MQTT] 접속 실패' 줄이 'err=<n> (<이름>) — 연속 <n>회' 를 달고 나간다 — 그 줄을 문자열로 매칭하던 도구가 있으면 확인 필요",
+    "status_payload": "없음",
+    "telemetry_payload": "없음",
+    "console": "status server 출력에 미접속 시 '연속 접속실패'·'마지막 실패' 두 줄 추가",
+    "config_h": "MQTT_CONNECT_FAIL_BEFORE_RESTART / MQTT_CONNECT_FAIL_BEFORE_RESET 신설, FW_VERSION 0.4.0",
+    "tinygsm_fork": "lib/TinyGSM 포크 변경 있음(mqtt_connect 실패 지점 기록, 대기 상한, 인증서 재업로드 페이싱). 포크를 갱신하면 이 변경이 덮인다"
+  },
+  "limits": {
+    "cmd_payload_bytes": 1000,
+    "cmd_rx_queue": 4,
+    "fast_payload_bytes": 2048,
+    "fast_window_max": 64,
+    "fast_retry_ms": 150,
+    "fast_engine_off_stop_n": 5,
+    "fast_engine_off_probe_ms": 5000,
+    "offline_records": 2336,
+    "publish_min_gap_ms": 1000,
+    "apn_sweep_budget_ms": 90000,
+    "mqtt_rx_urc_stage_timeout_ms": 500,
+    "mqtt_reconnect_cap_ms": 15000,
+    "mqtt_service_fail_before_reset": 3,
+    "mqtt_connect_fail_before_restart": 4,
+    "mqtt_connect_fail_before_reset": 4,
+    "mqtt_prompt_timeout_ms": 3000,
+    "mqtt_connect_ack_timeout_ms": 5000,
+    "mqtt_connect_urc_timeout_ms": 30000,
+    "mqtt_cert_reupload_min_ms": 60000
+  },
+  "known_unfixed": [
+    "실차 검증 전이다. 가장 먼저 볼 것은 정상 접속 회귀다 — 부팅에서 [MQTT] 접속됨 까지가 종전과 같은 5초 안팎이어야 한다. 늘거나 실패하면 유지하기로 한 TLS 핸드셰이크 대기(30초)를 잘못 건드린 것이다",
+    "260810 교착의 정확한 실패 지점은 미확정이다. 재부팅으로 회복됐다는 사실이 '모뎀 쪽 상태'까지만 말해주고, 그 로그에는 에러코드가 없어 CA 업로드(-10)와 ACCQ(-13) 중 하나로만 좁혔다. 이 릴리스가 그 근거를 남기므로 재현되면 특정된다",
+    "260810 로그2 에 '[MQTT] 연결 끊김' 이 0회다. s_connected 를 내리는 모든 경로가 LOGD 이상으로 한 줄씩 남기는데(FAILED 0, 무응답 0, 리셋 정황 0) 끊긴 흔적이 없다 — 코드상 성립할 수 없는 조합이라 캡처 유실로 보고 있으나 확정하지 못했다. 다음 캡처에서 이 줄이 정상적으로 찍히는지 확인이 필요하다",
+    "Mqtt::stopService() 는 CMQTTDISC/REL/STOP 3연속 AT 라 최악 십수 초 블로킹이다. 승격당 1회(약 1분에 한 번)뿐이라 이번에는 감수했다",
+    "승격이 모뎀 하드 리셋까지 갔는데도 안 붙는 경우는 다루지 않는다. 그 뒤로는 종전처럼 15초 백오프 재시도만 돈다",
+    "0.3.9 의 known_unfixed(고빈도 수집 실차 미검증, driving_events 임계값 미검증), 0.3.8 의 known_unfixed(OTA HTTPS 다운로드 경로 SSL ctx 공유 미검증), 0.3.7 의 known_unfixed(KT/SKT APN 미검증)는 그대로 유효하다"
+  ]
+}
