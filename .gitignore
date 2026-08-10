@@ -5,4 +5,4 @@ script
 build
 extras
 images/product/jpeg/*
-
+logs/
