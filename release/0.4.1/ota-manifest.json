@@ -1,0 +1,83 @@
+{
+  "product": "keyplus-diagnostic",
+  "board": "LILYGO T-A7670E (ESP32-WROVER, Flash 4MB / PSRAM 8MB)",
+  "version": "0.4.1",
+  "file": "keyplus-diagnostic-0.4.1.bin",
+  "size": 428112,
+  "md5": "9cb3a280205aba8cfda087a337240cc0",
+  "sha256": "32fb76fc1e22a2a084d5a6c213adf329962e9dd5b38773331d7b546a17d68498",
+  "partition": {
+    "table": "min_spiffs.csv",
+    "ota_slot_bytes": 1966080,
+    "usage_pct": 21.8,
+    "note": "spiffs 파티션(0x3D0000, 128KB)을 오프라인 링버퍼로 전용한다. SPIFFS 로 마운트하지 않는다 — 이후 파일시스템이 필요해지면 파티션 표 재설계가 선행돼야 한다."
+  },
+  "url": "https://REPLACE-ME/fw/keyplus-diagnostic-0.4.1.bin",
+  "verify": {
+    "device_checks": "md5",
+    "note": "단말은 md5만 검증한다(Update.setMD5). sha256은 배포 경로 무결성 확인용."
+  },
+  "versioning_note": "패치 자리는 한 자리로 유지한다. FW_VERSION 이 telemetry meta·프로비저닝 body·OTA 타깃으로 그대로 바깥에 나가는데, 버전을 문자열로 정렬하는 소비자가 있으면 두 자리 패치에서 역전된다(0.3.9 다음을 0.3.10 이 아니라 0.4.0 으로 올린 이유).",
+  "headline": "백필이 직전 발행의 QoS1 ACK 를 안 기다리고 나갔다. 코드가 스스로 '겹치면 세션이 깨진다'고 적어 둔 규칙을 정작 백필만 안 지키고 있었다.",
+  "changes_since_0_4_0": [
+    "backfillGateOpen 에 Mqtt::pubAckPending() 게이트 추가. 종전 가드는 1초 벽시계 타이머뿐이라 QoS1 PUBACK 이 1초를 넘으면 다음 백필이 그 위로 겹쳐 나갔다. P3(0.3.8)가 결과 URC(+CMQTTPUB)를 이미 파싱해 두고 구독 경로는 그 신호를 쓰는데 백필만 안 썼다"
+  ],
+  "scope_note": {
+    "why_backfill_only": "초당 1건이 몇 분씩 이어지는 발행 경로는 백필뿐이다. telemetry(30초)·fast·status 는 간격이 넓어 겹칠 여지가 사실상 없다",
+    "starvation": "굶지 않는다 — 결과 URC 가 끝내 안 오면 MQTT_PUB_ACK_TIMEOUT_MS(8초)에 pubAckOverdue 가 세션을 사망 처리하므로 대기가 그 안에서 끝난다",
+    "ordering": "게이트 호출 지점(publish 체인)이 Mqtt::handle() 뒤라 URC 가 펌핑된 뒤 평가된다 — pubAckOverdue 와 같은 순서 요구다"
+  },
+  "measurements_0_4_0_field": {
+    "session": "260810 10:35:40 부팅 ~ 11:00:41, 약 25분 주행",
+    "ota": "428,112B 다운로드 48초, 검증 통과, mark_valid OK, ota ack done=0.4.0 — OTA 전 과정 정상",
+    "connect_time": "begin: 10:36:05 → 접속됨 10:36:11 = 6초 (0.3.9 는 5초) — 대기 상한 축소에 따른 정상 접속 회귀 없음",
+    "root_cause_confirmed": "발병 3회 모두 err=-13 (ACCQ). 세션이 끊긴 뒤 모뎀이 CMQTT 클라이언트 0 을 놓지 않아 CMQTTREL 이 안 먹고 ACCQ 가 '이미 점유'로 거부한다 — 0.3.9 가 재부팅 전까지 못 빠져나온 이유가 이걸로 설명된다",
+    "recovery": "3회 모두 ACCQ 지름길에서 12~13초에 복구(종전 무한). 승격 2단계(데이터패스 검증)·3단계(모뎀 리셋)는 0회 — 지름길에서 전부 끝났다",
+    "loop_stall": "OBD 5초 폴 간격 분포 5초 243회 / 최대 10초. 재접속 구간의 9~10초가 평시 발행 버스트(8~9초)와 구분되지 않는다 — 종전 11초·44초 정지 해소",
+    "disconnect_log": "0.3.9 로그에서 안 보이던 '[MQTT] 연결 끊김' 이 정상 출력되고 바로 앞에 '[BUF] 백필 ... FAILED' 가 찍혔다 — 그 부재는 캡처 유실이 맞았고 세션 사망 경로에 구멍은 없다",
+    "publish_stats": "발행 847건(백필 751 / telemetry 48 / fast 48) 중 실패 3건 = 0.35%. 발병 시 rssi 31(최상)"
+  },
+  "server_prerequisites": {
+    "required": false,
+    "note": "서버 변경 없이 단독 배포 가능하다. 페이로드·토픽·계약 변경이 없다."
+  },
+  "breaking": {
+    "uart_app": "없음 — [STAT] 한 줄 포맷 불변",
+    "status_payload": "없음",
+    "telemetry_payload": "없음",
+    "console": "없음",
+    "config_h": "FW_VERSION 0.4.1 뿐. 새 상수 없음",
+    "behavior": "백필 배출이 PUBACK 지연 구간에서 그만큼 느려질 수 있다. 백로그 소진 시간이 늘 수 있으나 발행 성공률과 세션 안정성을 우선한다"
+  },
+  "limits": {
+    "cmd_payload_bytes": 1000,
+    "cmd_rx_queue": 4,
+    "fast_payload_bytes": 2048,
+    "fast_window_max": 64,
+    "fast_retry_ms": 150,
+    "fast_engine_off_stop_n": 5,
+    "fast_engine_off_probe_ms": 5000,
+    "offline_records": 2336,
+    "publish_min_gap_ms": 1000,
+    "backfill_min_gap_ms": 1000,
+    "mqtt_pub_ack_timeout_ms": 8000,
+    "apn_sweep_budget_ms": 90000,
+    "mqtt_rx_urc_stage_timeout_ms": 500,
+    "mqtt_reconnect_cap_ms": 15000,
+    "mqtt_service_fail_before_reset": 3,
+    "mqtt_connect_fail_before_restart": 4,
+    "mqtt_connect_fail_before_reset": 4,
+    "mqtt_prompt_timeout_ms": 3000,
+    "mqtt_connect_ack_timeout_ms": 5000,
+    "mqtt_connect_urc_timeout_ms": 30000,
+    "mqtt_cert_reupload_min_ms": 60000
+  },
+  "known_unfixed": [
+    "⚠️ 이 변경이 260810 발병의 원인을 고친다는 근거는 없다. 0.4.0 실측에서 3회 발병이 모두 백필 발행에서 터졌지만 전체 발행의 89%가 백필이라 우연과 구분되지 않는다(실패율 0.35%, 발병 시 rssi 31, 마지막 발병 뒤에는 백필을 계속 돌리며 11분간 무사). 코드가 스스로 정한 규칙을 지키지 않던 자리를 메우는 변경이다",
+    "판정 기준이 명확하지 않다. 발병이 25분에 3회로 산발적이라 개선 여부를 보려면 비슷한 주행 조건에서 여러 세션의 발병 빈도를 비교해야 한다 — 한 번 타보고 안 터졌다고 고쳐진 것이 아니다",
+    "세션이 왜 끊기는지(모뎀이 CMQTT 클라이언트를 놓지 않는 근본 원인)는 여전히 미규명이다. 단말 로그로는 '모뎀이 클라이언트를 놓지 않는다'까지가 한계다. 다음 후보는 서버(EMQX) 로그 — 발병 시각에 브로커가 이 client_id 를 어떤 이유로 끊었는지가 남아 있을 것이다",
+    "더 싼 수정이 남아 있을 수 있다. ACCQ 가 '이미 점유'로 실패하는 것이라면 mqtt_connect 가 CMQTTREL 앞에 CMQTTDISC 를 한 번 보내는 것만으로 실패 자체가 없어지고 복구가 12초에서 더 줄 수 있다(현재는 CMQTTSTOP→START 사이클을 돈다). 미검증이라 이번에는 넣지 않았다",
+    "Mqtt::stopService() 는 CMQTTDISC/REL/STOP 3연속 AT 라 최악 십수 초 블로킹이다. 승격당 1회뿐이라 감수한다",
+    "0.4.0 의 known_unfixed(모뎀 하드 리셋 후에도 안 붙는 경우 미대응, TinyGSM 포크 변경이 포크 갱신 시 덮임), 0.3.9(고빈도 수집 실차 미검증, driving_events 임계값 미검증), 0.3.8(OTA HTTPS 경로 SSL ctx 공유 미검증), 0.3.7(KT/SKT APN 미검증)은 그대로 유효하다"
+  ]
+}
