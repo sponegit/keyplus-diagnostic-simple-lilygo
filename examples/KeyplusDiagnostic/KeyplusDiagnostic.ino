@@ -1355,13 +1355,23 @@ static bool appConsole(const String &cmd, const String &arg, Stream &io)
 #if (FEATURE_OFFLINE_BUF && FEATURE_LTE)
 // 백필을 지금 1건 내보내도 되는가 — **실시간 발행이 절대 우선**이라는 규칙의 구현부.
 //   ① 접속 직후 BACKFILL_START_DELAY_MS 동안은 금지(구독·OTA ack·첫 telemetry 가 몰린다)
-//   ② 틱당 1건, 최소 BACKFILL_MIN_GAP_MS 간격
-//   ③ 다음 실시간 발행 BACKFILL_GUARD_MS 이내면 금지
+//   ② 직전 발행의 결과 URC 가 아직 안 왔으면 금지
+//   ③ 틱당 1건, 최소 BACKFILL_MIN_GAP_MS 간격
+//   ④ 다음 실시간 발행 BACKFILL_GUARD_MS 이내면 금지
 // 모뎀은 publish 를 1건씩만 처리하고 겹치면 세션이 깨진다 — 가드가 이 펌웨어의 생명줄이다.
 static bool backfillGateOpen(uint32_t now)
 {
     if (g_connectedAt == 0) return false;
     if ((int32_t)(now - g_connectedAt) < (int32_t)BACKFILL_START_DELAY_MS) return false;
+    // ② 위 주석이 "겹치면 세션이 깨진다"고 적어 놓고, 정작 가드는 아래 ③ 벽시계
+    //    타이머뿐이었다. QoS1 PUBACK 이 1초를 넘으면 다음 백필이 그 위로 겹쳐 나간다.
+    //    P3 에서 그 결과 URC(+CMQTTPUB)를 실제로 파싱해 두므로 추측할 이유가 없다 —
+    //    구독 경로는 이미 이 신호를 쓴다(subAckReady).
+    //    ⚠️ 백필은 초당 1건이 몇 분씩 이어지는 유일한 경로다. telemetry(30초)·fast·
+    //       status 는 간격이 넓어 겹칠 여지가 사실상 없어 여기만 건다.
+    //    ⚠️ 굶지 않는다 — URC 가 끝내 안 오면 MQTT_PUB_ACK_TIMEOUT_MS(8초)에
+    //       pubAckOverdue 가 세션을 사망 처리하므로 대기는 그 안에서 끝난다.
+    if (Mqtt::pubAckPending(modem))                                        return false;
     if (g_backfillNextAt != 0 && (int32_t)(now - g_backfillNextAt) < 0)    return false;
     // 다음 실시간 발행 직전 구간은 비워둔다.
     if ((int32_t)(g_nextPubAt - now) < (int32_t)BACKFILL_GUARD_MS)         return false;
