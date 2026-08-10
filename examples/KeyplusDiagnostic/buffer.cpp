@@ -211,6 +211,9 @@ uint32_t count()
     return (s_writeAbs > s_readAbs) ? (s_writeAbs - s_readAbs) : 0;
 }
 
+// 아래에 정의. pushSample/testFill 이 공유하는 링 기록 경로.
+static bool writeRecord(Record &r, Stream &log);
+
 bool pushSample(const GpsFix &fix, bool fixFresh, const Obd2::Data &obd,
                 uint32_t seq, const Fast::Aggregate &agg, bool parkedWindow,
                 int rssi, int reg, Stream &log)
@@ -266,6 +269,13 @@ bool pushSample(const GpsFix &fix, bool fixFresh, const Obd2::Data &obd,
     r.agg_ev_n         = agg.ev_n;
     r.agg_n            = agg.n;
 
+    return writeRecord(r, log);
+}
+
+// 완성된 Record 를 CRC 봉인 후 링에 기록한다. pushSample 과 testFill 이 공유한다 —
+// 링 전진(섹터 폐기·랩·커서 clamp)을 두 벌 두면 반드시 어긋난다.
+static bool writeRecord(Record &r, Stream &log)
+{
     r.crc16 = crc16((const uint8_t *)&r, sizeof(Record) - 2);
 
     // ── 쓰기 위치 확보 ──────────────────────────────────────────────────────
@@ -399,6 +409,95 @@ void clear(Stream &log)
     LOGI(log, "[BUF] 링 전체 초기화 완료 (%lu섹터)\n", (unsigned long)s_sectorCount);
 }
 
+#if FEATURE_BUF_TESTFILL
+uint32_t testFill(uint32_t n, uint32_t gapS, Stream &log)
+{
+    if (!s_part) { LOGE(log, "[BUF] 파티션 없음 — 주입 불가\n"); return 0; }
+    if (n == 0)    return 0;
+    if (gapS == 0) gapS = 30;
+
+    // Clk base 가 없으면 ts=0 이 되고, 그건 publishBackfill 이 발행을 거부하는 값이다.
+    // 여기서 막지 않으면 링만 채우고 드레인은 한 건도 안 나가는 상태가 된다.
+    Clk::Src src   = Clk::SRC_NONE;
+    const uint32_t nowTs = Clk::now(&src);
+    if (nowTs == 0) {
+        LOGE(log, "[BUF] 시각 기준 없음 — 접속·측위 후 다시 시도할 것(주입 취소)\n");
+        return 0;
+    }
+
+    // 용량을 넘기면 링이 랩하면서 방금 넣은 앞부분을 스스로 지운다. 조용히 그러느니 자른다.
+    if (n > s_capacity) {
+        LOGW(log, "[BUF] 요청 %lu건이 용량 %lu건 초과 — %lu건으로 자른다\n",
+             (unsigned long)n, (unsigned long)s_capacity, (unsigned long)s_capacity);
+        n = s_capacity;
+    }
+    // 가장 오래된 ts 가 과거로 얼마나 가는지 미리 알린다(서버에서 대조할 기준).
+    LOGI(log, "[BUF] 시험 주입 시작 — %lu건, %lu초 간격 (ts %lu ~ %lu)\n",
+         (unsigned long)n, (unsigned long)gapS,
+         (unsigned long)(nowTs - (uint32_t)n * gapS), (unsigned long)(nowTs - gapS));
+
+    uint32_t made = 0;
+    for (uint32_t i = 0; i < n; i++) {
+        Record r;
+        memset(&r, 0, sizeof(r));
+
+        // ⚠️ 핵심 — ts 를 과거로 흩는다. 뭉치면 서버 PK 에서 붕괴한다(buffer.h 주석).
+        r.ts   = nowTs - (uint32_t)(n - i) * gapS;
+        r.up_s = (uint32_t)(millis() / 1000UL);
+        r.boot = s_boot;
+        r.seq  = (uint16_t)(i & 0xFFFF);
+
+        // 정차 창으로 표시 — publishBackfill 이 agg.w 를 OFFLINE_LOG_MS_PARKED 로 채운다.
+        r.flags = (uint8_t)((src & F_TSRC_MASK) | F_GPS_FIX | F_OBD_VALID | F_PARKED_WIN);
+
+        // 좌표는 매 건 미세하게 흔든다 — 완전히 같은 값이면 서버 파생 계산이 한 점으로 본다.
+        r.lat_e6  = 37500000 + (int32_t)(i % 500);
+        r.lon_e6  = 127000000 + (int32_t)(i % 500);
+        r.spd_x10 = 0;
+        r.sat     = 9;
+        r.rssi    = -75;
+        r.reg     = 1;
+
+        // OBD 11필드를 모두 채운다 — 필드 유무가 페이로드 길이를 가르므로 실물과 맞춘다.
+        r.obd_flags   = O_RPM | O_SPEED | O_COOLANT | O_LOAD | O_THR | O_INTAKE |
+                        O_MAF | O_FUEL | O_CTRLV | O_RUNTIME | O_ODOMETER;
+        r.rpm         = 800;
+        r.obd_speed   = 0;
+        r.coolant     = 85;
+        r.load_x2     = 40;      // 20.0 %
+        r.throttle_x2 = 30;      // 15.0 %
+        r.intake      = 30;
+        r.maf_x10     = 25;      // 2.5 g/s
+        r.fuel_x2     = 100;     // 50.0 %
+        r.ctrl_mv     = 14000;
+        r.runtime_s   = (uint16_t)((i * gapS) & 0xFFFF);
+        r.odo_x10     = 1000000UL + i;
+
+        // agg 는 5건에 1건만 — 실측 292/1320 ≈ 22%. 크기 분포를 실물에 맞추기 위한 것이다.
+        // ev/ev_n 은 0 으로 둔다: aggToEvents 가 세운 비트만 driving_events 로 만드는데,
+        // source='agg' 이벤트는 원본이 없어 **서버에서 지우지 않는다**(015 주석). 시험용
+        // 가짜 이벤트를 영구히 남기지 않으려는 것이다.
+        if (i % 5 == 0) {
+            r.agg_n            = 30;
+            r.agg_rpm_max_x100 = 8;   // 800 rpm
+        }
+
+        if (!writeRecord(r, log)) {
+            LOGE(log, "[BUF] %lu건째에서 쓰기 실패 — 중단\n", (unsigned long)(i + 1));
+            break;
+        }
+        made++;
+
+        // 73건마다 섹터 erase(수십 ms)가 끼어든다. 태스크 워치독에 여유를 준다.
+        if ((i & 0x0F) == 0) delay(0);
+    }
+
+    LOGI(log, "[BUF] 시험 주입 완료 — %lu건 기록, 백로그 %lu건\n",
+         (unsigned long)made, (unsigned long)count());
+    return made;
+}
+#endif  // FEATURE_BUF_TESTFILL
+
 void stats(Stats &out)
 {
     out.available   = (s_part != nullptr);
@@ -426,6 +525,42 @@ bool tryConsole(const String &cmd, const String &arg, Stream &io)
         uint32_t lost = count();
         clear(io);
         io.printf("[BUF] 링 초기화됨 — 미전송 %lu건이 삭제되었다\n", (unsigned long)lost);
+        return true;
+    }
+
+    // 'buf fill <건수> [간격초]' — 시험 주입. 플래그가 꺼진 빌드에서도 분기는 남겨
+    // "왜 안 되는지"를 답하게 한다(명령이 통째로 사라지면 오타로 오인한다).
+    if (a == "fill" || a.startsWith("fill ")) {
+#if FEATURE_BUF_TESTFILL
+        String rest = a.substring(4); rest.trim();
+        uint32_t n = 0, gap = 30;
+        int sp = rest.indexOf(' ');
+        if (sp < 0) {
+            n = (uint32_t)rest.toInt();
+        } else {
+            n = (uint32_t)rest.substring(0, sp).toInt();
+            String g = rest.substring(sp + 1); g.trim();
+            if (g.length()) gap = (uint32_t)g.toInt();
+        }
+        if (n == 0) {
+            io.println("사용법: buf fill <건수> [간격초=30]");
+            io.println("  예) buf fill 1000 30   — 30초 간격 1000건(과거 8시간20분치)");
+            io.println("  · 접속된 상태에서 실행할 것 — 시각 기준이 있어야 ts 가 유효하다");
+            io.println("  · 'buf clear' 를 먼저 해 실데이터와 섞이지 않게 할 것");
+            return true;
+        }
+        uint32_t made = testFill(n, gap, io);
+        if (made) {
+            // 실측 드레인 속도 0.56건/초(2026-08-10) 기준 소요 추정.
+            unsigned long mins = (unsigned long)((made * 100UL / 56UL) / 60UL);
+            io.printf("[BUF] %lu건 주입됨 — 접속 %lus 뒤 드레인 시작, 약 %lu분 소요 예상\n",
+                      (unsigned long)made,
+                      (unsigned long)(BACKFILL_START_DELAY_MS / 1000UL), mins);
+        }
+#else
+        io.println("[BUF] 'buf fill' 은 FEATURE_BUF_TESTFILL=1 빌드에서만 동작한다.");
+        io.println("      플릿 빌드는 0 이다 — 현장 단말에 임의 레코드를 주입하지 않기 위한 것.");
+#endif
         return true;
     }
 
@@ -457,6 +592,10 @@ bool tryConsole(const String &cmd, const String &arg, Stream &io)
               Clk::source() == Clk::SRC_NONE ? "미확보 — ts=0 적재 중"
                                              : "적재 ts 유효");
     io.println("  · 'buf clear' 는 미전송 주행 데이터를 통째로 지운다");
+#if FEATURE_BUF_TESTFILL
+    io.println("  ⚠️ 시험 빌드(FEATURE_BUF_TESTFILL=1) — 'buf fill <건수> [간격초]' 사용 가능.");
+    io.println("     이 펌웨어를 플릿에 OTA 하지 말 것.");
+#endif
     return true;
 }
 

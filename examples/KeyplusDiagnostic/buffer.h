@@ -27,6 +27,9 @@
 #pragma once
 
 #include <Arduino.h>
+#include "config.h"   // FEATURE_BUF_TESTFILL — 아래 선언이 이 플래그에 걸린다.
+                      // gps/obd2/fast 헤더는 config.h 를 끌어오지 않으므로 직접 포함해야
+                      // 한다(빠지면 #if 가 조용히 0 으로 평가돼 선언만 사라진다).
 #include "gps.h"
 #include "obd2.h"
 #include "fast.h"
@@ -146,6 +149,30 @@ TsFix resolveTs(Record &rec);
 
 // 링 전체 erase(현장 초기화). ⚠️ 미전송 주행 데이터가 사라진다.
 void clear(Stream &log);
+
+#if FEATURE_BUF_TESTFILL
+/**
+ * **시험 전용** — 합성 레코드 n 건을 링에 주입한다. 반환: 실제로 기록된 건수.
+ *
+ * 왜 필요한가: 백필 드레인은 접속 상태에서 15초 뒤 자동으로 시작하고(backfillGateOpen 은
+ * "오프라인이었던 적"을 조건으로 두지 않는다) ≈1Hz 로 발행한다. 그 자극을 재현하려면
+ * 백로그가 있어야 하는데, 정차 케이던스(120초)로 실제로 쌓으면 링을 채우는 데 77.9시간이
+ * 걸린다. 차량도 음영도 없이 벤치에서 그 상태를 만들기 위한 것이다.
+ *
+ * ⚠️ **ts 는 반드시 벌린다.** Record.ts 는 **초** 단위이고 서버 PK 가 (device_id, ts) +
+ *    ON CONFLICT DO NOTHING 이다. pushSample 처럼 Clk::now() 를 그대로 찍으면 n 건이 한두
+ *    ts 로 뭉쳐 DB 에서 2~3행으로 붕괴한다 — 단말 자극은 그대로지만 **서버가 몇 건을
+ *    받았는지 셀 수 없게 되어** 시험의 증인이 사라진다. 그래서 ts = now − (n−i)×gapS 로
+ *    과거를 향해 흩는다.
+ *
+ * 페이로드는 실물과 크기를 맞춘다(publishBackfill 이 필드 유무로 길이가 갈리므로):
+ * 좌표·OBD 11필드를 채우고, agg 는 **5건에 1건(20%)** 만 싣는다 — 2026-08-10 실측
+ * 292/1320 ≈ 22% 와 맞춘 값이다. 전부 균일하게 만들면 크기 분포가 실물과 달라진다.
+ *
+ * 전제: Clk base 가 있어야 한다(접속 후 실행). 없으면 0 을 반환하고 아무것도 쓰지 않는다.
+ */
+uint32_t testFill(uint32_t n, uint32_t gapS, Stream &log);
+#endif
 
 struct Stats {
     bool     available;
