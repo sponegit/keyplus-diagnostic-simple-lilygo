@@ -58,6 +58,14 @@ static bool s_connected      = false;   // 세션 접속 여부
 // LTE(PDP)는 멀쩡해서 재브링업·리셋 경로도 안 타므로 스스로는 못 빠져나온다.
 static int  s_svcStartFails  = 0;
 
+// 세션 접속(CMQTTCONNECT) 연속 실패 횟수. 성공하면 0 이 된다.
+// ⚠️ s_svcStartFails 와 다른 축이다. 저건 "서비스가 안 뜬다"(CMQTTSTART)이고 이건
+//    "서비스는 떴는데 브로커에 못 붙는다"이다. 종전에는 후자를 아무도 세지 않아서,
+//    LTE(PDP)가 멀쩡한 채로 CMQTTCONNECT 만 계속 실패하면 승격 경로가 하나도 없었다
+//    — 백오프만 15초에서 포화되고 재부팅 전까지 영영 그 자리를 돌았다
+//    (실측 260810 로그: mqtt=OFF 로 25분+, 백로그 1500건, 사용자가 직접 재부팅).
+static int  s_connectFails   = 0;
+
 // 마지막 발행 시점의 망 상태. [STAT] 한 줄이 이 값을 재사용해 AT 왕복을 늘리지 않는다.
 static int s_lastRssi = 0;
 static int s_lastReg  = 0;
@@ -76,6 +84,23 @@ bool publishGapElapsed(uint32_t now, uint32_t gapMs)
 
 // 사용자/비번이 빈 문자열이면 NULL(익명)로 넘긴다.
 static const char *orNull(const char *s) { return (s && s[0]) ? s : nullptr; }
+
+// 래퍼가 남긴 접속 실패 지점(MQTT_CONN_ERR_*)을 사람이 읽을 이름으로. 양수는 모뎀이
+// +CMQTTCONNECT 로 준 err 코드라 이름이 없다 — 숫자를 그대로 로그에 싣는다.
+static const char *connErrName(int16_t e)
+{
+    switch (e) {
+    case MQTT_CONN_ERR_CA:       return "CA 업로드";
+    case MQTT_CONN_ERR_CLI_CERT: return "클라이언트 인증서";
+    case MQTT_CONN_ERR_CLI_KEY:  return "클라이언트 키";
+    case MQTT_CONN_ERR_ACCQ:     return "ACCQ(서비스 미시작 추정)";
+    case MQTT_CONN_ERR_WILL:     return "LWT 등록";
+    case MQTT_CONN_ERR_CMD:      return "CONNECT 명령 거부";
+    case MQTT_CONN_ERR_NO_URC:   return "CONNECT 응답 없음";
+    case MQTT_CONN_ERR_NONE:     return "미시도";
+    default:                     return "브로커/TLS 거절";
+    }
+}
 
 // 발행 직전 생존 게이트(R6). 죽은 모뎀에 mqtt_publish 를 던지면 래퍼가 CMQTTTOPIC 과
 // CMQTTPAYLOAD 의 '>' 프롬프트를 각각 10초씩 기다린 뒤에야 실패한다
@@ -176,10 +201,16 @@ static bool connectSession(TinyGsm &modem, Stream &log)
     // keepalive는 config_update로 런타임 변경 가능(Cfg). 접속 시점 값 반영.
     if (!modem.mqtt_connect(kClientIdx, MQTT_HOST, MQTT_PORT, s_clientId.c_str(),
                             user, pass, Cfg::keepaliveS())) {
-        LOGW(log, "[MQTT] 접속 실패 (CA 검증/인증/네트워크 확인)\n");
+        // 실패 지점을 함께 남긴다. 종전에는 여덟 갈래 실패가 전부 같은 한 줄이라
+        // 로그만 보고는 CA·인증·망 중 무엇인지 좁힐 근거가 없었다(래퍼 MQTT_CONN_ERR_*).
+        s_connectFails++;
+        LOGW(log, "[MQTT] 접속 실패 err=%d (%s) — 연속 %d회\n",
+             (int)modem.mqttLastConnErr(), connErrName(modem.mqttLastConnErr()),
+             s_connectFails);
         s_connected = false;
         return false;
     }
+    s_connectFails = 0;   // 붙었다 — 승격 카운터를 접는다
 
     // 새 세션 — 이전 세션의 발행 대기 흔적을 지운다(P3). mqtt_publish 는 마지막 단계까지
     // 가야 플래그를 세우므로, 앞 단계에서 실패한 발행의 pending=true 와 낡은 _pubSentAt
@@ -270,10 +301,16 @@ void resetServiceState()
     // (갓 리셋된 모뎀에 mqtt_disconnect를 보내면 무의미하게 블로킹된다).
     s_serviceStarted = false;
     s_connected      = false;
+    // 모뎀이 새 상태다 — 옛 모뎀에서 쌓은 접속 실패 이력으로 승격을 결정하면 안 된다.
+    s_connectFails   = 0;
 }
 
 int  serviceStartFails()      { return s_svcStartFails; }
 void clearServiceStartFails() { s_svcStartFails = 0; }
+
+int  connectFails()           { return s_connectFails; }
+void clearConnectFails()      { s_connectFails = 0; }
+int  lastConnErr(TinyGsm &modem) { return (int)modem.mqttLastConnErr(); }
 
 int lastRssi() { return s_lastRssi; }
 int lastReg()  { return s_lastReg; }

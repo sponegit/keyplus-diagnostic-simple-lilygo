@@ -17,6 +17,20 @@
 // 그 왕복을 그만큼 붙잡는다 — 넉넉하되 짧게.
 #define TINY_GSM_MQTT_RX_URC_TIMEOUT_MS 500
 
+// mqtt_connect() 실패 지점 식별자 — 모뎀이 주는 +CMQTTCONNECT err(0 이상)와 겹치지
+// 않게 음수로 둔다. 응용이 "CA 업로드에서 막혔나 / 브로커가 거절했나"를 가르는 근거다.
+// ⚠️ enum 이다(클래스 static const 아님) — C++11 에서 odr-use 시 별도 정의가 필요 없다.
+enum {
+    MQTT_CONN_ERR_NONE     = -1,    // 아직 접속 시도 없음
+    MQTT_CONN_ERR_CA       = -10,   // CA PEM 업로드 실패
+    MQTT_CONN_ERR_CLI_CERT = -11,   // 클라이언트 인증서 업로드 실패
+    MQTT_CONN_ERR_CLI_KEY  = -12,   // 클라이언트 키 업로드 실패
+    MQTT_CONN_ERR_ACCQ     = -13,   // CMQTTACCQ 실패(서비스 미시작 / 클라이언트 점유)
+    MQTT_CONN_ERR_WILL     = -14,   // LWT 등록 실패
+    MQTT_CONN_ERR_CMD      = -15,   // AT+CMQTTCONNECT 가 OK 를 못 냄(ERROR/타임아웃)
+    MQTT_CONN_ERR_NO_URC   = -16,   // +CMQTTCONNECT URC 미도착
+};
+
 template <class modemType, uint8_t muxCount>
 class TinyGsmMqttA76xx
 {
@@ -54,7 +68,19 @@ protected:
     int8_t   _lastPubErr    = -1;      // 마지막 결과 코드 (0=성공, -1=아직 없음)
     uint32_t _pubSentAt     = 0;       // 발행 시각(millis) — 응용이 타임아웃 판정에 쓴다
 
+    // --- 마지막 접속 실패 지점 ------------------------------------------------
+    // mqtt_connect() 는 실패 경로가 여덟 군데인데 전부 그냥 false 를 냈다. 응용은
+    // "접속 실패"만 알 뿐 CA 업로드에서 막혔는지, ACCQ 였는지, 브로커가 거절했는지를
+    // 구분할 수 없었다 — 필드 로그(260810)에서 15초마다 같은 한 줄이 수십 번 반복되는
+    // 동안 원인을 좁힐 근거가 하나도 남지 않았다.
+    //   0 이상 = 모뎀이 준 +CMQTTCONNECT 의 err (0=성공), 음수 = 아래 단계 식별자.
+    int16_t  _lastConnErr   = MQTT_CONN_ERR_NONE;
+
 public:
+    // 마지막 mqtt_connect() 결과. 0=성공, 음수는 위 MQTT_CONN_ERR_* 단계 식별자,
+    // 양수는 모뎀이 +CMQTTCONNECT 로 준 err 코드.
+    int16_t  mqttLastConnErr()   const { return _lastConnErr; }
+
     // 결과 URC 수신 — waitResponse 의 `+CMQTTPUB:` 분기가 호출한다.
     void mqttNotePubAck(int8_t err)
     {
@@ -159,6 +185,9 @@ public:
             return false;
         }
 
+        // 실패 지점을 남긴다 — 아래 return false 마다 갱신하고 마지막에 0(성공)으로 닫는다.
+        _lastConnErr = MQTT_CONN_ERR_NONE;
+
         if (this->cert_pem || this->client_cert_pem || this->client_key_pem) {
             if (this->cert_pem) {
                 // 업로드는 부팅당 1회. 모뎀 플래시에 남으므로 모뎀 리셋도 견딘다.
@@ -170,6 +199,7 @@ public:
                     }
                     if (thisModem().waitResponse() != 1) {
                         ESP_LOGE("A76XX", "Write ca_cert pem failed!");
+                        _lastConnErr = MQTT_CONN_ERR_CA;
                         return false;
                     }
                     _certUploaded = true;
@@ -187,6 +217,7 @@ public:
                 }
                 if (thisModem().waitResponse() != 1) {
                     ESP_LOGE("A76XX", "Write cert pem failed!");
+                    _lastConnErr = MQTT_CONN_ERR_CLI_CERT;
                     return false;
                 }
                 thisModem().sendAT("+CSSLCFG=\"clientcert\",0,\"cert.pem\"");
@@ -200,6 +231,7 @@ public:
                 }
                 if (thisModem().waitResponse() != 1) {
                     ESP_LOGE("A76XX", "Write key_cert failed!");
+                    _lastConnErr = MQTT_CONN_ERR_CLI_KEY;
                     return false;
                 }
                 thisModem().sendAT("+CSSLCFG=\"clientkey\",0,\"key_cert.pem\"");
@@ -243,7 +275,12 @@ public:
         thisModem().waitResponse(3000);
 
         thisModem().sendAT("+CMQTTACCQ=", clientIndex, ",\"", clientID, "\",", __ssl);
-        if (thisModem().waitResponse(3000) != 1)return false;
+        // 여기서 실패하면 대개 CMQTT 서비스가 안 떠 있다(CMQTTSTART 미실행/유실).
+        // 응용이 이 코드를 보고 서비스 재시작으로 승격한다.
+        if (thisModem().waitResponse(3000) != 1) {
+            _lastConnErr = MQTT_CONN_ERR_ACCQ;
+            return false;
+        }
 
         // Set MQTT3.1.1 , Default use MQTT 3.1
         thisModem().sendAT("+CMQTTCFG=\"version\",", clientIndex, ",4");
@@ -251,9 +288,11 @@ public:
 
         if (will_msg && will_topic) {
             if (!mqttWillTopic(clientIndex, will_topic)) {
+                _lastConnErr = MQTT_CONN_ERR_WILL;
                 return false;
             }
             if (!mqttWillMessage(clientIndex, will_msg, will_qos)) {
+                _lastConnErr = MQTT_CONN_ERR_WILL;
                 return false;
             }
         }
@@ -266,15 +305,28 @@ public:
         // ⚠️ 접속이 실패하면 인증서 캐시를 무효화한다. 모뎀 파일이 사라졌거나(공장초기화,
         //    플래시 손상) CA 가 잘못 올라간 경우, 캐시를 믿고 재업로드를 건너뛰면 영영
         //    TLS 가 안 붙는다 — 다음 시도가 다시 올리게 해 스스로 회복시킨다.
-        if (thisModem().waitResponse(30000UL) != 1) { _certUploaded = false; return false; }
+        if (thisModem().waitResponse(30000UL) != 1) {
+            _certUploaded = false;
+            _lastConnErr  = MQTT_CONN_ERR_CMD;
+            return false;
+        }
 
         if (thisModem().waitResponse(30000UL, "+CMQTTCONNECT: ") != 1) {
             _certUploaded = false;
+            _lastConnErr  = MQTT_CONN_ERR_NO_URC;
             return false;
         }
         thisModem().streamSkipUntil(',');
-        int res = thisModem().stream.read();
-        if (res != '0') { _certUploaded = false; return false; }
+        // ⚠️ 종전에는 stream.read() 한 바이트로 판정했다 — err 이 두 자리(예: 19, 21)면
+        //    첫 자리만 읽고 나머지 "9\r\n" 이 스트림에 남아 다음 waitResponse 를 오염시킨다.
+        //    줄 끝까지 정수로 읽어 값도 보존하고 스트림도 깨끗이 비운다.
+        int res = thisModem().streamGetIntBefore('\n');
+        if (res != 0) {
+            _certUploaded = false;
+            _lastConnErr  = (int16_t)res;
+            return false;
+        }
+        _lastConnErr = 0;
         return true;
 
     }

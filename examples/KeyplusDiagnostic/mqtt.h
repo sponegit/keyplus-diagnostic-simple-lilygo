@@ -98,6 +98,20 @@ int  lastPubErr(TinyGsm &modem);
 int  serviceStartFails();
 void clearServiceStartFails();
 
+// --- 세션 접속 연속 실패 (CMQTTCONNECT) --------------------------------------
+// serviceStartFails() 와 **다른 축**이다. 저건 "서비스가 안 뜬다"(CMQTTSTART)이고,
+// 이건 "서비스는 떴는데 브로커에 못 붙는다"이다. 종전에는 후자를 세는 곳이 없어서
+// 모뎀도 살아 있고 Lte::isUp() 도 참인데 CMQTTCONNECT 만 계속 실패하는 상태에 빠지면
+// 승격 트리거가 하나도 없었다 — 백오프가 15초에서 포화된 채 재부팅 전까지 무한 반복
+// (실측 260810: mqtt=OFF 25분+, 미전송 백로그 1500건, 사용자가 직접 재부팅해 회복).
+//   → 호출측(loop)이 임계에 닿으면 ① 데이터패스 실검증 ② CMQTT 서비스 재시작
+//     ③ 모뎀 리셋 순으로 승격한다. 접속에 성공하면 0 으로 돌아간다.
+int  connectFails();
+void clearConnectFails();
+// 마지막 접속 시도가 어디서 막혔는가. 0=성공, 음수=단계 식별자(래퍼 MQTT_CONN_ERR_*),
+// 양수=모뎀이 +CMQTTCONNECT 로 준 err 코드.
+int  lastConnErr(TinyGsm &modem);
+
 /**
  * status 재발행 (F1/F3) — `connectSession()` 의 online 발행과 **같은 토픽·QoS1·retain=1**.
  *   {"online":true[,"sub":true],"power_mode":"...","ignition_on":...}

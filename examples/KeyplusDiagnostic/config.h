@@ -218,6 +218,17 @@
 // 스스로는 빠져나올 수 없는 유일한 교착이다. 백오프가 1s→2s→4s 이므로 3회면 약 7초에
 // 승격한다(실측 교착은 107초였다).
 #define MQTT_SERVICE_FAIL_BEFORE_RESET (3)
+// --- 세션 접속(CMQTTCONNECT) 연속 실패 → 단계 승격 --------------------------
+// 위 SERVICE_FAIL 은 "서비스가 안 뜬다"(CMQTTSTART)만 잡는다. 서비스는 떠 있는데
+// 브로커 접속만 계속 실패하는 상태는 아무도 세지 않아 승격 경로가 없었다 —
+// Lte::isUp()(등록+PDP)은 참이라 재브링업도 안 타고, 모뎀도 AT 에 응답하니 리셋도 안 탄다.
+// 실측(260810 로그): 15초 백오프 포화 상태로 25분 넘게 mqtt=OFF, 백로그 1500건,
+// 재부팅해야만 회복됐다(같은 CA·비번·APN 으로 5초 만에 접속 — 모뎀 쪽 상태 문제).
+//   1단계: 데이터패스 실검증(HTTP GET) + CMQTT 서비스 재시작(CMQTTSTOP→START)
+//   2단계: 모뎀 하드 리셋
+// 백오프가 15초에서 포화되므로 4회 ≈ 1분에 1단계, 그 뒤 4회 ≈ 1분 더에 2단계.
+#define MQTT_CONNECT_FAIL_BEFORE_RESTART (4)
+#define MQTT_CONNECT_FAIL_BEFORE_RESET   (4)
 #define MQTT_CA_FILENAME            "emqx_ca.pem"
 
 // --- MQTT 수신 버퍼 ---------------------------------------------------------

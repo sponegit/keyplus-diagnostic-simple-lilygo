@@ -136,6 +136,10 @@ static int      g_probeFailStreak = 0;
 // 세션이 끊긴 시각 — GNSS 재활성화를 재접속 창 뒤로 미루는 기준(R5 가드).
 // 0 은 "부팅 이후"로 자연스럽게 동작한다(millis 가 그대로 경과시간이 된다).
 static uint32_t g_disconnectedAt  = 0;
+// MQTT 세션 접속(CMQTTCONNECT)만 연속 실패하는 교착의 승격 단계.
+//   0 = 정상 / 1 = 데이터패스 검증 + CMQTT 서비스 재시작을 이미 해봤다(다음은 모뎀 리셋).
+// 접속에 성공하면 0 으로 돌아간다.
+static int      g_mqttStuckStage   = 0;
 #endif
 
 #if FEATURE_PWR_MONITOR
@@ -693,10 +697,11 @@ static bool modemHardReset()
 //    내려주지 않으면 begin()이 CMQTTSTART를 건너뛰어 "접속 실패"만 무한 반복한다.
 static void afterModemReset(bool revived)
 {
-    Mqtt::resetServiceState();
+    Mqtt::resetServiceState();        // 접속 실패 카운터도 여기서 함께 접힌다
     Mqtt::clearServiceStartFails();   // 리셋으로 상태가 확실히 정리됐다 — 다시 센다
     Cmd::markUnsubscribed();
-    g_lteFailStreak = 0;              // 리셋했으니 다시 센다
+    g_lteFailStreak  = 0;             // 리셋했으니 다시 센다
+    g_mqttStuckStage = 0;             // 승격 단계도 원위치 — 모뎀이 새 상태다
     if (!revived) return;
 
 #if FEATURE_GPS
@@ -715,6 +720,81 @@ static void afterModemReset(bool revived)
     // 됐는데 MQTT 백오프(최대 15초)가 막는다.
     g_lastConnTry   = g_lastLteTry;
     g_backoff       = LTE_POST_RESET_DELAY_MS;
+}
+
+// ---------------------------------------------------------------------------
+// MQTT 세션 접속만 연속 실패하는 교착에서 빠져나오기 (단계 승격)
+// ---------------------------------------------------------------------------
+// 모뎀은 AT 에 응답하고 Lte::isUp()(등록+PDP)도 참인데 CMQTTCONNECT 만 계속 실패하는
+// 상태가 있다. 이 상태에는 종전 승격 트리거가 **하나도** 걸리지 않았다:
+//   · LTE 재브링업/리셋 → isUp() 이 참이라 진입 안 함
+//   · CMQTTSTART 실패 승격 → s_serviceStarted 가 참이라 mqtt_begin 자체를 건너뜀
+//     (그래서 serviceStartFails 는 영원히 0)
+// 결과는 15초 백오프 포화 상태의 무한 재시도다 — 실측(260810 로그) 25분 넘게 mqtt=OFF,
+// 미전송 백로그 1500건, 사용자가 직접 재부팅해서야 회복됐다(같은 CA·비번·APN 으로
+// 5초 만에 접속 — 크리덴셜이 아니라 모뎀 쪽 상태 문제였다는 뜻).
+//
+// 승격 순서 — 싼 것부터, 각 단계는 서로 다른 원인을 겨눈다:
+//   ① 데이터패스 실검증(HTTP GET). isUp() 은 등록·PDP 만 보므로 캐리어가 세션을 반쯤
+//      놓은 "좀비 PDP"(등록은 살아있고 패킷은 안 나감)를 통과시킨다. 부팅 때만 하던
+//      검증을 여기서 한 번 태워 "망이 죽었나 / 브로커만 안 붙나"를 실제로 가른다.
+//   ② CMQTT 서비스 재시작(CMQTTSTOP→START). 데이터패스가 살아 있으면 남는 건 모뎀
+//      내부 CMQTT 상태(SSL 컨텍스트·클라이언트 점유)다. 서비스를 내렸다 올리면
+//      mqtt_begin 이 cert 포인터도 비워 다음 접속에서 CA 가 새로 올라간다.
+//   ③ 그래도 안 되면 모뎀 하드 리셋 — 사용자가 하던 재부팅의 자동화판이다.
+//
+// ⚠️ Mqtt::stopService 는 CMQTTDISC/REL/STOP 3연속 AT 라 최악 십수 초 블로킹이다.
+//    미접속 구간이라 발행은 없지만 OBD 폴·LED 는 그만큼 밀린다. 승격은 4회 실패마다
+//    한 번만 일어나므로(≈1분) 감수한다 — 대안은 25분 무통신이다.
+static void escalateMqttConnectStuck()
+{
+    const int fails = Mqtt::connectFails();
+
+    // CMQTTACCQ 실패는 진단이 이미 끝난 경우다 — 모뎀에 CMQTT 서비스가 없다는 뜻이라
+    // 데이터패스를 물어볼 이유가 없다. 곧장 서비스를 다시 세운다.
+    // ⚠️ 1단계에서만 지름길을 준다. 단계와 무관하게 이 분기를 타게 두면 서비스를 다시
+    //    세워도 ACCQ 가 계속 실패하는 모뎀에서 재시작만 무한 반복하고 리셋까지 영영
+    //    승격하지 못한다 — 고치려던 교착을 모양만 바꿔 되풀이하는 셈이다.
+    if (g_mqttStuckStage == 0 && Mqtt::lastConnErr(modem) == MQTT_CONN_ERR_ACCQ) {
+        LOGE(SerialMon, "[MQTT] ACCQ 실패 — 모뎀에 CMQTT 서비스 없음, 재시작\n");
+        Mqtt::stopService(modem);   // 다음 begin() 이 CMQTTSTART 부터 다시 탄다
+        Mqtt::clearConnectFails();
+        g_mqttStuckStage = 1;       // 이걸로도 안 붙으면 다음은 모뎀 리셋이다
+        g_backoff        = 0;       // 방금 상태를 바꿨다 — 결과를 바로 확인한다
+        return;
+    }
+
+    if (g_mqttStuckStage == 0) {
+        g_mqttStuckStage = 1;
+        Mqtt::clearConnectFails();
+        g_backoff = 0;
+
+        const int code = Lte::httpGetCheck(modem, SerialMon);
+        if (code != 200) {
+            LOGE(SerialMon, "[LTE] MQTT %d회 실패 + 데이터패스 죽음(code=%d) — PDP 재브링업\n",
+                 fails, code);
+            // 새 PDP 위에 CMQTT 를 다시 올린다. 순서가 중요하다 — 서비스를 내리지 않고
+            // PDP 만 갈면 모뎀의 CMQTT 가 사라진 소켓을 붙들고 있다.
+            Mqtt::stopService(modem);
+            // 바깥 재브링업 페이싱(g_lteRetryDelay)에 이 시도를 알린다. 안 그러면
+            // 위 게이트가 방금 한 등록 시도를 못 보고 곧바로 한 번 더 밀어붙인다 —
+            // 등록은 모뎀이 최대 출력으로 송신하는 구간이라 전원 마진을 갉는다.
+            g_lastLteTry = millis();
+            if (!Lte::begin(modem, SerialMon)) {
+                LOGE(SerialMon, "[LTE] 재브링업 실패 — 모뎀 리셋으로 승격\n");
+                afterModemReset(modemHardReset());
+            }
+            return;
+        }
+        LOGE(SerialMon, "[MQTT] 접속 %d회 연속 실패(데이터패스는 정상) — CMQTT 서비스 재시작\n",
+             fails);
+        Mqtt::stopService(modem);
+        return;
+    }
+
+    // 서비스를 다시 세웠는데도 같은 자리다 — 남은 건 모뎀 자체다.
+    LOGE(SerialMon, "[MQTT] 서비스 재시작 후에도 접속 %d회 실패 — 모뎀 리셋\n", fails);
+    afterModemReset(modemHardReset());   // 안에서 카운터·단계를 모두 되돌린다
 }
 #endif  // FEATURE_LTE
 #endif  // (FEATURE_LTE || FEATURE_GPS)
@@ -1095,6 +1175,17 @@ static void statusServer(Stream &io)
     } else {
         io.printf("  %-14s: %lums\n", "재접속 백오프", (unsigned long)g_backoff);
         printAgo(io, "마지막 시도", g_lastConnTry);
+        // 교착 진단의 핵심 두 줄 — "몇 번째 실패인가"와 "어디서 막혔나".
+        // 이게 없으면 로그에 같은 실패 줄만 쌓여 원인을 좁힐 수 없다(260810 로그).
+        io.printf("  %-14s: %d회 (%d회에 %s)\n", "연속 접속실패",
+                  Mqtt::connectFails(),
+                  g_mqttStuckStage == 0 ? MQTT_CONNECT_FAIL_BEFORE_RESTART
+                                        : MQTT_CONNECT_FAIL_BEFORE_RESET,
+                  g_mqttStuckStage == 0 ? "데이터패스 검증+서비스 재시작" : "모뎀 리셋");
+        io.printf("  %-14s: %d\n", "마지막 실패", Mqtt::lastConnErr(modem));
+        if (Mqtt::serviceStartFails())
+            io.printf("  %-14s: %d회 (%d회에 모뎀 리셋)\n", "서비스 시작실패",
+                      Mqtt::serviceStartFails(), MQTT_SERVICE_FAIL_BEFORE_RESET);
     }
     io.printf("  %-14s: rssi=%d reg=%d (마지막 발행 시점)\n", "발행시 망상태",
               Mqtt::lastRssi(), Mqtt::lastReg());
@@ -1572,9 +1663,15 @@ void loop()
                         Led::set(Led::State::REJECTED);
                     }
                 }
-                if (!g_provRejected && Lte::isUp(modem) && Prov::hasCredentials()
-                        && Mqtt::begin(modem, SerialMon)) {
+                // 접속을 실제로 **시도했는가**. 아래 승격은 CMQTTCONNECT 연속 실패를
+                // 근거로 삼는데, LTE 가 내려가 시도조차 못 한 회차까지 실패로 세면
+                // 망 문제로 쌓인 카운터가 엉뚱하게 모뎀 리셋을 부른다.
+                const bool mqttTried = (!g_provRejected && Lte::isUp(modem)
+                                        && Prov::hasCredentials());
+
+                if (mqttTried && Mqtt::begin(modem, SerialMon)) {
                     g_backoff = 0;   // 성공 → 백오프 리셋 (MQTT_OK는 다음 루프 상승엣지에서 표시)
+                    g_mqttStuckStage = 0;   // 붙었다 — 승격 단계 원위치
                 } else if (!g_provRejected) {
                     g_backoff = g_backoff ? g_backoff * 2 : 1000;
                     if (g_backoff > MQTT_RECONNECT_CAP_MS) g_backoff = MQTT_RECONNECT_CAP_MS;
@@ -1591,6 +1688,20 @@ void loop()
                         LOGE(SerialMon, "[MQTT] 서비스 시작 %d회 연속 실패 — "
                                         "모뎀 리셋으로 상태 재동기\n", Mqtt::serviceStartFails());
                         afterModemReset(modemHardReset());
+                    }
+                    // ── 세션 접속(CMQTTCONNECT) 연속 실패 → 단계 승격 ────────────
+                    // 위 분기와 다른 축이다. 저건 "서비스가 안 뜬다", 이건 "서비스는
+                    // 떴는데 브로커에 못 붙는다" — 종전엔 후자에 승격 경로가 없어
+                    // 재부팅 전까지 15초 백오프로 무한 재시도했다(escalate 함수 주석).
+                    // ACCQ 실패는 1단계에서만 지름길이다(원인이 이미 확정이라 기다릴 게
+                    // 없다). 2단계에서는 다른 실패와 똑같이 횟수를 채워야 리셋으로 간다.
+                    else if (mqttTried && Mqtt::connectFails() > 0
+                             && ((g_mqttStuckStage == 0
+                                  && Mqtt::lastConnErr(modem) == MQTT_CONN_ERR_ACCQ)
+                                 || Mqtt::connectFails() >=
+                                    (g_mqttStuckStage == 0 ? MQTT_CONNECT_FAIL_BEFORE_RESTART
+                                                           : MQTT_CONNECT_FAIL_BEFORE_RESET))) {
+                        escalateMqttConnectStuck();
                     }
                 }
             }
