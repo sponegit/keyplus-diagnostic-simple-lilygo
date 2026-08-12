@@ -94,9 +94,26 @@ bool enableAgps(TinyGsm &modem)
     return modem.enableAGPS();
 }
 
-void end(TinyGsm &modem)
+bool powerOn(TinyGsm &modem)
 {
-    modem.disableGPS(MODEM_GPS_ENABLE_GPIO, !MODEM_GPS_ENABLE_LEVEL);
+    // begin() 의 비블로킹 판. duty cycle 은 5분마다 도는데 begin() 은 실패 시 최대 15초를
+    // 잡아먹어 그동안 차키 명령이 밀린다 — **즉시 응답이 이 제품의 제1 요구다.**
+    // 그래서 한 번만 시도하고 실패하면 그대로 돌아간다(호출측이 다음 틱에 다시 부른다).
+    if (!modem.enableGPS(MODEM_GPS_ENABLE_GPIO, MODEM_GPS_ENABLE_LEVEL)) return false;
+    // ⚠️ 위성군 지정은 전원을 껐다 켜면 기본값으로 돌아갈 수 있다. 여기서 매번 다시
+    //    건다 — 이걸 빠뜨리면 duty cycle 을 돌 때마다 단일 위성군으로 떨어져 측위가
+    //    극단적으로 느려진다(begin() 의 CGNSSMODE 주석 참고).
+    //    setGPSBaud 는 UART 속도라 전원과 무관하므로 다시 걸지 않는다.
+    modem.setGPSMode(GNSS_MODE_GPS_BDS_GALILEO_SBAS_QZSS);
+    return true;
+}
+
+bool end(TinyGsm &modem)
+{
+    // ⚠️ 반환값을 버리면 안 된다. 끄기가 실패했는데 호출측이 "껐다"고 믿으면
+    //    duty cycle 은 그 뒤로 조회를 건너뛰면서(꺼진 줄 알고) 실제로는 GNSS 가 계속
+    //    켜진 채 30mA 를 태운다 — 로그만 OFF 라 눈으로는 절대 못 찾는 종류의 손실이다.
+    return modem.disableGPS(MODEM_GPS_ENABLE_GPIO, !MODEM_GPS_ENABLE_LEVEL);
 }
 
 // 폴 1회분 좌표 덤프 — DEBUG 전용. 평상시 위치는 loop의 [STAT] 한 줄로 충분하고,

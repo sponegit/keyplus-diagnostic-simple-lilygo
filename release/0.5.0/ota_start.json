@@ -1,0 +1,10 @@
+{
+  "command_id": "REPLACE-WITH-UUID",
+  "type": "ota_start",
+  "payload": {
+    "url": "https://REPLACE-ME/fw/kpd-0.5.0.bin",
+    "md5": "4f83a65e0d6aab6778755a712e61e643",
+    "version": "0.5.0"
+  },
+  "expires_at": 0
+}

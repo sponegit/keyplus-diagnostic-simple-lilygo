@@ -47,7 +47,14 @@ bool enableAgps(TinyGsm &modem);
 uint8_t mode(TinyGsm &modem);
 
 // GNSS 비활성화 (저전력 진입 시).
-void end(TinyGsm &modem);
+// GNSS 전원만 1회 시도로 켠다(AT+CGNSSPWR=1 + 위성군 재설정). **블로킹하지 않는다.**
+// duty cycle 처럼 주기적으로 켜야 하는 경로는 begin() 대신 이걸 쓴다 —
+// begin() 은 실패 시 최대 15초를 잡아 그동안 차키 명령이 밀린다.
+bool powerOn(TinyGsm &modem);
+
+// GNSS 전원 OFF(AT+CGNSSPWR=0). **반환값을 반드시 확인할 것** — 실패했는데 껐다고
+// 믿으면 조회만 건너뛴 채 GNSS 가 계속 돌아 45mA 를 태운다(로그는 OFF 라 눈에 안 띈다).
+bool end(TinyGsm &modem);
 
 // GpsFix를 사람이 읽는 형태로 SerialMon에 출력 (디버그용).
 void print(const GpsFix &fix, Stream &out);

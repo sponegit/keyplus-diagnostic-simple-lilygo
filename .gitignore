@@ -6,3 +6,6 @@ build
 extras
 images/product/jpeg/*
 logs/
+
+# 소비전류 계측 빌드 산출물(재생성 가능)
+bench/*.bin

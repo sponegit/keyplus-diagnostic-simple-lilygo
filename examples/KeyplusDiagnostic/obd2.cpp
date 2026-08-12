@@ -98,6 +98,26 @@ static bool install(int kbps, Stream &log)
     return true;
 }
 
+void parkPins()
+{
+    // TX = 열성(HIGH). 트랜시버가 버스를 놓게 만드는 유일한 조건이다(설계 근거는 obd2.h).
+    pinMode(PIN_CAN_TX, OUTPUT);
+    digitalWrite(PIN_CAN_TX, HIGH);
+    // RX 는 트랜시버 출력이라 우리가 몰면 안 된다. 뜬 입력이 잡음으로 토글하며 전류를
+    // 먹지 않도록 풀업만 걸어 둔다(트랜시버가 살아 있으면 그쪽이 이긴다).
+    pinMode(PIN_CAN_RX, INPUT_PULLUP);
+}
+
+void unparkPins()
+{
+    if (s_installed) return;          // TWAI 가 핀 소유자다 — 건드리면 통신이 깨진다
+    // 예전 상태 재현: 출력 해제 + 풀업 없음 = 완전히 뜬 입력.
+    pinMode(PIN_CAN_TX, INPUT);
+    pinMode(PIN_CAN_RX, INPUT);
+}
+
+bool isInstalledNow() { return s_installed; }
+
 void end()
 {
     if (s_installed) {
@@ -105,6 +125,9 @@ void end()
         twai_driver_uninstall();
         s_installed = false;
     }
+    // uninstall 직후 주차시킨다 — TX 를 뜬 채로 남기지 않기 위해서다.
+    // ⚠️ 절전 효과는 없었다(obd2.h 의 parkPins 주석 참고). 상태 위생 목적이다.
+    parkPins();
     s_hasVin = false;   // 재확립 시 VIN 재조회(차량 교체 대비)
     s_vinTries = 0;
     s_ecuId  = 0;       // ECU 고정 해제 — 재확립 때 다시 정한다

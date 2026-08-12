@@ -1,0 +1,46 @@
+{
+  "product": "keyplus-diagnostic",
+  "board": "LILYGO T-A7670E (ESP32-WROVER, Flash 4MB / PSRAM 8MB)",
+  "version": "0.5.0",
+  "file": "keyplus-diagnostic-0.5.0.bin",
+  "size": 431696,
+  "md5": "4f83a65e0d6aab6778755a712e61e643",
+  "sha256": "1fb8b72eb979b8904ee7ccdc04b971e9b701fd7d92377ba7a4efa16a05681f07",
+  "partition": {
+    "table": "min_spiffs.csv",
+    "ota_slot_bytes": 1966080,
+    "usage_pct": 21.9,
+    "note": "spiffs 파티션(0x3D0000, 128KB)을 오프라인 링버퍼로 전용한다. SPIFFS 로 마운트하지 않는다."
+  },
+  "url": "https://REPLACE-ME/fw/keyplus-diagnostic-0.5.0.bin",
+  "verify": {
+    "device_checks": "md5",
+    "note": "단말은 md5만 검증한다(Update.setMD5). sha256은 배포 경로 무결성 확인용."
+  },
+  "versioning_note": "0.4.1 → 0.5.0. 패치가 아니라 동작이 바뀌는 변경(CPU 클럭·GNSS 전원 제어)이라 마이너를 올렸다. 패치 자리는 한 자리로 유지한다.",
+  "headline": "차량 배터리로 하루를 못 버티던 소비전류를 펌웨어만으로 절반 이하로 낮췄다. CPU 클럭 240→80MHz(−36mA)와 주차 중 GNSS 전원 차단(−45mA) 두 건이다.",
+  "changes_since_0_4_1": [
+    "CPU 클럭 240MHz → 80MHz (FEATURE_CPU_SLOWDOWN). 실측 floor 63mA → 27mA. 80MHz 미만은 APB 가 따라 내려가 UART 보레이트가 깨지므로 config.h 에서 #error 로 차단했다",
+    "주차 중 GNSS duty cycle (FEATURE_GPS_DUTY). 실측 150mA → 105mA. 종전에는 GNSS 엔진이 부팅 때 켜진 뒤 한 번도 꺼지지 않아, 폴링 주기를 늘려도 수신기가 계속 돌았다",
+    "GNSS duty 는 비블로킹이다 — Gps::powerOn() 신설. 기존 Gps::begin() 은 실패 시 최대 15초를 잡아 그동안 차키 명령이 밀린다",
+    "GNSS duty 측위 실패 시 주기 지수 백오프(5→30분). 지하주차장처럼 영영 측위가 안 되는 곳에서 5분마다 90초씩 켜는 낭비(약 13mA)를 자동으로 접는다",
+    "Gps::end() 가 반환값을 내도록 변경. 끄기 실패를 삼키면 조회만 건너뛴 채 GNSS 가 계속 돌아 45mA 를 태우는데 로그는 OFF 라 눈으로 못 찾는다",
+    "Obd2::parkPins() 신설 — TWAI uninstall 후 CAN TX 를 열성(HIGH)으로 고정. 절전 효과는 측정되지 않았고 상태 위생 목적이다",
+    "PWR_BENCH 소비전류 계측 모드 6종(0/1/2/3/4/5) 추가. 출고 기본은 0",
+    "모뎀 슬립(AT+CSCLK) 구현은 들어 있으나 FEATURE_MODEM_SLEEP=0 으로 꺼져 있다 — 효과 0 이 확인됐고 세션 불안정 정황이 있었다"
+  ],
+  "server_impact": "없음. 토픽·페이로드·계약 변경 없음. 다만 주차 중 GNSS 가 꺼져 있는 동안 telemetry 의 좌표는 마지막 측위값으로 유지된다(현재 서버는 좌표를 사용하지 않음을 확인).",
+  "behaviour_changes": {
+    "cpu_clock": "CPU 가 3배 느려진다. 주변장치(TWAI 500kbps·UART·타이머)는 APB 80MHz 고정이라 영향 없음. CPU 바운드 작업(JSON 조립·로그 출력)은 3배 느려진다",
+    "gnss_parked": "주차 판정(vehicleMoving=false) 시 GNSS 전원을 끈다. 5분 주기로 켜서 최대 90초 측위 시도 후 끈다. 주행 재개 시 즉시 상시 ON 복귀",
+    "modem_death_detection": "변경 없음(모뎀 슬립이 꺼져 있어 quiet-idle 경로가 동작하지 않음)"
+  },
+  "measurements_5v_ppk2": {
+    "note": "Nordic PPK2 소스미터 5V 직접 공급. 차량용 12V→5V 컨버터는 측정 경로에 없다 — 차량 12V 쪽 실제 부하는 별도 측정이 필요하다",
+    "floor_240mhz": 63,
+    "floor_80mhz": 27,
+    "mqtt_gps_on": 150,
+    "mqtt_gps_off": 105,
+    "caveat": "모뎀 몫은 고정값이 아니다. RSSI(하향)가 같아도 상향 송신 전력이 달라 세션 간 편차가 크다 — 5분 스냅샷이 아니라 수 시간 평균으로 판단해야 한다"
+  }
+}

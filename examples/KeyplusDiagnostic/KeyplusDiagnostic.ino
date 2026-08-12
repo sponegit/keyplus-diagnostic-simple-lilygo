@@ -56,6 +56,12 @@
 #if FEATURE_OTA
 #include "ota.h"
 #endif
+#if FEATURE_MODEM_SLEEP
+#include "modempwr.h"   // 모뎀 유휴 슬립(AT+CSCLK=1 + DTR)
+#endif
+#endif
+#if FEATURE_WAKE_PROBE
+#include "wake.h"       // light sleep 기상 경로 진단(RI / UART 엣지) — 계측 전용
 #endif
 
 #ifdef DUMP_AT_COMMANDS
@@ -306,9 +312,130 @@ static uint32_t g_gpsNofixLogAt = 0;   // 마지막 미측위 리포트 시각
 
 // GPS 1회 폴 → g_lastFix 갱신. 폴 시각도 같이 갱신하므로, 발행 직전에 호출하면
 // 바로 뒤따르는 주기 폴이 중복 실행되지 않는다.
+#if FEATURE_GPS_DUTY
+// 주행 판정은 아래(GPS 폴 주기 결정부)에 정의돼 있다 — duty 가 그보다 먼저라 선언만 당겨온다.
+static bool vehicleMoving(const Obd2::Data &d);
+
+// ── GNSS duty cycle (주차 중) ────────────────────────────────────────────────
+// 실측 65mA 로 시스템 최대 항목이다. 주차 중엔 좌표가 안 변하므로 엔진을 꺼 둔다.
+//
+// ⚠️ 여기서 GNSS 를 끄면 아래 "GNSS 가 꺼짐 = 모뎀이 리부팅됐다" 판정(R2)이 우리가
+//    끈 것을 사망 신호로 오인해 **멀쩡한 MQTT 세션을 스스로 끊는다.** 그래서 g_dutyOff
+//    로 '의도적 OFF' 를 표시하고, 그 판정과 폴 자체를 통째로 건너뛴다.
+//    (같은 함정을 g_gpsReenablePending 이 이미 겪었다 — 그 주석 참고)
+static bool     g_dutyOff    = false;  // 우리가 일부러 껐다
+static uint32_t g_dutyOnAt   = 0;      // 이번 사이클에서 켠 시각(TTFF 기준)
+static uint32_t g_dutyOffAt  = 0;      // 끈 시각(다음 사이클 기준)
+static uint32_t g_dutyFixAt  = 0;      // 이번 사이클에서 측위된 시각(HOLD 기준)
+static uint32_t g_ttffLast   = 0;      // 마지막 TTFF(ms). 0 = 이번 사이클 미측위
+static uint32_t g_ttffSum    = 0;      // 평균 TTFF 용
+static uint16_t g_ttffCnt    = 0;
+static uint16_t g_dutyCycles = 0;      // 사이클 횟수
+static uint8_t  g_dutyForce  = 0;      // 0=자동 1=주차 강제 2=주행 강제(계측용)
+// 현재 적용 중인 주기. 측위 실패마다 2배로 늘리고(상한 GPS_PARKED_CYCLE_MAX_MS),
+// 성공하면 기본값으로 되돌린다. 지하주차장처럼 영영 측위가 안 되는 곳에서 5분마다
+// 90초씩 켜는 낭비(≈13mA)를 자동으로 접기 위한 것이다.
+static uint32_t g_dutyCycleMs = GPS_PARKED_CYCLE_MS;
+
+// 주차로 볼 것인가. 자동일 때는 vehicleMoving 의 반대다.
+// ⚠️ FEATURE_OBD2=0 빌드에서 vehicleMoving 은 판단 근거가 없어 **항상 주행**을 반환한다
+//    (보수적 기본값). 그 빌드로 duty cycle 을 계측하려면 'gpsduty park' 로 강제해야 한다.
+static bool dutyParked()
+{
+    if (g_dutyForce == 1) return true;
+    if (g_dutyForce == 2) return false;
+    return !vehicleMoving(g_obd);
+}
+
+// 매 틱 호출. AT 는 상태가 바뀌는 순간에만 1회 나간다(켜기/끄기).
+static void gpsDutyUpdate(uint32_t now)
+{
+    // 재활성화 보류 중이면 손대지 않는다 — 그 경로가 GNSS 소유권을 갖는다.
+    if (g_gpsReenablePending) return;
+
+    if (!dutyParked()) {
+        // 주행 재개 → 즉시 되살린다. 위치가 실제로 변하는 구간이라 상시 ON 이 맞다.
+        if (g_dutyOff) {
+            if (Gps::powerOn(modem)) {
+                g_dutyOff = false;
+                LOGI(SerialMon, "[GPS] 주행 재개 — GNSS 상시 ON 복귀\n");
+            }   // 실패하면 다음 틱에 다시 시도(비블로킹)
+        }
+        return;
+    }
+
+    if (g_dutyOff) {
+        // 꺼둔 상태 — 다음 사이클까지 대기. 주기 0 이면 주행 재개 전까지 계속 끈 채로 둔다.
+        if (GPS_PARKED_CYCLE_MS == 0) return;
+        if ((int32_t)(now - g_dutyOffAt) < (int32_t)g_dutyCycleMs) return;
+        if (Gps::powerOn(modem)) {
+            g_dutyOff   = false;
+            g_dutyOnAt  = now;
+            g_dutyFixAt = 0;
+            g_ttffLast  = 0;
+            g_dutyCycles++;
+            LOGD(SerialMon, "[GPS] duty: 사이클 %u 시작 — GNSS ON\n", (unsigned)g_dutyCycles);
+        }
+        return;
+    }
+
+    // 켜진 상태 — 끌 시점인가.
+    if (g_dutyOnAt == 0) g_dutyOnAt = now;      // 부팅 직후 첫 진입
+
+    if (g_gpsFixNow) {
+        // 측위됨 → HOLD 만큼 더 두고 끈다.
+        if (g_dutyFixAt == 0) {
+            g_dutyFixAt = now;
+            g_ttffLast  = now - g_dutyOnAt;
+            g_ttffSum  += g_ttffLast;
+            g_ttffCnt++;
+        }
+        if ((int32_t)(now - g_dutyFixAt) < (int32_t)GPS_PARKED_HOLD_MS) return;
+    } else if ((int32_t)(now - g_dutyOnAt) < (int32_t)GPS_PARKED_FIX_TIMEOUT_MS) {
+        return;     // 아직 기다린다
+    }
+
+    // 끈다. ⚠️ g_dutyOff 를 **먼저** 세운다 — 그래야 이 뒤의 어떤 경로도
+    //    "GNSS 가 꺼졌다 = 모뎀 리부팅" 으로 오판하지 않는다.
+    g_dutyOff  = true;
+    g_dutyOffAt = now;
+    // ⚠️ 끄기 실패를 삼키면 안 된다. 실패했는데 껐다고 믿으면 조회만 건너뛴 채
+    //    GNSS 가 계속 돌아 45mA 를 태우는데, 로그는 OFF 라 눈으로는 못 찾는다.
+    //    실패 시 다음 틱에 다시 시도하도록 상태를 되돌린다(비블로킹 재시도).
+    if (!Gps::end(modem)) {
+        g_dutyOff = false;
+        LOGW(SerialMon, "[GPS] duty: GNSS 끄기 실패 — 다음 틱에 재시도\n");
+        return;
+    }
+    if (g_ttffLast) {
+        g_dutyCycleMs = GPS_PARKED_CYCLE_MS;      // 잡히는 곳이다 — 기본 주기로 복귀
+        LOGI(SerialMon, "[GPS] duty: 측위 %lus 만에 완료 → GNSS OFF (평균 TTFF %lus, %u회, 다음 %lu분)\n",
+             (unsigned long)(g_ttffLast / 1000UL),
+             (unsigned long)(g_ttffCnt ? (g_ttffSum / g_ttffCnt / 1000UL) : 0),
+             (unsigned)g_ttffCnt, (unsigned long)(g_dutyCycleMs / 60000UL));
+    } else {
+        // 실패 → 주기를 2배로. 지하주차장처럼 영영 안 잡히는 곳에서 무한 재시도하며
+        // 90초씩 켜는 낭비를 접는다. 한 번이라도 잡히면 위에서 기본값으로 돌아간다.
+        if (g_dutyCycleMs < GPS_PARKED_CYCLE_MAX_MS) {
+            g_dutyCycleMs *= 2;
+            if (g_dutyCycleMs > GPS_PARKED_CYCLE_MAX_MS) g_dutyCycleMs = GPS_PARKED_CYCLE_MAX_MS;
+        }
+        LOGW(SerialMon, "[GPS] duty: %lus 안에 측위 실패 → GNSS OFF (다음 시도 %lu분 뒤)\n",
+             (unsigned long)(GPS_PARKED_FIX_TIMEOUT_MS / 1000UL),
+             (unsigned long)(g_dutyCycleMs / 60000UL));
+    }
+}
+#endif  // FEATURE_GPS_DUTY
+
 static void pollGps(uint32_t now)
 {
     g_lastGpsPoll = now;
+
+#if FEATURE_GPS_DUTY
+    // 우리가 꺼둔 동안은 조회하지 않는다 — 꺼진 GNSS 에 getGPS 를 던지면 응답 없이
+    // 타임아웃만 먹는다(g_gpsReenablePending 경로가 같은 이유로 이미 이렇게 한다).
+    if (g_dutyOff) return;
+#endif
 
     // 미뤄둔 GNSS 재활성화(R3/R5). 모뎀이 살아났으면 여기서 되살린다.
     // 실패하면 플래그를 유지해 다음 폴에 다시 시도한다.
@@ -496,6 +623,19 @@ static void printBootHeader()
     // 전까지 끈다. 지금 스냅샷 식별은 fw 버전(FW_VERSION)으로 한다.
     // SerialMon.printf ("  build      : %s %s\n", __DATE__, __TIME__);
     SerialMon.printf ("  reset      : %s\n", resetReasonStr());
+    // 클럭은 계측 결과를 해석할 때 반드시 알아야 하는 값이다 — 배너에 박아둔다.
+    SerialMon.printf ("  cpu        : %luMHz\n", (unsigned long)getCpuFrequencyMhz());
+#if PWR_BENCH
+    // 계측 빌드는 기능이 대거 빠져 있다 — 이 줄이 없으면 나중에 로그만 보고
+    // "왜 GPS 가 안 뜨지" 를 다시 추적하게 된다.
+    SerialMon.printf ("  ⚠️ PWR_BENCH: %d (%s) — 소비전류 계측 전용 빌드\n", PWR_BENCH,
+                      PWR_BENCH == 1 ? "idle: LTE off, 모뎀 유휴"
+                    : PWR_BENCH == 2 ? "mqtt: LTE+MQTT 상시연결만"
+                    : PWR_BENCH == 3 ? "floor: 모뎀 off, ESP32+보드만"
+                    : PWR_BENCH == 4 ? "mqtt+gps: 2 에 GNSS 만 추가"
+                    : PWR_BENCH == 5 ? "mqtt+obd: 2 에 OBD2/CAN 만 추가"
+                                     : "알 수 없음");
+#endif
     SerialMon.println("============================================================");
 }
 
@@ -648,6 +788,15 @@ static void modemPowerOn()
     digitalWrite(BOARD_POWERON_PIN, HIGH);
 #endif
 
+#if (PWR_BENCH == 3)
+    // 바닥 전류 계측 — 보드 전원 유지 핀(POWERON)만 세우고 모뎀은 **켜지 않는다**.
+    // A7670E 는 PWRKEY 펄스 없이는 부팅하지 않으므로, VBAT 레일만 인가된 OFF 상태로
+    // 남는다. POWERON 을 내리면 보드 자체가 리셋되므로 그건 건드리지 않는다.
+    // ⚠️ 이후 setup 의 AT 조회(printDeviceInfo 등)는 전부 타임아웃한다 — 부팅이
+    //    수십 초 느려지는 건 정상이다. 계측 전용 모드다.
+    return;
+#endif
+
 #ifdef MODEM_RESET_PIN
     pinMode(MODEM_RESET_PIN, OUTPUT);
     digitalWrite(MODEM_RESET_PIN, !MODEM_RESET_LEVEL); delay(100);
@@ -703,6 +852,16 @@ static void afterModemReset(bool revived)
     g_lteFailStreak  = 0;             // 리셋했으니 다시 센다
     g_mqttStuckStage = 0;             // 승격 단계도 원위치 — 모뎀이 새 상태다
     if (!revived) return;
+
+#if FEATURE_MODEM_SLEEP
+    // ⚠️ 모뎀 리셋은 AT+CSCLK 도 기본값(0)으로 되돌린다. 여기서 다시 걸지 않으면
+    //    리셋 한 번에 슬립이 조용히 사라져 소비전류만 원래대로 돌아간다
+    //    (GNSS 가 CGNSSPWR=0 으로 돌아가는 것과 같은 함정이다 — 아래 참고).
+    //    AT 1왕복이라 GPS 재활성화(최대 15초)와 달리 여기 두어도 재접속을 밀지 않는다.
+    if (!ModemPwr::begin(modem)) {
+        LOGW(SerialMon, "[MSLEEP] 리셋 후 CSCLK 재설정 실패 — 슬립 없이 계속\n");
+    }
+#endif
 
 #if FEATURE_GPS
     // 모뎀 리셋은 GNSS 도 끈다(AT+CGNSSPWR=0 상태로 복귀) — 되살려야 하지만 **여기서는
@@ -885,6 +1044,13 @@ static void appPrintHelp(Stream &io);
 // ---------------------------------------------------------------------------
 void setup()
 {
+#if FEATURE_CPU_SLOWDOWN
+    // ⚠️ 시리얼을 열기 **전에** 내린다. 80MHz 에서는 APB 가 그대로 80MHz 라 이미 열린
+    //    UART 도 안 깨지지만, 순서를 지키면 그 가정에 기대지 않아도 된다.
+    //    (80 미만은 APB 가 따라 내려가 보레이트가 깨진다 — config.h 에서 #error 로 막았다)
+    setCpuFrequencyMhz(CPU_FREQ_MHZ);
+#endif
+
     // U0 + 보조 UART 동시 open. 이후 모든 출력이 양쪽 포트에 나간다.
     consoleBegin();
     delay(100);
@@ -903,10 +1069,26 @@ void setup()
     Carkey::begin();
 #endif
 
+    // ⚠️ FEATURE_OBD2 와 **무관하게** CAN 핀을 열성으로 주차시킨다.
+    //    트랜시버는 펌웨어 토글과 상관없이 배선돼 전원을 먹으므로, TX 가 뜬 채로 남으면
+    //    버스를 계속 우성으로 물어 수십 mA 를 태운다(obd2.h 참고).
+    //    OBD2 를 쓰는 빌드에서는 바로 아래 begin() 이 이 핀을 TWAI 로 가져간다.
+    Obd2::parkPins();
+
 #if FEATURE_OBD2
     // OBD2/CAN 링크 초기화(모뎀 무관, TWAI). 차량 미연결/시동 꺼짐이면 실패 → loop 재시도.
     LOGD(SerialMon, "[OBD2] CAN 링크 초기화...\n");
     Obd2::begin(SerialMon);
+#endif
+
+#if FEATURE_WAKE_PROBE
+    // ⚠️ 모뎀 전원 인가(modemPowerOn) **전에** 붙인다. 브링업 중에도 URC 는 오가므로
+    //    그때의 RI 엣지까지 세어야 "배선이 있는가" 판정 표본이 넉넉해진다.
+#if FEATURE_LTE
+    Wake::begin(&modem.stream);
+#else
+    Wake::begin(nullptr);
+#endif
 #endif
 
     // 런타임 설정 로드(NVS "cfg") — config_update로 변경된 telemetry 주기/keepalive 복원.
@@ -943,7 +1125,12 @@ void setup()
     delay(3000);
 
     // 모뎀이 안 뜨면 GPS/LTE 는 못 쓰지만, 콘솔·OBD2·차키는 살아 있어야 한다 → 계속 진행.
+#if (PWR_BENCH == 3)
+    // 모뎀을 일부러 안 켠 모드다 — 90초 AT 대기는 의미가 없다.
+    const bool modemReady = false;
+#else
     const bool modemReady = modemWaitReady();
+#endif
     (void)modemReady;   // 기능 토글 조합(GPS/LTE 모두 off)에 따라 미사용일 수 있다
 
 #if FEATURE_GPS
@@ -981,6 +1168,19 @@ void setup()
         LteStatus st;
         Lte::status(modem, st);
         Lte::printStatus(st, SerialMon);
+#if FEATURE_MODEM_SLEEP
+        // 등록이 끝난 뒤에 건다 — 등록 과정은 AT 가 촘촘해 어차피 잘 틈이 없고,
+        // 브링업 중에 재우면 진단이 어려워진다.
+        // ⚠️ 적용된 방식을 그대로 찍는다. 여기에 상수를 박아두면 mode 를 바꿔가며
+        //    계측할 때 로그가 거짓을 말한다(실제 CSCLK=2 인데 1 로 출력하던 버그).
+        if (ModemPwr::begin(modem)) {
+            LOGI(SerialMon, "[MSLEEP] 모뎀 유휴 슬립 활성 (CSCLK=%u, %s)\n",
+                 (unsigned)ModemPwr::mode(),
+                 ModemPwr::mode() == 1 ? "DTR 슬립" : "RX 슬립");
+        } else {
+            LOGW(SerialMon, "[MSLEEP] CSCLK 설정 실패 — 슬립 없이 계속\n");
+        }
+#endif
 #if (FEATURE_GPS && GPS_USE_AGPS)
         // PDP 가 올라온 직후 AGPS 보조 데이터를 받는다 — 콜드스타트(수 분)를 크게 줄인다.
         // 실패해도 측위 자체는 진행되므로 경고만 남기고 넘어간다.
@@ -1275,6 +1475,21 @@ static void appPrintHelp(Stream &io)
 #if FEATURE_FAST_SAMPLE
     io.println("             fast                         고빈도 창/집계 상태");
 #endif
+#if (FEATURE_GPS && FEATURE_GPS_DUTY)
+    io.println("             gpsduty                      GNSS duty cycle 상태·TTFF");
+    io.println("             gpsduty auto|park|drive      주차/주행 강제(계측용)");
+#endif
+    io.println("             canpark [on|off]             CAN 핀 주차 A/B(계측용)");
+#if FEATURE_WAKE_PROBE
+    io.println("             wake                         RI(GPIO33) 엣지 카운터 — 배선 확인");
+    io.println("             wake sleep [초]              실제 light sleep 시험(무엇이 깨우는지)");
+#endif
+#if FEATURE_MODEM_SLEEP
+    io.println("             msleep                       모뎀 유휴 슬립 상태(수면비율)");
+    io.println("             msleep on|off                모뎀 슬립 켜기/끄기(즉시 적용)");
+    io.println("             msleep probe                 슬립이 진짜 걸렸는지 모뎀 반응으로 판별");
+    io.println("             msleep mode 1|2              1=DTR 슬립 / 2=RX 슬립(핀 불필요)");
+#endif
 }
 
 // 콘솔 AT 조회 전에 대기 중인 URC 를 먼저 소화시킨다.
@@ -1323,6 +1538,62 @@ static bool appConsole(const String &cmd, const String &arg, Stream &io)
 #endif
 #if FEATURE_FAST_SAMPLE
     if (Fast::tryConsole(cmd, arg, io)) return true;
+#endif
+    // 'canpark on|off' — CAN 핀 주차 A/B(계측용).
+    // PWR_BENCH=2(OBD2 off) 기준선이 85~105mA → 60mA 로 떨어졌는데, 그 사이 들어간
+    // 전력 관련 변경이 parkPins 뿐이라 이걸로 확인한다. 같은 실행 안에서 토글해야
+    // 의미가 있다 — 실행 간 비교는 LTE 전파 상태 때문에 ±20mA 가 흔들린다.
+    if (cmd == "canpark") {
+        String w = arg; w.trim(); w.toLowerCase();
+        if (w == "on")       Obd2::parkPins();
+        else if (w == "off") Obd2::unparkPins();
+        else if (w.length()) {
+            io.println("사용법: canpark [on|off]   on=TX HIGH(열성 주차) off=뜬 입력(예전 상태)");
+            return true;
+        }
+        io.printf("[CANPARK] TX=GPIO%d RX=GPIO%d  TWAI=%s\n",
+                  PIN_CAN_TX, PIN_CAN_RX, Obd2::isInstalledNow() ? "설치됨(핀 소유자 — 토글 무시)" : "미설치");
+        if (w.length()) io.printf("          → %s 적용\n", w == "on" ? "주차(TX HIGH)" : "해제(뜬 입력)");
+        return true;
+    }
+#if FEATURE_WAKE_PROBE
+    // 'wake' / 'wake sleep [초]' — 모뎀 AT 를 쓰지 않으므로 URC 배수가 필요 없다.
+    if (Wake::tryConsole(cmd, arg, io)) return true;
+#endif
+#if (FEATURE_GPS && FEATURE_GPS_DUTY)
+    // 'gpsduty [auto|park|drive]' — 상태 조회 + 주차/주행 강제.
+    // ⚠️ 강제가 필요한 이유: FEATURE_OBD2=0 계측 빌드(mqtt+gps)에서는 vehicleMoving 이
+    //    판단 근거가 없어 항상 '주행'을 반환한다. 그대로면 duty 가 영영 안 돈다.
+    if (cmd == "gpsduty") {
+        String w = arg; w.trim(); w.toLowerCase();
+        if (w == "auto")       g_dutyForce = 0;
+        else if (w == "park")  g_dutyForce = 1;
+        else if (w == "drive") g_dutyForce = 2;
+        else if (w.length()) {
+            io.println("사용법: gpsduty [auto|park|drive]   (인자 없으면 상태 조회)");
+            return true;
+        }
+        io.printf("[GPSDUTY] 판정=%s(%s) GNSS=%s 사이클=%u회\n",
+                  dutyParked() ? "주차" : "주행",
+                  g_dutyForce == 0 ? "자동" : g_dutyForce == 1 ? "강제 주차" : "강제 주행",
+                  g_dutyOff ? "OFF" : "ON", (unsigned)g_dutyCycles);
+        io.printf("          주기=%lus(기본 %lus) 측위상한=%lus 마지막TTFF=%lus 평균TTFF=%lus(%u회)\n",
+                  (unsigned long)(g_dutyCycleMs / 1000UL),
+                  (unsigned long)(GPS_PARKED_CYCLE_MS / 1000UL),
+                  (unsigned long)(GPS_PARKED_FIX_TIMEOUT_MS / 1000UL),
+                  (unsigned long)(g_ttffLast / 1000UL),
+                  (unsigned long)(g_ttffCnt ? (g_ttffSum / g_ttffCnt / 1000UL) : 0),
+                  (unsigned)g_ttffCnt);
+        return true;
+    }
+#endif
+#if FEATURE_MODEM_SLEEP
+    // 'msleep on|off' — PPK2 를 물린 채 재플래싱 없이 슬립 A/B 비교용.
+    // ⚠️ URC 를 먼저 비운다: on/off 가 AT+CSCLK 를 보내므로 info/status 와 같은 이유다.
+    if (cmd == "msleep") {
+        drainModemUrc();
+        if (ModemPwr::tryConsole(cmd, arg, modem, io)) return true;
+    }
 #endif
     // 임의 AT 명령 패스스루 — 현장에서 재플래싱 없이 모뎀에 직접 물어보기 위한 것이다.
     // (측위 진단: at+cgnssinfo / at+cgnsspwr? / at+cgnssmode? / at+cvauxs=1 등)
@@ -1439,7 +1710,19 @@ void loop()
     // 주기 폴 — 주행 중엔 GPS_POLL_INTERVAL_MS, 정차/주차 중엔 GPS_POLL_IDLE_MS.
     // 발행 직전에도 갱신하므로(아래 telemetry 분기) 이 주기 폴은 측위 유지와
     // 콜드스타트 진행 확인이 목적이다. 주차 중엔 좌표가 변하지 않으니 느슨하게 둔다.
+#if FEATURE_GPS_DUTY
+    // ⚠️ 폴 주기와 **별개로 매 틱** 돌린다. 켜고/끄는 판단은 폴 주기(주차 중 60초)보다
+    //    잘게 봐야 측위 직후 바로 끌 수 있다 — 폴 주기에 묶으면 최대 60초를 더 켜 둔다.
+    //    AT 는 상태가 바뀌는 순간에만 나가므로 매 틱 불러도 비용이 없다.
+    gpsDutyUpdate(now);
+#endif
     uint32_t gpsInterval = vehicleMoving(g_obd) ? GPS_POLL_INTERVAL_MS : GPS_POLL_IDLE_MS;
+#if FEATURE_GPS_DUTY
+    // ⚠️ 주차 중이라도 **켜져 있는 동안**에는 주행과 같은 촘촘한 주기로 본다.
+    //    측위 여부는 폴을 해야 알 수 있는데, 60초 주기로 보면 이미 잡힌 fix 를 최대
+    //    60초나 늦게 알아채고 그만큼 65mA 를 더 태운다. duty 의 이득을 갉아먹는 자리다.
+    if (!g_dutyOff) gpsInterval = GPS_POLL_INTERVAL_MS;
+#endif
     if (now - g_lastGpsPoll >= gpsInterval) pollGps(now);
 #endif
 
@@ -1468,9 +1751,18 @@ void loop()
     //       수신 명령(+CMQTTRX*)이 통째로 사라진다.
     //    ② 직전 발행 후 가드 — 발행 ACK(+CMQTTPUB)가 빠질 시간을 준다.
     //    ③ 접속 중일 때만 — 미접속 구간은 아래 재접속 경로가 이미 프로브한다.
+    // ④ 자는 중이면 건너뛴다(MODEM_SLEEP_QUIET_IDLE). 프로브 하나 때문에 모듈을
+    //    5초마다 깨우면 슬립이 성립할 유휴 창 자체가 사라진다 — 실측 118회 깨움 =
+    //    평균 4.1초 수면이었고 전류는 1mA 도 안 변했다.
+    //    ⚠️ 이러면 죽은 모뎀을 5초 안에 못 잡는다. 대신 30초마다 나가는 발행의 결과
+    //       URC(+CMQTTPUB, 8초 타임아웃)가 생존 신호 역할을 이어받는다 — 최악 38초.
+    //       발행이 멈춘 상태(미접속)에서는 아래 재접속 경로가 이미 프로브한다.
     if (Mqtt::isConnected(modem)
             && (int32_t)(now - g_lastProbeAt) >= (int32_t)MODEM_PROBE_INTERVAL_MS
             && !modem.stream.available()
+#if (FEATURE_MODEM_SLEEP && MODEM_SLEEP_QUIET_IDLE)
+            && !ModemPwr::asleep()
+#endif
             && Mqtt::publishGapElapsed(now, MODEM_PROBE_PUB_GUARD_MS)) {
         g_lastProbeAt = now;
         if (modem.testAT(MODEM_PROBE_TIMEOUT_MS)) {
@@ -1487,8 +1779,14 @@ void loop()
     // 따로 두어 프로브(5초)보다 성기게 돈다.
     // ⚠️ 미접속 구간에도 돈다 — 죽기 직전이 아니라 "죽어 있는 동안"의 레일 전압도
     //    판별에 필요하다(부하가 빠졌는데도 낮으면 공급 자체가 모자란 것이다).
+    // ⚠️ 자는 중이면 건너뛴다 — 프로브와 같은 이유다(10초마다 깨우면 슬립이 무의미).
+    //    온도·vbat 은 부가 진단이라 자는 동안 걸러도 잃는 게 없다. 깨어나는 순간
+    //    (발행 주기 30초)마다 한 번씩은 표본이 잡힌다.
     if ((int32_t)(now - g_pwrSampleAt) >= (int32_t)PWR_SAMPLE_INTERVAL_MS
             && !modem.stream.available()
+#if (FEATURE_MODEM_SLEEP && MODEM_SLEEP_QUIET_IDLE)
+            && !ModemPwr::asleep()
+#endif
             && Mqtt::publishGapElapsed(now, MODEM_PROBE_PUB_GUARD_MS)) {
         g_pwrSampleAt = now;
         samplePwr(modem);
@@ -1836,6 +2134,24 @@ void loop()
     if (!connected && now - g_lastStatAt >= STATUS_LINE_IDLE_MS) {
         g_lastStatAt = now;
         printStatusLine(false, g_seq, "-");
+    }
+#endif
+
+#if FEATURE_MODEM_SLEEP
+    // ── 모뎀 재우기 ─────────────────────────────────────────────────────────
+    // 이 틱에서 할 일이 끝났으니 재워도 되는지 본다. 판단 근거는 "마지막 AT 이후
+    // 충분히 조용했는가" 하나이고(modempwr.cpp), 여기서는 그것만으로는 부족한 두
+    // 가지를 더 막는다.
+    //   ① 스트림에 바이트가 남아 있으면 재우지 않는다 — 아직 안 읽은 URC 가 있다는
+    //      뜻이다. 다음 틱의 Mqtt::handle 이 읽어야 하는데, 그 경로는 AT 를 보내지
+    //      않아 sendAT 훅이 깨워주지 못한다.
+    //   ② 발행 결과(+CMQTTPUB)를 기다리는 중이면 재우지 않는다. 모뎀이 URC 를 내며
+    //      스스로 깨어날 때 첫 바이트가 깨질 여지가 있는데, 하필 그게 발행 ACK 면
+    //      pubAckOverdue(8초)가 세션을 사망 처리해 재접속 폭풍이 된다.
+    //      ⚠️ 이 가드는 보수적으로 시작한 값이다. 차키 명령 수신이 안정적으로
+    //         확인되면 완화해서 수면비율('msleep' 의 수면비율%)을 더 끌어올릴 수 있다.
+    if (!modem.stream.available() && !Mqtt::pubAckPending(modem)) {
+        ModemPwr::allowSleepIfIdle(now);
     }
 #endif
 

@@ -11,6 +11,19 @@
 
 #include "TinyGsmCommon.h"
 
+// [keyplus 패치] 모뎀 슬립(AT+CSCLK=1) 훅.
+//
+// AT+CSCLK=1 을 걸면 모뎀은 DTR 이 HIGH 인 동안 UART 를 끄고 잔다. 자는 동안 보낸 AT
+// 는 그냥 사라진다 — 펌웨어 입장에선 "모뎀 무응답"으로 보이고, 그 길로 프로브 실패
+// → 모뎀 리셋 경로를 탄다. 그래서 **AT 를 보내기 직전에 반드시 깨워야** 한다.
+//
+// 그런데 AT 를 보내는 자리는 이 라이브러리 내부(MQTT 래퍼·등록 조회·GNSS)와 펌웨어
+// 모듈(lte/mqtt/cmd/gps/ota/apn/provisioning)에 흩어져 있어 일일이 감싸면 반드시
+// 하나를 빠뜨린다. sendAT 이 그 전부가 지나는 유일한 관문이므로 여기서 한 번에 건다.
+//
+// 약한 심볼이라 정의하지 않은 스케치(examples/ 의 나머지 전부)는 영향을 받지 않는다.
+extern "C" void tinyGsmModemWakeHook(void) __attribute__((weak));
+
 template <class modemType>
 class TinyGsmModem {
  public:
@@ -25,6 +38,9 @@ class TinyGsmModem {
   }
   template <typename... Args>
   inline void sendAT(Args... cmd) {
+    // [keyplus 패치] 자고 있으면 깨우고 UART 가 살아날 때까지 기다린다(위 주석 참고).
+    // 이미 깨어 있으면 즉시 반환하므로 평상시 비용은 함수호출 하나다.
+    if (tinyGsmModemWakeHook) { tinyGsmModemWakeHook(); }
     thisModem().streamWrite("AT", cmd..., thisModem().gsmNL);
     thisModem().stream.flush();
     TINY_GSM_YIELD(); /* DBG("### AT:", cmd...); */
