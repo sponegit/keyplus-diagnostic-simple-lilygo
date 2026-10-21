@@ -259,6 +259,7 @@ void handle(TinyGsm &modem, Stream &log)
         String url = jStr(body, "url");
         String md5 = jStr(body, "md5");
         String ver = jStr(body, "version");
+        String hw  = jStr(body, "hw");       // 선택 — 없으면 이미지 마커만으로 판정
         // ⚠️ 실행 전에 큐에서 뺀다. Ota::start 는 성공 시 재부팅해 돌아오지 않으므로,
         //    나중에 빼는 코드는 실패 경로에서만 도는 셈이 된다(재부팅 시엔 RAM 큐가
         //    통째로 사라져 무해하지만, 순서를 규칙으로 못 박아 두는 편이 안전하다).
@@ -266,7 +267,7 @@ void handle(TinyGsm &modem, Stream &log)
         // Ota::start는 성공 시 재부팅(반환 안 함), 실패 시 NVS에 failed 기록 후 false.
         // ⚠️ 어느 경우든 결과 ack는 여기서 발행하지 않는다 — MQTT (재)접속 후 loop의
         //    Ota::flushPendingAck()가 발행(다운로드 중 MQTT 단절로 즉시 ack 유실 방지).
-        Ota::start(modem, log, cmdId, url, md5, ver);
+        Ota::start(modem, log, cmdId, url, md5, ver, hw);
         return;
 #else
         sendAck(modem, log, cmdId, "failed");

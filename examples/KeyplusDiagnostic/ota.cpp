@@ -14,6 +14,7 @@
 #include "config.h"
 #include "cmd.h"
 #include "mqtt.h"
+#include "hwmark.h"
 #include <Update.h>
 #include <Preferences.h>
 #include "esp_ota_ops.h"
@@ -101,10 +102,19 @@ void tick(Stream &log)
 // 실패 시 NVS에 failed 기록 후 false 반환(호출측은 ack하지 않음 — flush가 담당).
 bool start(TinyGsm &modem, Stream &log,
            const String &cmdId, const String &url,
-           const String &md5, const String &version)
+           const String &md5, const String &version,
+           const String &hw)
 {
     if (url.isEmpty() || !url.startsWith("http")) {
         LOGE(log, "[OTA] 잘못된 URL: '%s' — 실패\n", url.c_str());
+        savePending(cmdId, version, "failed");
+        return false;
+    }
+    // 하드웨어 세대 가드 ① — 명령의 hw 라벨. 비어 있으면 통과(hw 를 안 보내는 서버와 호환).
+    // 라벨만으로는 서버 실수를 못 막으므로 ② 이미지 마커 검사가 아래 스트리밍에 따로 있다.
+    if (!hw.isEmpty() && hw != HW_MODEL) {
+        LOGE(log, "[OTA] 하드웨어 세대 불일치: 명령 hw=%s, 단말 %s — 다운로드 안 함\n",
+                   hw.c_str(), HW_MODEL);
         savePending(cmdId, version, "failed");
         return false;
     }
@@ -148,10 +158,12 @@ bool start(TinyGsm &modem, Stream &log,
     size_t   total = 0;
     int      lastPct = 0;
     uint32_t lastAdvance = millis();
+    HwMark::Scanner mark;   // 하드웨어 세대 가드 ② — 이미지 안의 KPHW 마커
 
     while (total < fwSize) {
         int len = modem.https_body(buf, OTA_CHUNK_SIZE);
         if (len > 0) {
+            mark.feed(buf, (size_t)len);
             if (Update.write(buf, len) != (size_t)len) {
                 LOGE(log, "[OTA] Update.write 실패 err=%d — 중단\n", Update.getError());
                 Update.abort();
@@ -180,6 +192,17 @@ bool start(TinyGsm &modem, Stream &log,
         }
     }
     modem.https_end();
+
+    // 다른 세대 이미지면 확정 전에 버린다. abort 하면 부트 파티션이 바뀌지 않아 실행
+    // 이미지는 그대로다. 마커가 아예 없는 이미지(0.5.0 이하)는 통과 — hwmark.h 주석.
+    if (mark.foreign()) {
+        LOGE(log, "[OTA] 다른 하드웨어 세대 이미지(%s) — 단말은 %s. 플래시 확정 안 함\n",
+                   mark.foreignModel(), HW_MODEL);
+        Update.abort();
+        savePending(cmdId, version, "failed");
+        return false;
+    }
+    LOGI(log, "[OTA] 하드웨어 마커: %s\n", mark.matched() ? "일치" : "없음(구 이미지 — 통과)");
 
     // ⑤ 마감 — MD5/크기 검증 포함. 실패면 실행 이미지는 그대로(재부팅 안 함).
     if (!Update.end(true)) {

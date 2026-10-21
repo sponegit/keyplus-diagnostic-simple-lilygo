@@ -18,7 +18,8 @@
  *   (MQTT 접속) 통과 후 onHealthy()에서 직접 확정한다. 확정 전 크래시/행(WDT) 시 부트로더가
  *   직전 정상 이미지로 자동 롤백 → 구 이미지가 부팅해 버전 불일치로 failed ack.
  *
- * 계약: @keyplus-diagnostic/shared command.ts (type=ota_start, payload={url,md5,version,size})
+ * 계약: @keyplus-diagnostic/shared command.ts (type=ota_start, payload={url,md5,version,size,hw?})
+ *   hw 는 0.5.1 에서 추가된 선택 필드다. 서버가 아직 안 보내도 이미지 마커 검사가 막는다.
  * 설계: phase8-firmware-ota-lte.md
  */
 #pragma once
@@ -41,9 +42,12 @@ bool hasPending();
 //      MQTT (재)접속 후 loop가 flushPendingAck()로 발행.
 //   url : 모뎀이 GET할 바이너리 주소(로컬 평문 HTTP / 상용 HTTPS)
 //   md5 : 32hex(빈 문자열이면 크기만 검증)   version : 기대 펌웨어 버전(빈 문자열 허용)
+//   hw  : 대상 하드웨어 세대(v1/v2). HW_MODEL 과 다르면 다운로드 전에 실패. 빈 문자열 허용.
+//         별개로 이미지 안의 KPHW 마커가 다른 세대면 플래시 확정 전에 실패한다(hwmark.h).
 bool start(TinyGsm &modem, Stream &log,
            const String &cmdId, const String &url,
-           const String &md5, const String &version);
+           const String &md5, const String &version,
+           const String &hw);
 
 // pending OTA 결과 ack 발행. MQTT 접속 상태에서 loop가 호출(hasPending() 가드).
 // 발행 후 NVS 소거. (성공=버전 검증 done, 실패=기록된 failed)
