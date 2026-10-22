@@ -16,7 +16,10 @@
  *    "KPHW:" 다음 바로 NUL 인 조각이 생기면 빈 모델명으로 읽혀 자기 이미지를 거부한다.
  *    스캐너는 접두어를 kMarker 배열에서 직접 읽는다(리터럴을 따로 두지 않는다).
  *
- * Arduino 의존이 없어 호스트에서 단위 테스트할 수 있다.
+ * Arduino 의존이 없어 호스트에서 단위 테스트한다(test/test_hwmark).
+ *
+ * 위치: lib/KpLink — 메인(HW_MODEL "v2")과 서브("v2-sub")가 같은 스캐너를 쓴다.
+ * include 하기 전에 각자의 config.h 로 HW_MODEL 을 정의해야 한다.
  */
 #pragma once
 

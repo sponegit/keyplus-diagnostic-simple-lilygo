@@ -1,6 +1,8 @@
 .pio
 .vscode
 test
+# 루트 test/ 는 PC 단위 테스트(pio test -e native) — 추적한다. 다른 곳의 test 는 계속 무시.
+!/test/
 script
 build
 extras

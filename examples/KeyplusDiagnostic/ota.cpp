@@ -14,7 +14,7 @@
 #include "config.h"
 #include "cmd.h"
 #include "mqtt.h"
-#include "hwmark.h"
+#include "hwmark.h"   // lib/KpLink — 메인·서브 공용
 #include <Update.h>
 #include <Preferences.h>
 #include "esp_ota_ops.h"
