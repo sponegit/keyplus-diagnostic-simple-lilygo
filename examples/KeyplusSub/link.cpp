@@ -40,8 +40,14 @@ static void onFrame(const KpLink::Frame &f, void *)
         delay(50);
         ESP.restart();
         break;
+    case KpLink::LOG:
+        // 메인 로그 한 줄. USB 미연결이면 setTxTimeoutMs(0) 덕에 막히지 않고 버려진다.
+        Serial.print("[M] ");
+        Serial.write(f.payload, f.len);
+        Serial.print('\n');
+        break;
     default:
-        // S3(LOG)·S4(KEY_CMD) 부터 여기서 분기한다.
+        // S4(KEY_CMD) 부터 여기서 분기한다.
         Serial.printf("[LINK] 미처리 프레임 type=0x%02X seq=%u len=%u\n",
                       f.type, (unsigned)f.seq, (unsigned)f.len);
         break;
@@ -72,6 +78,17 @@ void poll()
 }
 
 bool up() { return s_sess.up(); }
+
+bool sendConsoleLine(const char *line)
+{
+    if (!s_sess.up()) return false;
+    uint8_t buf[128];
+    size_t  n = strlen(line);
+    if (n > sizeof(buf) - 1) n = sizeof(buf) - 1;
+    memcpy(buf, line, n);
+    buf[n++] = '\n';   // 메인 콘솔은 줄 단위로 명령을 끊는다
+    return s_sess.send(KpLink::CONSOLE_IN, buf, (uint16_t)n) >= 0;
+}
 
 void printStatus(Stream &io)
 {

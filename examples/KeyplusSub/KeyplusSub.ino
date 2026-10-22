@@ -3,8 +3,9 @@
 //   센서 수집 · 온도 가드 · 전원 레일 게이팅 · 저전압 판정 · 차키 시퀀서
 //   메인(T-A7670E)과는 UART0(43/44) 한 가닥으로 KpLink 프레임을 주고받는다.
 //
-// 현재(작업서 S2): 부팅 배너, 레일 OFF 고정, 메인 링크(연결 확인·생존 신호·RESET),
-//                  USB-CDC 콘솔(status / reset / help), loop 워치독.
+// 현재(작업서 S3): 부팅 배너, 레일 OFF 고정, 메인 링크(연결 확인·생존 신호·RESET),
+//                  메인 로그 중계([M] 접두) + 'm <명령>' 으로 메인 콘솔 사용,
+//                  USB-CDC 콘솔(status / reset / hang / help), loop 워치독.
 // ===========================================================================
 #include <Arduino.h>
 #include <KpLink.h>
@@ -12,13 +13,14 @@
 #include "link.h"
 
 // --- USB-CDC 콘솔 ------------------------------------------------------------
-// 한 줄 단위 명령. S3 에서 'm <명령>' 으로 메인 콘솔 중계가 추가된다.
+// 한 줄 단위 명령. 'm <명령>' 은 메인 콘솔로 보내고(응답은 [M] 줄로 돌아온다), 나머지는 서브 명령.
 static char   s_line[96];
 static size_t s_lineLen = 0;
 
 static void printHelp()
 {
-    Serial.println("[SUB] 명령: status        메인 링크 상태");
+    Serial.println("[SUB] 명령: m <명령>      메인 콘솔로 전달 (예: m status, m help)");
+    Serial.println("            status        메인 링크 상태");
     Serial.println("            reset         서브 재부팅");
     Serial.println("            hang          ⚠️ 시험용 — loop 를 멈춰 워치독 재부팅(5초) 확인");
     Serial.println("            help          이 도움말");
@@ -26,6 +28,13 @@ static void printHelp()
 
 static void runCommand(const char *cmd)
 {
+    if (cmd[0] == 'm' && cmd[1] == ' ') {
+        const char *rest = cmd + 2;
+        while (*rest == ' ') rest++;
+        if (!*rest) return;
+        if (!Link::sendConsoleLine(rest)) Serial.println("[SUB] 메인 링크 다운 — 전달 못 함");
+        return;
+    }
     if (!strcmp(cmd, "status") || !strcmp(cmd, "status link")) {
         Link::printStatus(Serial);
     } else if (!strcmp(cmd, "reset")) {

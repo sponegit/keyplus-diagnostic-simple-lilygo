@@ -567,7 +567,10 @@
 // 메인 loop 는 LTE 등록(최대 90초)·OTA 동안 막힌다. 서브 HELLO·측정값이 그동안 쌓여도
 // 넘치지 않게 크게 잡는다(작업서 §3.4). 넘치면 바이트가 버려질 뿐 — 링크가 다시 연결한다.
 #define SUBLINK_RX_BUF              (4096)
-#define SUBLINK_TX_BUF              (1024)
+// 로그 중계(S3)는 송신 버퍼가 모자라면 그 줄을 버린다. 'status' 같은 콘솔 응답은 2KB 안팎이
+// 한꺼번에 나가므로 넉넉히 둔다. 대가: 버퍼가 꽉 찼을 때 뒤따르는 차키 프레임이 최대
+// 4096B / 11.5KB/s ≈ 0.36초 늦게 나간다(원격 명령 SLA 20초 대비 무시할 수준).
+#define SUBLINK_TX_BUF              (4096)
 // 링크 상대의 HW_MODEL. 다르면 연결은 하되 경고한다(배선 실수·엉뚱한 보드 탐지).
 #define SUBLINK_PEER_HW             "v2-sub"
 #define AUX_CONSOLE_TX_PIN          (13)  // 헤더 노출, TF Card CS(미사용), 스트랩 아님

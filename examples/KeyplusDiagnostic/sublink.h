@@ -9,6 +9,12 @@
  *    올라오지 않는다 — 서브 HELLO 는 RX 버퍼(SUBLINK_RX_BUF)에 쌓였다가 loop 진입 후 처리된다.
  *    loop 가 수십 초 막혀도 같다. 그동안 서브는 먼저 끊고(peer-lost), 풀리면 다시 연결된다.
  *
+ * 콘솔 중계(작업서 S3): console() 이 돌려주는 스트림을 console.cpp 의 TeeStream 보조 자리에 꽂는다.
+ *   쓰기 — 로그를 줄 단위 LOG 프레임으로 서브에 보낸다(서브 USB-CDC 에 "[M] " 접두로 출력).
+ *          로그는 버려도 되는 데이터다: 링크 다운이면 버리고, 송신 버퍼가 차 있으면 버린다
+ *          (차키 프레임이 로그 뒤에 밀리지 않게). 혼잡으로 버린 줄 수는 다음 줄 앞에 표시한다.
+ *   읽기 — 서브 콘솔의 'm <명령>' 이 CONSOLE_IN 프레임으로 와서 여기서 읽힌다.
+ *
  * 콘솔: status link / sub reset
  */
 #pragma once
@@ -29,6 +35,10 @@ const char *peerFw();
 
 // 서브 소프트 재부팅 요청(RESET 프레임). 링크가 업일 때만 보낸다.
 bool requestReset();
+
+// 콘솔 중계 스트림 — console.cpp 가 DbgConsole(TeeStream)의 보조 포트로 쓴다.
+// begin() 전에 써도 안전하다(링크 다운 취급 → 버림).
+Stream &console();
 
 // 콘솔 'status link' 본문.
 void printStatus(Stream &io);
