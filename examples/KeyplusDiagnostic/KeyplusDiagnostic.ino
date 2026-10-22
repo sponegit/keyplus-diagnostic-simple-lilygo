@@ -34,9 +34,8 @@
 #include "carkey.h"
 #endif
 
-#if FEATURE_GPS
+// FEATURE_GPS=0(v2)이어도 포함한다 — 부팅 시 모뎀 GNSS 를 끄는 Gps::end 가 필요하다.
 #include "gps.h"
-#endif
 
 #include "obd2.h"   // 항상 컴파일(Obd2::Data). 폴링은 FEATURE_OBD2일 때만.
 #include "clk.h"    // 시각 기준(base) — 오프라인 적재/고빈도 창이 공유한다
@@ -564,8 +563,10 @@ static void pollGps(uint32_t now)
         }
     }
 }
+#endif  // FEATURE_GPS
 
-// 주행 중 판정 — GPS 폴링 주기를 여기에 맞춘다.
+// 주행 중 판정 — GPS 폴링 주기·오프라인 적재 주기를 여기에 맞춘다.
+// (오프라인 버퍼도 쓰므로 FEATURE_GPS 밖에 둔다 — v2 는 GPS=0 으로 빌드된다.)
 // OBD 링크가 살아있고 차속/회전수가 잡히면 주행, 아니면 정차/주차로 본다.
 // 링크가 없으면(시동 OFF/미장착) 위치가 변할 일이 없으므로 정차 취급.
 // FEATURE_OBD2 미사용 빌드는 판단 근거가 없으니 항상 주행 취급(기존 주기 유지).
@@ -581,7 +582,6 @@ static bool vehicleMoving(const Obd2::Data &d)
     return true;
 #endif
 }
-#endif  // FEATURE_GPS
 
 // ---------------------------------------------------------------------------
 // 부팅 원인 진단 — 차량 상시 5V에서 일정시간 후 LED 1/2번(=재부팅) 증상 추적용.
@@ -616,7 +616,7 @@ static void printBootHeader()
 {
     SerialMon.println();
     SerialMon.println("============================================================");
-    SerialMon.printf ("  Keyplus Diagnostic   fw %s\n", FW_VERSION);
+    SerialMon.printf ("  Keyplus Diagnostic   fw %s  hw %s\n", FW_VERSION, HW_MODEL);
     // build 표기는 보류 — __DATE__/__TIME__ 은 이 .ino 가 실제로 컴파일된 시각이라
     // 증분 빌드에서 다른 파일만 고치면 갱신되지 않는다. 낡은 값이 최신 빌드처럼 보여
     // 오히려 오해를 부르므로, 정확한 주입 방법(platformio.ini 타임스탬프)이 정해지기
@@ -987,7 +987,6 @@ static bool modemWaitReady()
 // 모뎀이 내장 GPS 지원 모델인지 확인. A7670G(GPS 미지원)면 정지.
 static String g_modemName = "UNKNOWN";   // 부팅 배너에 실을 모뎀 모델명
 
-#if FEATURE_GPS
 // ATI 로 모델명 1회 조회 — 실패(=UNKNOWN)면 재시도 상한까지만.
 static String modemQueryName(int tries)
 {
@@ -1002,6 +1001,7 @@ static String modemQueryName(int tries)
     return String("UNKNOWN");
 }
 
+#if FEATURE_GPS
 // 모델명 확보 + A7670G(내장 GPS 없음) 차단.
 // ⚠️ 여기서 무한 재시도하면 안 된다 — 유심 미삽입 첫 부팅에서 모뎀이 ATI 에 계속 무응답인
 //    사례가 실측됐고(config.h 모뎀 브링업 주석), 그때 setup 이 끝나지 않아 단말 전체가 멈췄다.
@@ -1152,6 +1152,19 @@ void setup()
         else       LOGE(SerialMon, "[GPS] GNSS 활성화 실패 — GPS 없이 계속 진행\n");
     } else {
         LOGE(SerialMon, "[GPS] 모뎀 무응답 — GNSS 브링업 생략\n");
+    }
+#else
+    if (modemReady) {
+        g_modemName = modemQueryName(MODEM_NAME_RETRY);
+        // v2: 위치는 서브보드 외장 GNSS 가 맡는다. 모뎀 GNSS 를 켜 둔 채면 약 45mA 를 태운다.
+        // ESP32 만 재부팅되면 모뎀은 전원이 유지돼 이전 펌웨어(v1)가 켠 GNSS 가 살아 있을 수
+        // 있으므로, 켠 적이 없어도 명시적으로 끄고 결과를 확인한다(gps.h — 반환값 무시 금지).
+        bool off = Gps::end(modem);
+        if (off && !Gps::isEnabled(modem)) {
+            LOGI(SerialMon, "[GPS] 모뎀 GNSS OFF 확인 — v2 는 서브 외장 GNSS 사용\n");
+        } else {
+            LOGE(SerialMon, "[GPS] 모뎀 GNSS 끄기 실패(end=%d) — 약 45mA 낭비 가능\n", off);
+        }
     }
 #endif
 

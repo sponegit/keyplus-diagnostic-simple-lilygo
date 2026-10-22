@@ -15,9 +15,13 @@
 // 단계별 기능 토글 (2트랙 진행: 유심 도착 전/후)
 //   현재 = 2단계 GPS. 유심 불필요 단계만 활성화한다.
 // ===========================================================================
-#define FEATURE_GPS         1   // 2단계: 내장 GNSS 위치 조회       [활성]
+// v2: 위치는 서브보드의 외장 MAX-M10S 가 맡는다 → 모뎀 내장 GNSS 미사용(부팅 시 확실히 끈다).
+//     링크로 fix 를 받는 경로는 작업서 S7 에서 들어온다. 그때까지 위치 없음(ts 는 모뎀 시각).
+#define FEATURE_GPS         0   // 모뎀 내장 GNSS — v2 에선 끔
 #define FEATURE_OBD2        1   // 6단계: CAN/OBD2 PID (외장 트랜시버 SN65HVD230, GPIO21/22) [활성]
-#define FEATURE_CARKEY      1   // 5b단계: 차키 GPIO 토글 (열림/잠금만, 전원 제어 없음) [활성]
+// v2: 차키 GPIO 는 서브보드로 이전(메인 18·19·23·32 해방). 링크 대리 모듈은 작업서 S4.
+//     그때까지 door_lock/door_unlock 은 failed ack.
+#define FEATURE_CARKEY      0   // 차키 — v2 메인에는 GPIO 없음
 #define FEATURE_BLE         0   // 9단계: BLE 명령/OTA
 #define FEATURE_LTE         1   // 1단계: LTE+MQTT (LG U+ 유심)     [활성 — 증분 A]
 #define FEATURE_STATUS_LED  1   // 3단계: 상태표시 LED (외장, GPIO23) [활성]
@@ -45,8 +49,7 @@
 //   4·5 는 GPS·OBD2 를 **따로** 재려고 나중에 추가했다. 둘을 한꺼번에(0 − 2) 재면
 //   합계만 알 뿐 어느 쪽을 손봐야 할지 모른다 — GNSS duty cycle 의 값어치를 판단하려면
 //   GNSS 몫만 따로 필요하다. 검산: (4 − 2) + (5 − 2) ≈ (0 − 2).
-//   ⚠️ 차키(FEATURE_CARKEY)는 모든 모드에서 켜 둔다 — GPIO 출력 LOW 유지라
-//      소비가 사실상 0 이고, 최적화 후에도 남아야 하는 유일한 필수 기능이다.
+//   ⚠️ 차키는 v2 에서 서브보드로 이전 — 메인 계측과 무관하다.
 //   ⚠️ 계측 중에도 발행은 살아 있다(모드 2). MQTT 유지 자체가 캐리어 NAT(60초)
 //      때문에 30초 발행을 요구하므로, 발행을 뺀 수치는 현실의 유지비가 아니다.
 // ===========================================================================
@@ -525,12 +528,12 @@
 //    서버 기록·OTA 타깃으로 그대로 나가는데, 버전을 문자열로 정렬하는 소비자가 있으면
 //    "0.3.10" < "0.3.9" 가 되어 조용히 역전된다. 단말 쪽은 동등 비교뿐이라 무해하지만
 //    (ota.cpp), 바깥까지 확인할 수 없으므로 애초에 그 자리를 만들지 않는다.
-#define FW_VERSION                  "0.5.1"
+#define FW_VERSION                  "2.0.0"
 // 하드웨어 세대 — OTA 가드의 기준(hwmark.h). v1 = T-A7670E 단일 보드, v2 = 메인 + 서브 2보드.
 // 이 값은 이미지 안에 "KPHW:<값>" 마커로 박혀, 다른 세대 단말이 이 이미지를 OTA 로 받으면
 // 플래시 확정 전에 거부한다. ota_start 의 hw 필드도 이 값과 대조한다.
 // ⚠️ 세대가 바뀔 때만 바꾼다. 같은 세대 안에서 바꾸면 기존 단말이 새 이미지를 거부한다.
-#define HW_MODEL                    "v1"
+#define HW_MODEL                    "v2"
 
 // ===========================================================================
 // UART 로그 레벨 (log.h)
@@ -549,7 +552,9 @@
 // USB-C는 연결 시 브리지의 DTR/RTS 자동리셋 회로가 보드를 재부팅시키고,
 // 헤더의 UART0(GPIO1/3)은 그 브리지와 선을 공유해 외부 어댑터 TX가 GPIO3에서 경합한다
 // (수신은 되는데 송신만 안 먹는 증상). 상세 배경은 console.h 헤더 주석 참고.
-#define FEATURE_AUX_CONSOLE         1
+// v2: GPIO13/34 는 서브 링크(UART2)로 넘어간다 — 보조 콘솔 끔. 메인 로그는 작업서 S3 에서
+//     링크를 타고 서브 USB-CDC 로 나온다. 그 전까지 콘솔은 USB-C(U0)만.
+#define FEATURE_AUX_CONSOLE         0
 #define AUX_CONSOLE_TX_PIN          (13)  // 헤더 노출, TF Card CS(미사용), 스트랩 아님
 #define AUX_CONSOLE_RX_PIN          (34)  // 헤더 노출, 미사용, 입력 전용(RX 전용으로 적합)
 #define AUX_CONSOLE_BAUD            (115200)
@@ -718,21 +723,16 @@
 //   ⚠️ bare T-A7670E는 SW 제어 가능한 온보드 LED가 없다: utilities.h의 LILYGO_T_A7670
 //      섹션에 BOARD_LED_PIN 미정의, GPIO12는 BOARD_POWERON_PIN(모뎀 전원 유지)로 점유됨.
 //      → 외장 LED를 GPIO23에 배선.  GPIO23 ──[1kΩ]──▶|── GND  (3mm 빨강, HIGH=점등)
-//   ⚠️ GPIO23은 아래 PIN_KEY_SPARE(5b단계 차키 예비)와 물리핀 공유. 차키 단계 도입 시
-//      FEATURE_STATUS_LED=0 으로 끄거나 LED 핀을 재배치할 것.
+//   v2: 차키가 서브보드로 가면서 GPIO23 은 LED 전용이 됐다(v1 의 PIN_KEY_SPARE 공유 해소).
+//   v2 LED 역할 = 통신 상태만. 센싱·전원 상태는 서브 LED(T7-S3 GPIO10)가 맡는다.
 // ===========================================================================
 #define PIN_STATUS_LED     (23)
 #define LED_ON_LEVEL       HIGH
 
 // ===========================================================================
-// 차키 제어 핀맵 (5b단계 — 확정, 4 GPIO 한정)  [현재 미사용]
-//   전원=스위처블 LDO(MIC5504-3.3 EN, active-high), 버튼=2N7002 오픈드레인(active-low)
+// 차키 — v2 에서 서브보드(T7-S3 GPIO4~9)로 이전. 핀·구동 방식은 examples/KeyplusSub/config.h.
+//   메인은 S4 에서 링크 대리가 되며, 아래 누름 시간 값만 명령 검증에 쓴다.
 // ===========================================================================
-#define PIN_KEY_PWR_EN      (32)  // fob 전용 LDO EN (active-high) [현 단계 미제어 — fob 상시급전]
-#define PIN_KEY_LOCK        (18)  // 잠금  (2N7002 게이트 → GPIO HIGH=누름, 패드 active-low)
-#define PIN_KEY_UNLOCK      (19)  // 열림  (2N7002 게이트 → GPIO HIGH=누름, 패드 active-low)
-#define PIN_KEY_SPARE       (23)  // 예비/원격시동 (2N7002 게이트) [현 단계 미사용 — LED와 공유]
-
 // 버튼 1회 누름 유지시간(ms). fob가 인식하는 최소 펄스 폭 이상으로 둔다.
 // press()는 논블로킹이다 — 누름만 걸어두고 Carkey::update()가 시간이 되면 뗀다.
 // 따라서 이 값을 늘려도 loop 는 멈추지 않는다(LED·콘솔·MQTT 정상 동작).
@@ -742,28 +742,6 @@
 // 상한을 두는 이유는 오조작(오타로 999999 입력) 시 라인이 계속 눌린 채로 남는 것을
 // 막기 위함이다 — 논블로킹이라 그 사이 펌웨어는 멀쩡히 도는 만큼 더 위험하다.
 #define CARKEY_PRESS_MAX_MS (10000)
-
-// ── 차키 버튼 구동 방식 선택 ──────────────────────────────────────────────
-//   DIRECT = fob 버튼패드에 GPIO 직결(오픈드레인). LOW=누름 / HIGH=Hi-Z(뗌).
-//            트랜지스터 반전이 없어 fob 패드 극성(active-low) 그대로. MOSFET/TR 미준비 시.
-//            ⚠️ 전제: 공통 GND + fob Vcc=3.3V(상시급전 점퍼) → 로직 레벨 일치.
-//            ⚠️ 반드시 오픈드레인 — HIGH를 push하면 꺼진 fob에 역급전(back-feed) 위험.
-//   MOSFET = 2N7002 게이트 구동(푸시풀). HIGH=누름 / LOW=뗌. 서브보드 실장 후 최종 배선.
-//   전환은 아래 CARKEY_DRIVE_SEL 한 줄만 바꾸면 됨(핀맵·로직 자동 선택, 코드 불변).
-#define CARKEY_DRIVE_DIRECT   1
-#define CARKEY_DRIVE_MOSFET   2
-#define CARKEY_DRIVE_SEL      CARKEY_DRIVE_DIRECT   // ← 현재: TR 미준비 → 직결
-
-// ── 버튼 "누름" 활성 레벨 오버라이드 ──────────────────────────────────────
-//   AUTO(기본) = 위 CARKEY_DRIVE_SEL 이 극성까지 정한다. DIRECT→LOW누름(오픈드레인),
-//                MOSFET→HIGH누름(푸시풀). 평소엔 이 값을 건드리지 말 것.
-//   0 / 1 = 극성 강제(실물 배선이 위 가정과 반대로 나온 예외 상황 전용). 이때 핀모드는
-//           항상 푸시풀 OUTPUT 이 된다 — 오픈드레인은 HIGH 를 source 하지 못하므로.
-//   ⚠️ DIRECT 배선 + 강제 1 조합은 금물: 뗌 상태가 푸시풀 LOW(=GND 고정)라 fob 버튼이
-//      상시 눌린 것과 같아지고, fob 전원이 꺼지면 역급전(back-feed) 경로도 생긴다.
-//      → 그 조합은 carkey.cpp 에서 컴파일 경고로 잡는다.
-#define CARKEY_ACTIVE_AUTO    (-1)
-#define CARKEY_ACTIVE_HIGH    CARKEY_ACTIVE_AUTO   // ← 현재: DRIVE_SEL 따름
 
 // ===========================================================================
 // OBD2 CAN 핀맵/설정 (6단계 — 외부 CAN 트랜시버 SN65HVD230 등, ESP32 내장 TWAI)

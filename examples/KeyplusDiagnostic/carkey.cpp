@@ -7,6 +7,11 @@
 #include "log.h"
 #include "console.h"
 
+// v2: 메인에는 차키 GPIO 가 없다(서브보드로 이전). 아래는 v1 구현으로, 작업서 S4 에서
+//     서브(examples/KeyplusSub)로 이식하고 이 파일은 링크 대리 모듈로 바뀐다.
+#if FEATURE_CARKEY
+#error "v2 메인에는 차키 GPIO 가 없다 — 작업서 S4(링크 대리) 전까지 FEATURE_CARKEY=0 으로 둘 것"
+
 namespace Carkey {
 
 // 누름 극성/핀모드 결정 (config.h). 배선이 곧 극성이므로 CARKEY_DRIVE_SEL 이 기본을 정하고,
@@ -138,3 +143,5 @@ bool tryConsole(const String &cmd, const String &arg, Stream &io)
 }
 
 } // namespace Carkey
+
+#endif  // FEATURE_CARKEY
