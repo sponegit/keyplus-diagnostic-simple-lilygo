@@ -34,6 +34,10 @@
 #include "carkey.h"
 #endif
 
+#if FEATURE_SUBLINK
+#include "sublink.h"    // v2 서브보드 링크(UART2 13/34) — 작업서 S2
+#endif
+
 // FEATURE_GPS=0(v2)이어도 포함한다 — 부팅 시 모뎀 GNSS 를 끄는 Gps::end 가 필요하다.
 #include "gps.h"
 
@@ -651,6 +655,9 @@ static void printFeatureLine()
 #if FEATURE_CARKEY
     SerialMon.print(" CARKEY");
 #endif
+#if FEATURE_SUBLINK
+    SerialMon.print(" SUBLINK");
+#endif
 #if FEATURE_LTE
     SerialMon.print(" LTE");
 #endif
@@ -712,6 +719,11 @@ static void printDeviceInfo(TinyGsm &modem, const char *modemName)
 #if FEATURE_AUX_CONSOLE
     SerialMon.printf("  aux console: TX=GPIO%d RX=GPIO%d @%d (USB-C와 동시 사용 가능)\n",
                      AUX_CONSOLE_TX_PIN, AUX_CONSOLE_RX_PIN, AUX_CONSOLE_BAUD);
+#endif
+#if FEATURE_SUBLINK
+    SerialMon.printf("  sub link   : TX=GPIO%d RX=GPIO%d @%d — %s (status link)\n",
+                     SUBLINK_TX_PIN, SUBLINK_RX_PIN, SUBLINK_BAUD,
+                     Sublink::up() ? "UP" : "DOWN");
 #endif
     SerialMon.println("------------------------------------------------------------");
 }
@@ -1062,6 +1074,12 @@ void setup()
 
     // 상태표시 LED — 부팅 진입 즉시 solid ON(살아있음 표시).
     Led::begin();
+
+#if FEATURE_SUBLINK
+    // UART 만 먼저 연다. 링크는 loop 진입 후 poll() 이 올린다 — setup 이 모뎀·LTE 로 막힌
+    // 동안 들어온 서브 HELLO 는 RX 버퍼에 쌓여 있다가 처리된다.
+    Sublink::begin();
+#endif
 
 #if FEATURE_CARKEY
     // 차키 게이트를 즉시 OUTPUT LOW(버튼 뗌)로 확정 — 부팅 초기 플로팅/오동작 방지.
@@ -1465,16 +1483,22 @@ static void statusAll(Stream &io, const String &what)
 #if FEATURE_CARKEY
     if (all || what == "key")    { statusCarkey(io); any = true; }
 #endif
+#if FEATURE_SUBLINK
+    if (all || what == "link")   { Sublink::printStatus(io); any = true; }
+#endif
 
     if (!any) {
-        io.printf("[STATUS] 알 수 없는 영역 '%s' — gps|modem|server|obd|key|all\n", what.c_str());
+        io.printf("[STATUS] 알 수 없는 영역 '%s' — gps|modem|server|obd|key|link|all\n", what.c_str());
     }
 }
 
 static void appPrintHelp(Stream &io)
 {
     io.println("[APP]  명령: info                        단말 정보(부팅 배너와 동일)");
-    io.println("             status [gps|modem|server|obd|key]  상태 조회(생략 시 전체)");
+    io.println("             status [gps|modem|server|obd|key|link]  상태 조회(생략 시 전체)");
+#if FEATURE_SUBLINK
+    io.println("             sub reset                    서브보드 소프트 재부팅(링크 업일 때)");
+#endif
     io.println("             at <명령>                    모뎀 AT 직접 전송(예: at+cgnssinfo)");
 #if FEATURE_LTE
     io.println("             apn                          통신사/APN 판별 상태");
@@ -1551,6 +1575,9 @@ static bool appConsole(const String &cmd, const String &arg, Stream &io)
 #endif
 #if FEATURE_FAST_SAMPLE
     if (Fast::tryConsole(cmd, arg, io)) return true;
+#endif
+#if FEATURE_SUBLINK
+    if (Sublink::tryConsole(cmd, arg, io)) return true;
 #endif
     // 'canpark on|off' — CAN 핀 주차 A/B(계측용).
     // PWR_BENCH=2(OBD2 off) 기준선이 85~105mA → 60mA 로 떨어졌는데, 그 사이 들어간
@@ -1670,6 +1697,11 @@ void loop()
 
     // 상태표시 LED 패턴 구동(비블로킹, millis 기반). 매 틱 호출.
     Led::update();
+
+#if FEATURE_SUBLINK
+    // 서브 링크 — 수신 처리 → HELLO·HEARTBEAT·타임아웃. 매 틱.
+    Sublink::poll();
+#endif
 
 #if FEATURE_CARKEY
     // 차키 누름 해제(비블로킹). 이걸 부르지 않으면 라인이 눌린 채로 남는다.

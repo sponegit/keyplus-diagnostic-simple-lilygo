@@ -28,6 +28,7 @@
 #define FEATURE_OTA         1   // 8단계: LTE OTA(ota_start) + config_update [활성]
 #define FEATURE_OFFLINE_BUF 1   // 오프라인 telemetry 적재·백필 (spiffs 파티션 raw 링) [활성]
 #define FEATURE_FAST_SAMPLE 1   // 고빈도(1Hz) OBD 샘플 스트림 [활성 — 런타임 fast_ms=0 로 차단 가능]
+#define FEATURE_SUBLINK     1   // v2: 서브보드(T7-S3) UART 링크 — GPIO13/34 [활성 — 작업서 S2]
 
 // ===========================================================================
 // 소비전류 계측 모드 (PWR_BENCH) — 차량 배터리 유지시간 최적화 작업용
@@ -555,6 +556,20 @@
 // v2: GPIO13/34 는 서브 링크(UART2)로 넘어간다 — 보조 콘솔 끔. 메인 로그는 작업서 S3 에서
 //     링크를 타고 서브 USB-CDC 로 나온다. 그 전까지 콘솔은 USB-C(U0)만.
 #define FEATURE_AUX_CONSOLE         0
+
+// --- 서브 링크 (v2, 작업서 S2) ---------------------------------------------
+// UART2 — UART0 은 USB-C 브리지, UART1 은 모뎀. 옛 보조 콘솔 자리(13·34)를 그대로 쓴다.
+// 프레임·연결 확인·생존 신호는 lib/KpLink(Session) — 서브와 같은 코드다.
+#define SUBLINK_TX_PIN              (13)  // → 서브 RX(GPIO44)
+#define SUBLINK_RX_PIN              (34)  // ← 서브 TX(GPIO43). 입력 전용·내부 풀업 없음 →
+                                          //   ⚠️ 10kΩ 풀업(3V3) 필수. 없으면 서브 전원이 꺼졌을 때 잡음 수신
+#define SUBLINK_BAUD                (115200)
+// 메인 loop 는 LTE 등록(최대 90초)·OTA 동안 막힌다. 서브 HELLO·측정값이 그동안 쌓여도
+// 넘치지 않게 크게 잡는다(작업서 §3.4). 넘치면 바이트가 버려질 뿐 — 링크가 다시 연결한다.
+#define SUBLINK_RX_BUF              (4096)
+#define SUBLINK_TX_BUF              (1024)
+// 링크 상대의 HW_MODEL. 다르면 연결은 하되 경고한다(배선 실수·엉뚱한 보드 탐지).
+#define SUBLINK_PEER_HW             "v2-sub"
 #define AUX_CONSOLE_TX_PIN          (13)  // 헤더 노출, TF Card CS(미사용), 스트랩 아님
 #define AUX_CONSOLE_RX_PIN          (34)  // 헤더 노출, 미사용, 입력 전용(RX 전용으로 적합)
 #define AUX_CONSOLE_BAUD            (115200)

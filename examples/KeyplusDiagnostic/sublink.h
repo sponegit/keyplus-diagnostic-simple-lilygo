@@ -1,0 +1,39 @@
+/**
+ * @file      sublink.h
+ * @brief     v2 서브보드(T7-S3) UART 링크 — 메인 쪽 (작업서 S2)
+ *
+ * UART2(TX13·RX34)에 lib/KpLink 의 Session 을 얹는다. 연결 확인(HELLO)·생존 신호·
+ * 끊김 감지·재연결은 Session 이 하고, 여기서는 UART 와 로그·콘솔만 잇는다.
+ *
+ * ⚠️ poll() 은 loop 매 틱 부른다. setup 이 막혀 있는 동안(모뎀 대기·LTE 등록)은 링크가
+ *    올라오지 않는다 — 서브 HELLO 는 RX 버퍼(SUBLINK_RX_BUF)에 쌓였다가 loop 진입 후 처리된다.
+ *    loop 가 수십 초 막혀도 같다. 그동안 서브는 먼저 끊고(peer-lost), 풀리면 다시 연결된다.
+ *
+ * 콘솔: status link / sub reset
+ */
+#pragma once
+
+#include <Arduino.h>
+
+namespace Sublink {
+
+// UART2 open + Session 시작. setup 초반에 1회.
+void begin();
+
+// 수신 바이트 처리 → 주기 처리(HELLO·HEARTBEAT·타임아웃). loop 매 틱.
+void poll();
+
+bool up();
+// 서브 펌웨어 버전(HELLO). 아직 모르면 빈 문자열.
+const char *peerFw();
+
+// 서브 소프트 재부팅 요청(RESET 프레임). 링크가 업일 때만 보낸다.
+bool requestReset();
+
+// 콘솔 'status link' 본문.
+void printStatus(Stream &io);
+
+// 콘솔 훅: 'sub reset' 이면 처리하고 true.
+bool tryConsole(const String &cmd, const String &arg, Stream &io);
+
+} // namespace Sublink

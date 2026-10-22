@@ -14,6 +14,10 @@
 #define PIN_LINK_TX                 43
 #define PIN_LINK_RX                 44
 #define LINK_BAUD                   115200   // OTA 중에만 921600 으로 올린다
+#define LINK_RX_BUF                 4096     // OTA 청크(1KB) 여러 개가 쌓여도 넘치지 않게
+#define LINK_TX_BUF                 1024
+// 링크 상대의 HW_MODEL. 다르면 연결은 하되 경고한다(배선·보드 확인).
+#define LINK_PEER_HW                "v2"
 
 // ---------------------------------------------------------------------------
 // 차키 fob — 오픈드레인, 직렬 1kΩ. ⚠️ 부팅 시 하이임피던스 유지(내부 풀 금지)

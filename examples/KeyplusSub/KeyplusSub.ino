@@ -3,13 +3,61 @@
 //   센서 수집 · 온도 가드 · 전원 레일 게이팅 · 저전압 판정 · 차키 시퀀서
 //   메인(T-A7670E)과는 UART0(43/44) 한 가닥으로 KpLink 프레임을 주고받는다.
 //
-// 현재: 골격만 — 부팅 배너, 레일 OFF 고정, 메인 링크 포트 개방.
+// 현재(작업서 S2): 부팅 배너, 레일 OFF 고정, 메인 링크(연결 확인·생존 신호·RESET),
+//                  USB-CDC 콘솔(status / reset / help), loop 워치독.
 // ===========================================================================
 #include <Arduino.h>
 #include <KpLink.h>
 #include "config.h"
+#include "link.h"
 
-static HardwareSerial& Link = Serial0;   // UART0 — USB-CDC 콘솔(Serial)과 별개
+// --- USB-CDC 콘솔 ------------------------------------------------------------
+// 한 줄 단위 명령. S3 에서 'm <명령>' 으로 메인 콘솔 중계가 추가된다.
+static char   s_line[96];
+static size_t s_lineLen = 0;
+
+static void printHelp()
+{
+    Serial.println("[SUB] 명령: status        메인 링크 상태");
+    Serial.println("            reset         서브 재부팅");
+    Serial.println("            hang          ⚠️ 시험용 — loop 를 멈춰 워치독 재부팅(5초) 확인");
+    Serial.println("            help          이 도움말");
+}
+
+static void runCommand(const char *cmd)
+{
+    if (!strcmp(cmd, "status") || !strcmp(cmd, "status link")) {
+        Link::printStatus(Serial);
+    } else if (!strcmp(cmd, "reset")) {
+        Serial.println("[SUB] 재부팅");
+        Serial.flush();
+        delay(50);
+        ESP.restart();
+    } else if (!strcmp(cmd, "hang")) {
+        // 리셋 전용선이 없으므로 워치독이 유일한 행 복구 수단이다 — 실제로 도는지 확인한다.
+        Serial.println("[SUB] loop 정지 — 5초 안에 워치독이 재부팅해야 한다");
+        Serial.flush();
+        for (;;) { }
+    } else if (!strcmp(cmd, "help") || !strcmp(cmd, "?")) {
+        printHelp();
+    } else if (cmd[0]) {
+        Serial.printf("[SUB] 알 수 없는 명령 '%s' — help\n", cmd);
+    }
+}
+
+static void handleConsole()
+{
+    while (Serial.available() > 0) {
+        int c = Serial.read();
+        if (c == '\r' || c == '\n') {
+            s_line[s_lineLen] = '\0';
+            runCommand(s_line);
+            s_lineLen = 0;
+        } else if (c >= 0x20 && c < 0x7F && s_lineLen + 1 < sizeof(s_line)) {
+            s_line[s_lineLen++] = (char)c;   // 비인쇄 문자는 버린다(잡음 방어)
+        }
+    }
+}
 
 void setup() {
     // 레일 게이트는 온도 가드가 판정하기 전까지 OFF 가 안전한 기본값이다.
@@ -21,12 +69,22 @@ void setup() {
     // 차키 핀(4~9)은 건드리지 않는다 — 하이임피던스로 두어야 fob 가 "뗌"을 유지한다.
 
     Serial.begin(115200);
-    Link.begin(LINK_BAUD, SERIAL_8N1, PIN_LINK_RX, PIN_LINK_TX);
+    // USB 를 안 꽂은 채(차량 장착) 돌 때 콘솔 출력이 loop 를 막지 않게 한다 —
+    // 호스트가 없으면 버퍼가 차는 즉시 버린다.
+    Serial.setTxTimeoutMs(0);
+
+    Link::begin();
 
     Serial.printf("\n[BOOT] KeyplusSub fw=%s hw=%s kplink=v%d\n",
                   FW_VERSION, HW_MODEL, KPLINK_PROTO_VERSION);
+
+    // loop 가 멈추면(CONFIG_ESP_TASK_WDT_TIMEOUT_S = 5초) 패닉 → 재부팅.
+    // 리셋 전용선이 없으므로(작업서 D7) 서브 행의 1차 복구 수단이다.
+    enableLoopWDT();
 }
 
 void loop() {
-    delay(10);
+    Link::poll();
+    handleConsole();
+    delay(1);
 }
