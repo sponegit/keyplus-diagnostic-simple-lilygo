@@ -33,6 +33,9 @@ bool up();
 // 서브 펌웨어 버전(HELLO). 아직 모르면 빈 문자열.
 const char *peerFw();
 
+// 앱 프레임 송신(차키 KEY_CMD 등). 링크 다운이면 보내지 않고 false.
+bool sendFrame(uint8_t type, const uint8_t *payload, uint16_t len);
+
 // 서브 소프트 재부팅 요청(RESET 프레임). 링크가 업일 때만 보낸다.
 bool requestReset();
 

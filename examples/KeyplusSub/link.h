@@ -20,6 +20,8 @@ namespace Link {
 void begin();          // setup 에서 1회 — UART0 open + Session 시작
 void poll();           // loop 매 틱 — 수신 → 주기 처리
 bool up();
+// 앱 프레임 송신(KEY_RESULT 등). 링크 다운이면 false.
+bool sendFrame(uint8_t type, const uint8_t *payload, uint16_t len);
 // 메인 콘솔에 한 줄 입력을 보낸다(줄바꿈은 여기서 붙인다). 링크 다운이면 false.
 bool sendConsoleLine(const char *line);
 void printStatus(Stream &io);

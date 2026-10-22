@@ -1082,8 +1082,8 @@ void setup()
 #endif
 
 #if FEATURE_CARKEY
-    // 차키 게이트를 즉시 OUTPUT LOW(버튼 뗌)로 확정 — 부팅 초기 플로팅/오동작 방지.
-    // 콘솔 'lock'/'unlock'으로 검증(Prov 콘솔 미지명령 분기에서 Carkey::tryConsole 호출).
+    // v2: 차키 GPIO 는 서브에 있다 — 여기서는 요청 id 만 준비한다(대리 모듈).
+    // 콘솔 lock/unlock/trunk/key (Prov 콘솔 미지명령 분기에서 Carkey::tryConsole 호출).
     Carkey::begin();
 #endif
 
@@ -1314,13 +1314,7 @@ static void statusGps(Stream &io)
 #if FEATURE_CARKEY
 static void statusCarkey(Stream &io)
 {
-    uint32_t left = Carkey::busyRemainMs();
-    io.println("[KEY]");
-    io.printf("  %-14s: %s\n", "누름 상태",
-              left ? "진행 중" : "대기");
-    if (left) io.printf("  %-14s: %lums\n", "남은 시간", (unsigned long)left);
-    io.printf("  %-14s: %dms (상한 %dms)\n", "기본 유지시간",
-              CARKEY_PRESS_MS, CARKEY_PRESS_MAX_MS);
+    Carkey::printStatus(io);
 }
 #endif
 
@@ -1704,7 +1698,7 @@ void loop()
 #endif
 
 #if FEATURE_CARKEY
-    // 차키 누름 해제(비블로킹). 이걸 부르지 않으면 라인이 눌린 채로 남는다.
+    // 차키 요청 재전송·타임아웃 + 결과 수거(서버 명령 ack 는 Cmd::handle 이 낸다).
     Carkey::update();
 #endif
 

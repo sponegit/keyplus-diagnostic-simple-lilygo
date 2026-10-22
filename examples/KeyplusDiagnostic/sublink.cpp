@@ -10,6 +10,9 @@
 #include <KpLinkSession.h>
 #include "console.h"
 #include "log.h"
+#if FEATURE_CARKEY
+#include "carkey.h"
+#endif
 
 namespace Sublink {
 
@@ -126,6 +129,9 @@ static void onState(bool isUp, KpLink::Session::Reason why, void *)
         }
     } else {
         LOGW(DbgConsole, "[LINK] 서브 연결 끊김 (%s)\n", KpLink::reasonName(why));
+#if FEATURE_CARKEY
+        Carkey::linkLost();   // 진행 중 차키 요청은 여기서 실패로 끝낸다
+#endif
     }
 }
 
@@ -136,8 +142,12 @@ static void onFrame(const KpLink::Frame &f, void *)
         // 서브 콘솔 'm <명령>' — 메인 콘솔 입력으로. Prov::handleSerial 이 DbgConsole 에서 읽는다.
         linkConsole().pushInput(f.payload, f.len);
         break;
+#if FEATURE_CARKEY
+    case KpLink::KEY_RESULT:
+        Carkey::onResult(f.payload, f.len);
+        break;
+#endif
     default:
-        // S4(차키)부터 여기서 분기한다.
         LOGD(DbgConsole, "[LINK] 미처리 프레임 type=0x%02X seq=%u len=%u\n",
              f.type, (unsigned)f.seq, (unsigned)f.len);
         break;
@@ -187,6 +197,12 @@ void poll()
 bool up() { return s_sess.up(); }
 
 const char *peerFw() { return s_sess.peerFw(); }
+
+bool sendFrame(uint8_t type, const uint8_t *payload, uint16_t len)
+{
+    if (!s_sess.up()) return false;
+    return s_sess.send(type, payload, len) >= 0;
+}
 
 bool requestReset()
 {

@@ -29,7 +29,18 @@
 #define PIN_KEY_OPT1                8
 #define PIN_KEY_OPT2                9
 
-#define PIN_STATUS_LED              10       // 서브 전용 외장 LED
+// 구동 방식 (v1 config.h 에서 이전) — 배선이 곧 극성이다. HARDWARE.md §5.3 은 DIRECT.
+//   DIRECT = fob 패드 직결, 오픈드레인. LOW=누름 / Hi-Z=뗌. 공통 GND + fob 3.3V 상시급전 전제.
+//            ⚠️ 반드시 오픈드레인 — HIGH 를 push 하면 꺼진 fob 에 역급전.
+//   MOSFET = 2N7002 게이트 구동(푸시풀). HIGH=누름 / LOW=뗌. 직결과 극성이 반대다.
+#define CARKEY_DRIVE_DIRECT         1
+#define CARKEY_DRIVE_MOSFET         2
+#define CARKEY_DRIVE_SEL            CARKEY_DRIVE_DIRECT
+// 콘솔 'key <io>' 에서 ms 를 생략했을 때의 누름 시간. 상한·시퀀스 한도는 KpKey.h(KPKEY_*).
+#define CARKEY_PRESS_MS             500
+
+#define PIN_STATUS_LED              10       // 서브 전용 외장 LED (D4) — 지금은 차키 누름 중 점등
+#define LED_ON_LEVEL                HIGH
 
 // ---------------------------------------------------------------------------
 // 센서 버스

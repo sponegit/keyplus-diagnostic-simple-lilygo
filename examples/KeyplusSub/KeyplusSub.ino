@@ -3,14 +3,15 @@
 //   센서 수집 · 온도 가드 · 전원 레일 게이팅 · 저전압 판정 · 차키 시퀀서
 //   메인(T-A7670E)과는 UART0(43/44) 한 가닥으로 KpLink 프레임을 주고받는다.
 //
-// 현재(작업서 S3): 부팅 배너, 레일 OFF 고정, 메인 링크(연결 확인·생존 신호·RESET),
+// 현재(작업서 S4): 부팅 배너, 레일 OFF 고정, 메인 링크(연결 확인·생존 신호·RESET),
 //                  메인 로그 중계([M] 접두) + 'm <명령>' 으로 메인 콘솔 사용,
-//                  USB-CDC 콘솔(status / reset / hang / help), loop 워치독.
+//                  차키 6채널 시퀀스 실행(KEY_CMD), USB-CDC 콘솔, loop 워치독.
 // ===========================================================================
 #include <Arduino.h>
 #include <KpLink.h>
 #include "config.h"
 #include "link.h"
+#include "carkey.h"
 
 // --- USB-CDC 콘솔 ------------------------------------------------------------
 // 한 줄 단위 명령. 'm <명령>' 은 메인 콘솔로 보내고(응답은 [M] 줄로 돌아온다), 나머지는 서브 명령.
@@ -20,7 +21,9 @@ static size_t s_lineLen = 0;
 static void printHelp()
 {
     Serial.println("[SUB] 명령: m <명령>      메인 콘솔로 전달 (예: m status, m help)");
-    Serial.println("            status        메인 링크 상태");
+    Serial.println("            status        메인 링크·차키 상태");
+    Serial.println("            key <io> [ms] 차키 채널 1~6 누름 (1 LOCK 2 UNLOCK 3 TRUNK 4 START 5·6 OPT)");
+    Serial.println("            key abort     진행 중 시퀀스 중단(모두 뗌)");
     Serial.println("            reset         서브 재부팅");
     Serial.println("            hang          ⚠️ 시험용 — loop 를 멈춰 워치독 재부팅(5초) 확인");
     Serial.println("            help          이 도움말");
@@ -35,8 +38,10 @@ static void runCommand(const char *cmd)
         if (!Link::sendConsoleLine(rest)) Serial.println("[SUB] 메인 링크 다운 — 전달 못 함");
         return;
     }
+    if (Carkey::tryConsole(cmd)) return;
     if (!strcmp(cmd, "status") || !strcmp(cmd, "status link")) {
         Link::printStatus(Serial);
+        Carkey::printStatus(Serial);
     } else if (!strcmp(cmd, "reset")) {
         Serial.println("[SUB] 재부팅");
         Serial.flush();
@@ -75,7 +80,8 @@ void setup() {
         digitalWrite(pin, LOW);
         pinMode(pin, OUTPUT);
     }
-    // 차키 핀(4~9)은 건드리지 않는다 — 하이임피던스로 두어야 fob 가 "뗌"을 유지한다.
+    // 차키 핀(4~9)을 "뗌"으로 확정 — DIRECT 배선이면 Hi-Z(fob 풀업 유지). 레벨을 먼저 쓴다.
+    Carkey::begin();
 
     Serial.begin(115200);
     // USB 를 안 꽂은 채(차량 장착) 돌 때 콘솔 출력이 loop 를 막지 않게 한다 —
@@ -94,6 +100,7 @@ void setup() {
 
 void loop() {
     Link::poll();
+    Carkey::update();
     handleConsole();
     delay(1);
 }

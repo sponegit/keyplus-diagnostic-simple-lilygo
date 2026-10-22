@@ -5,7 +5,11 @@
  * 계약(@keyplus-diagnostic/shared command.ts):
  *   수신 v1/{device_id}/cmd       {command_id, type, payload?, expires_at(epoch)}
  *   발행 v1/{device_id}/cmd/ack   {command_id, result, vehicle_state?, ts(epoch)}   (QoS1)
- *   type: door_lock/door_unlock(→Carkey) / remote_start(미지원→failed) / config_update / ota_start
+ *   type: door_lock/door_unlock/trunk/remote_start(→Carkey, 서브 경유) / config_update / ota_start
+ *   차키 명령의 선택 필드 payload.steps[{io, press_ms, wait_ms}] — 파트너사가 차종별 시퀀스를 보낸다
+ *   (KpKey.h). 없으면 lock/unlock/trunk 는 기본 1단계, remote_start 는 steps 필수(없으면 failed).
+ *   ⚠️ v2 차키 ack 는 비동기다: done = 서브가 시퀀스를 끝까지 실행했다(v1 은 "누름 시작").
+ *      서브 무응답·링크 끊김·DONE 유실은 failed — 실행 여부를 확인 못 했다는 뜻이다.
  *   result: received(비종결) / done / failed / rejected_ignition_on / expired_on_device
  *
  * 수신 경로: 래퍼 mqtt_set_callback(콜백) + mqtt_handle(loop 매틱 펌핑, Mqtt::handle).

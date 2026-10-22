@@ -19,9 +19,8 @@
 //     링크로 fix 를 받는 경로는 작업서 S7 에서 들어온다. 그때까지 위치 없음(ts 는 모뎀 시각).
 #define FEATURE_GPS         0   // 모뎀 내장 GNSS — v2 에선 끔
 #define FEATURE_OBD2        1   // 6단계: CAN/OBD2 PID (외장 트랜시버 SN65HVD230, GPIO21/22) [활성]
-// v2: 차키 GPIO 는 서브보드로 이전(메인 18·19·23·32 해방). 링크 대리 모듈은 작업서 S4.
-//     그때까지 door_lock/door_unlock 은 failed ack.
-#define FEATURE_CARKEY      0   // 차키 — v2 메인에는 GPIO 없음
+// v2: 차키 GPIO 는 서브보드(GPIO4~9)에 있다. 메인 carkey 는 KEY_CMD 를 보내는 대리 모듈(작업서 S4).
+#define FEATURE_CARKEY      1   // 차키 — 서브 경유 (FEATURE_SUBLINK 필요)
 #define FEATURE_BLE         0   // 9단계: BLE 명령/OTA
 #define FEATURE_LTE         1   // 1단계: LTE+MQTT (LG U+ 유심)     [활성 — 증분 A]
 #define FEATURE_STATUS_LED  1   // 3단계: 상태표시 LED (외장, GPIO23) [활성]
@@ -755,11 +754,11 @@
 // press()는 논블로킹이다 — 누름만 걸어두고 Carkey::update()가 시간이 되면 뗀다.
 // 따라서 이 값을 늘려도 loop 는 멈추지 않는다(LED·콘솔·MQTT 정상 동작).
 // 콘솔 'lock 2000' / 'unlock 2000' 처럼 인자로 일시 변경 가능.
+// 서버 명령에 steps 가 없을 때(door_lock/door_unlock) 쓰는 기본값이다.
 #define CARKEY_PRESS_MS    (500)
-// 누름 유지시간 상한. 트렁크/파노라마처럼 길게 눌러야 하는 기능이 있어 여유를 둔다.
-// 상한을 두는 이유는 오조작(오타로 999999 입력) 시 라인이 계속 눌린 채로 남는 것을
-// 막기 위함이다 — 논블로킹이라 그 사이 펌웨어는 멀쩡히 도는 만큼 더 위험하다.
-#define CARKEY_PRESS_MAX_MS (10000)
+// trunk 기본 누름 — 트렁크는 대개 길게 눌러야 열린다. 차종별 값은 파트너사가 steps 로 보낸다.
+#define CARKEY_TRUNK_PRESS_MS (1000)
+// 상한·시퀀스 한도는 lib/KpLink/KpKey.h(KPKEY_*) — 메인·서브가 같은 값으로 검증한다.
 
 // ===========================================================================
 // OBD2 CAN 핀맵/설정 (6단계 — 외부 CAN 트랜시버 SN65HVD230 등, ESP32 내장 TWAI)

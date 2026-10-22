@@ -1,60 +1,49 @@
 /**
  * @file      carkey.h
- * @brief     5b단계 — 차키(fob) 버튼 GPIO 제어. 현 단계: 열림/잠금만(전원 제어 없음).
+ * @brief     차키 — v2 메인 쪽 대리 모듈 (작업서 S4)
  *
- * 하드웨어: 잠금 = GPIO18, 열림 = GPIO19. fob 버튼패드는 active-low(내부 풀업, 누르면 GND).
+ * v2 에서 fob 버튼 GPIO 는 서브보드(T7-S3 GPIO4~9)에 있다. 메인은 시퀀스를 KEY_CMD 프레임으로
+ * 보내고 서브의 KEY_RESULT 로 결과를 받는다. 재전송·중복 방지·타임아웃은 lib/KpLink 의
+ * KpKey::Client(메인) / KpKey::Executor(서브)가 한다 — 실행은 최대 1회.
  *
- * ⚠️ 누름 극성은 배선이 정한다 — config.h CARKEY_DRIVE_SEL 한 줄만 바꾸면 된다:
- *   DIRECT (현재): GPIO를 fob 패드에 직결(오픈드레인).
- *     GPIO LOW → 라인을 GND로 당김 → "눌림" / HIGH → Hi-Z → fob 풀업 복귀 → "뗌"
- *     ⚠️ 반드시 오픈드레인. HIGH를 push하면 꺼진 fob에 역급전(back-feed) 위험.
- *     ⚠️ 공통 GND + fob Vcc=3.3V(상시급전 점퍼) 전제 → 로직 레벨 일치.
- *   MOSFET: GPIO가 2N7002 게이트 구동(드레인=패드, 소스=GND). 핀모드 푸시풀 OUTPUT.
- *     GPIO HIGH → 게이트 ON → 패드를 GND로 → "눌림" / LOW → OFF → "뗌" (직결과 반대)
- *   (car-key-control.md 원리 해설 참조. 직결=LOW누름 / 2N7002=HIGH누름 — 혼동 주의.)
+ * 결과는 비동기다(원격시동 시퀀스는 수 초). 시작한 쪽이 결과를 가져간다:
+ *   REMOTE  — 서버 명령(cmd.cpp). takeRemoteOutcome() 으로 꺼내 ack 를 낸다.
+ *   CONSOLE — 콘솔 lock/unlock/trunk/key. update() 가 결과를 로그로 남긴다.
+ * 한 번에 하나만 진행한다. 진행 중이면 새 요청은 BUSY 로 거절된다(v1 과 같은 정책).
  *
- * config.h CARKEY_ACTIVE_HIGH 는 기본 AUTO(=위 DRIVE_SEL 따름). 실물 배선이 위 가정과
- *   반대로 나온 예외에만 0/1 로 극성을 강제하며, 그때 핀모드는 푸시풀로 고정된다.
- *
- * ⚠️ 부팅 초기: 라인에 외부 풀다운이 없어 begin() 전까지 플로팅될 수 있다.
- *   → setup 초반(가능한 한 빨리) begin()을 호출해 두 핀을 뗌(release) 상태로 확정.
- *
- * 전원(GPIO32 LDO EN)은 이 단계에서 제어하지 않는다 — fob는 상시급전(3.3V 점퍼) 전제.
- * 예비(GPIO23)는 상태표시 LED와 물리핀 공유라 이 단계에서 다루지 않는다.
- *
- * 트리거: 현재는 시리얼 Debug Console(lock/unlock)로 검증. MQTT cmd 다운링크 연동은
- *   다음 증분(persistent 세션 + keepalive 대응 후).
+ * 링크가 끊기면(Sublink) 진행 중 요청은 즉시 실패로 끝난다 — 서브가 이미 실행했을 수는 있다.
+ * DONE 이 유실돼도 같다(timeout). 둘 다 "실행 여부를 확인 못 함"이라 failed 로 정직하게 낸다.
  */
 #pragma once
+
 #include <Arduino.h>
+#include <KpKey.h>
 
 namespace Carkey {
 
-enum class Button { LOCK, UNLOCK };
+enum class Owner : uint8_t { REMOTE, CONSOLE };
 
-// 잠금/열림 핀을 OUTPUT LOW(버튼 뗌)로 확정. setup 초반에 호출(게이트 조기 해제).
+// 요청 id 시작값을 난수로 잡는다(메인 재부팅 후 서브의 중복 판정 기억과 겹치지 않게 — 서브도
+// 링크 재연결 때 기억을 지우지만 이중으로 막는다). setup 에서 1회.
 void begin();
 
-// 버튼 1회 누름 — **논블로킹**. 누름 레벨만 인가하고 즉시 반환하며,
-// holdMs 가 지나면 update() 가 뗌 레벨로 되돌린다.
-//   holdMs = 0     → config.h CARKEY_PRESS_MS
-//   상한 초과      → CARKEY_PRESS_MAX_MS 로 클램프
-// 반환 false = 이미 다른 누름이 진행 중이라 거부됨. 겹친 조작을 조용히 삼키지 않는다
-// (호출측이 ack 를 done/failed 로 정직하게 구분할 수 있어야 한다).
-bool press(Button b, uint16_t holdMs = 0);
-
-// 편의 래퍼 (holdMs 기본값 = config.h CARKEY_PRESS_MS).
-bool lock(uint16_t holdMs = 0);
-bool unlock(uint16_t holdMs = 0);
-
-// loop 매 틱 호출 — 유지시간이 끝난 누름을 뗀다. 이걸 부르지 않으면 라인이 눌린 채로 남는다.
+// loop 매 틱 — 재전송·타임아웃, 콘솔 요청 결과 로그.
 void update();
 
-// 누름 진행 중인가. 진행 중이면 남은 시간(ms), 아니면 0.
-uint32_t busyRemainMs();
+// 시퀀스 요청. OK 가 아니면 아무것도 보내지 않았다(INVALID 면 *err 에 사유).
+KpKey::Client::Start start(const KpKey::Step *steps, size_t n, Owner owner, KpKey::Error *err);
 
-// Debug Console 훅: cmd가 "lock"/"unlock"이면 실행하고 true 반환(그 외 false).
-// 시리얼 단일 소유자(Prov::handleSerial)의 미지 명령 분기에서 호출한다.
+// 서버 명령 요청의 결과를 한 번 꺼낸다. 없으면 false.
+bool takeRemoteOutcome(bool *done, KpKey::Client::Fail *why);
+
+bool busy();
+
+// Sublink 에서 호출 — KEY_RESULT 수신 / 링크 끊김.
+void onResult(const uint8_t *payload, size_t len);
+void linkLost();
+
+// 콘솔: lock [ms] | unlock [ms] | trunk [ms] | key <io 1~6> [ms]
 bool tryConsole(const String &cmd, const String &arg, Stream &io);
+void printStatus(Stream &io);
 
 } // namespace Carkey

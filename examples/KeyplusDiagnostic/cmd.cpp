@@ -42,6 +42,12 @@ static bool     s_execDeferred = false;
 static uint32_t s_execAt       = 0;
 
 static String   s_cmdTopic;       // v1/{id}/cmd (구독용. ack 토픽은 sendAck가 매번 조립)
+
+#if FEATURE_CARKEY
+// 결과를 기다리는 차키 명령의 command_id. 서브가 시퀀스를 끝내면(또는 실패하면) handle() 이
+// ack 를 낸다. 비어 있으면 대기 중인 차키 명령 없음.
+static String   s_keyCmdId;
+#endif
 static bool     s_subscribed = false;   // 마지막 subscribe 성공 여부(콘솔 진단용)
 
 // 단일 cmd 토픽만 구독하므로 topic은 무시하고 payload만 사용.
@@ -122,6 +128,51 @@ static uint32_t nowEpoch(TinyGsm &modem)
     return e;
 }
 
+#if FEATURE_CARKEY
+// 차키 명령 → 시퀀스 결정 → 서브로 요청. 시작에 실패하면 즉시 failed ack.
+// 시작했으면 ack 는 handle() 이 결과를 받은 뒤 낸다(s_keyCmdId).
+static void startKey(TinyGsm &modem, Stream &log, const String &cmdId,
+                     const String &type, const char *body)
+{
+    if (s_keyCmdId.length()) {   // 앞 명령의 결과 ack 가 아직 안 나갔다
+        LOGW(log, "[CMD] 차키 거절 — 앞 명령(id=%s) 진행 중\n", s_keyCmdId.c_str());
+        sendAck(modem, log, cmdId, "failed");
+        return;
+    }
+
+    KpKey::Step steps[KPKEY_MAX_STEPS];
+    size_t      n = 0;
+    KpKey::Error e = KpKey::parseStepsJson(body, steps, KPKEY_MAX_STEPS, &n);
+    if (e == KpKey::Error::ABSENT) {
+        // 기본 1단계. remote_start 는 차종마다 조합이 달라 기본값을 두지 않는다(작업서 D6).
+        if      (type == "door_lock")   steps[0] = {KPKEY_IO_LOCK,   CARKEY_PRESS_MS, 0};
+        else if (type == "door_unlock") steps[0] = {KPKEY_IO_UNLOCK, CARKEY_PRESS_MS, 0};
+        else if (type == "trunk")       steps[0] = {KPKEY_IO_TRUNK,  CARKEY_TRUNK_PRESS_MS, 0};
+        else {
+            LOGW(log, "[CMD] %s 는 payload.steps 가 필요하다 — failed\n", type.c_str());
+            sendAck(modem, log, cmdId, "failed");
+            return;
+        }
+        n = 1;
+    } else if (e != KpKey::Error::OK) {
+        LOGW(log, "[CMD] steps 거절 (%s) — 실행 안 함\n", KpKey::errorName(e));
+        sendAck(modem, log, cmdId, "failed");
+        return;
+    }
+
+    KpKey::Error err = KpKey::Error::OK;
+    KpKey::Client::Start r = Carkey::start(steps, n, Carkey::Owner::REMOTE, &err);
+    if (r == KpKey::Client::Start::OK) {
+        s_keyCmdId = cmdId;
+        return;
+    }
+    LOGW(log, "[CMD] 차키 요청 실패 — %s\n",
+         r == KpKey::Client::Start::BUSY      ? "다른 요청 진행 중" :
+         r == KpKey::Client::Start::LINK_DOWN ? "서브 링크 다운" : KpKey::errorName(err));
+    sendAck(modem, log, cmdId, "failed");
+}
+#endif
+
 void begin(TinyGsm &modem)
 {
     modem.mqtt_set_callback(onMessage);
@@ -187,6 +238,23 @@ void handle(TinyGsm &modem, Stream &log)
         s_qDropLogged = s_qDropped;
     }
 
+#if FEATURE_CARKEY
+    // 차키 결과 ack — 큐 처리보다 먼저 본다. 같은 발행 간격 가드를 지키고 틱당 1건만 낸다.
+    // (결과가 있는데 간격이 안 됐으면 아래 큐 처리도 같은 가드에 막혀 이번 틱은 지나간다 —
+    //  그래서 새 차키 명령이 이 결과를 덮어쓸 수 없다.)
+    if (s_keyCmdId.length() && Mqtt::publishGapElapsed(millis(), PUBLISH_MIN_GAP_MS)) {
+        bool done;
+        KpKey::Client::Fail why;
+        if (Carkey::takeRemoteOutcome(&done, &why)) {
+            String id = s_keyCmdId;
+            s_keyCmdId = "";
+            if (!done) LOGW(log, "[CMD] 차키 실패 id=%s (%s)\n", id.c_str(), KpKey::failName(why));
+            sendAck(modem, log, id, done ? "done" : "failed");
+            return;
+        }
+    }
+#endif
+
     if (!s_qCount) return;
 
     uint32_t nowMs = millis();
@@ -240,17 +308,9 @@ void handle(TinyGsm &modem, Stream &log)
 #endif
     }
 
-    if (type == "door_lock") {
+    if (type == "door_lock" || type == "door_unlock" || type == "trunk" || type == "remote_start") {
 #if FEATURE_CARKEY
-        // press()는 논블로킹이라 ack 는 "누름을 시작했다"는 뜻이다(유지 종료를 기다리지 않음).
-        // 다른 누름이 진행 중이면 거부되므로 그때는 failed 로 정직하게 알린다.
-        sendAck(modem, log, cmdId, Carkey::lock() ? "done" : "failed");
-#else
-        sendAck(modem, log, cmdId, "failed");
-#endif
-    } else if (type == "door_unlock") {
-#if FEATURE_CARKEY
-        sendAck(modem, log, cmdId, Carkey::unlock() ? "done" : "failed");
+        startKey(modem, log, cmdId, type, body);   // 거절이면 여기서 failed ack, 시작이면 ack 는 나중
 #else
         sendAck(modem, log, cmdId, "failed");
 #endif
@@ -277,7 +337,6 @@ void handle(TinyGsm &modem, Stream &log)
         int applied = Cfg::applyUpdate(body, log);
         sendAck(modem, log, cmdId, applied > 0 ? "done" : "failed");
     } else {
-        // remote_start(예비 IO 없음) 등 미지원.
         LOGW(log, "[CMD] 미지원 type=%s\n", type.c_str());
         sendAck(modem, log, cmdId, "failed");
     }

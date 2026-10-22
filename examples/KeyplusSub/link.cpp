@@ -6,6 +6,7 @@
 #include "config.h"
 
 #include <KpLinkSession.h>
+#include "carkey.h"
 
 namespace Link {
 
@@ -21,6 +22,8 @@ static void onState(bool isUp, KpLink::Session::Reason why, void *)
 {
     if (isUp) {
         Serial.printf("[LINK] 메인 연결됨 — fw %s hw %s\n", s_sess.peerFw(), s_sess.peerHw());
+        // 메인이 재부팅했으면 차키 요청 id 가 새로 시작한다 — 중복 판정 기억을 지운다.
+        Carkey::forget();
         if (strcmp(s_sess.peerHw(), LINK_PEER_HW) != 0) {
             Serial.printf("[LINK] ⚠️ 상대 hw '%s' — 기대값 '%s' 아님(배선·보드 확인)\n",
                           s_sess.peerHw(), LINK_PEER_HW);
@@ -46,8 +49,10 @@ static void onFrame(const KpLink::Frame &f, void *)
         Serial.write(f.payload, f.len);
         Serial.print('\n');
         break;
+    case KpLink::KEY_CMD:
+        Carkey::onCmd(f.payload, f.len);
+        break;
     default:
-        // S4(KEY_CMD) 부터 여기서 분기한다.
         Serial.printf("[LINK] 미처리 프레임 type=0x%02X seq=%u len=%u\n",
                       f.type, (unsigned)f.seq, (unsigned)f.len);
         break;
@@ -78,6 +83,12 @@ void poll()
 }
 
 bool up() { return s_sess.up(); }
+
+bool sendFrame(uint8_t type, const uint8_t *payload, uint16_t len)
+{
+    if (!s_sess.up()) return false;
+    return s_sess.send(type, payload, len) >= 0;
+}
 
 bool sendConsoleLine(const char *line)
 {
