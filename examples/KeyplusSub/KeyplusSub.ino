@@ -3,15 +3,20 @@
 //   센서 수집 · 온도 가드 · 전원 레일 게이팅 · 저전압 판정 · 차키 시퀀서
 //   메인(T-A7670E)과는 UART0(43/44) 한 가닥으로 KpLink 프레임을 주고받는다.
 //
-// 현재(작업서 S4): 부팅 배너, 레일 OFF 고정, 메인 링크(연결 확인·생존 신호·RESET),
+// 현재(작업서 S5): 부팅 배너, 레일 OFF 고정, 메인 링크(연결 확인·생존 신호·RESET),
 //                  메인 로그 중계([M] 접두) + 'm <명령>' 으로 메인 콘솔 사용,
-//                  차키 6채널 시퀀스 실행(KEY_CMD), USB-CDC 콘솔, loop 워치독.
+//                  차키 6채널 시퀀스 실행(KEY_CMD), 메인 중계 OTA 수신(롤백 포함),
+//                  USB-CDC 콘솔, loop 워치독.
 // ===========================================================================
 #include <Arduino.h>
 #include <KpLink.h>
 #include "config.h"
 #include "link.h"
 #include "carkey.h"
+#include "ota.h"
+
+// arduino-esp32 는 부팅 시 새 OTA 이미지를 자동 확정한다 — 끄고 메인 링크 업 때 직접 확정한다(ota.h).
+extern "C" bool verifyRollbackLater() { return true; }
 
 // --- USB-CDC 콘솔 ------------------------------------------------------------
 // 한 줄 단위 명령. 'm <명령>' 은 메인 콘솔로 보내고(응답은 [M] 줄로 돌아온다), 나머지는 서브 명령.
@@ -42,6 +47,7 @@ static void runCommand(const char *cmd)
     if (!strcmp(cmd, "status") || !strcmp(cmd, "status link")) {
         Link::printStatus(Serial);
         Carkey::printStatus(Serial);
+        Ota::printStatus(Serial);
     } else if (!strcmp(cmd, "reset")) {
         Serial.println("[SUB] 재부팅");
         Serial.flush();
@@ -82,6 +88,7 @@ void setup() {
     }
     // 차키 핀(4~9)을 "뗌"으로 확정 — DIRECT 배선이면 Hi-Z(fob 풀업 유지). 레벨을 먼저 쓴다.
     Carkey::begin();
+    Ota::begin();
 
     Serial.begin(115200);
     // USB 를 안 꽂은 채(차량 장착) 돌 때 콘솔 출력이 loop 를 막지 않게 한다 —
@@ -101,6 +108,7 @@ void setup() {
 void loop() {
     Link::poll();
     Carkey::update();
+    Ota::tick();
     handleConsole();
     delay(1);
 }

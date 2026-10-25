@@ -49,6 +49,17 @@ bool start(TinyGsm &modem, Stream &log,
            const String &md5, const String &version,
            const String &hw);
 
+// 서브 OTA(hw = SUBLINK_PEER_HW, 작업서 S5) — 받은 바이트를 링크로 서브에 중계한다.
+// 메인은 재부팅하지 않는다. 결과는 start 와 같이 NVS pending 으로 남기고, 서브가 다시 연결돼
+// 새 버전으로 HELLO 하면 flushPendingAck() 가 done 을 낸다(SUB_OTA_SETTLE_MS·期限 → failed).
+// 반환: 전송·검증까지 성공 true / 실패 false(NVS 에 failed 기록). 어느 쪽이든 ack 는 여기서 안 낸다.
+bool startSub(TinyGsm &modem, Stream &log,
+              const String &cmdId, const String &url,
+              const String &md5, const String &version);
+
+// Sublink 에서 호출 — OTA_ACK 수신.
+void onSubAck(const uint8_t *payload, size_t len);
+
 // pending OTA 결과 ack 발행. MQTT 접속 상태에서 loop가 호출(hasPending() 가드).
 // 발행 후 NVS 소거. (성공=버전 검증 done, 실패=기록된 failed)
 void flushPendingAck(TinyGsm &modem, Stream &log);

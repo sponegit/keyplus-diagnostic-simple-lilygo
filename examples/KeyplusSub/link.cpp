@@ -7,6 +7,7 @@
 
 #include <KpLinkSession.h>
 #include "carkey.h"
+#include "ota.h"
 
 namespace Link {
 
@@ -24,6 +25,7 @@ static void onState(bool isUp, KpLink::Session::Reason why, void *)
         Serial.printf("[LINK] 메인 연결됨 — fw %s hw %s\n", s_sess.peerFw(), s_sess.peerHw());
         // 메인이 재부팅했으면 차키 요청 id 가 새로 시작한다 — 중복 판정 기억을 지운다.
         Carkey::forget();
+        Ota::onLinkUp();      // 새 이미지 시험 부팅이면 여기서 확정
         if (strcmp(s_sess.peerHw(), LINK_PEER_HW) != 0) {
             Serial.printf("[LINK] ⚠️ 상대 hw '%s' — 기대값 '%s' 아님(배선·보드 확인)\n",
                           s_sess.peerHw(), LINK_PEER_HW);
@@ -48,6 +50,11 @@ static void onFrame(const KpLink::Frame &f, void *)
         Serial.print("[M] ");
         Serial.write(f.payload, f.len);
         Serial.print('\n');
+        break;
+    case KpLink::OTA_BEGIN:
+    case KpLink::OTA_CHUNK:
+    case KpLink::OTA_END:
+        Ota::onFrame(f);
         break;
     case KpLink::KEY_CMD:
         Carkey::onCmd(f.payload, f.len);
@@ -83,6 +90,12 @@ void poll()
 }
 
 bool up() { return s_sess.up(); }
+
+void setBaud(uint32_t baud)
+{
+    s_uart.flush();               // 옛 속도로 보낸 것(ACK)을 끝까지 내보낸다
+    s_uart.updateBaudRate(baud);
+}
 
 bool sendFrame(uint8_t type, const uint8_t *payload, uint16_t len)
 {

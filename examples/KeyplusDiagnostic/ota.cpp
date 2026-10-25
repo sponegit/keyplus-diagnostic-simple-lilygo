@@ -15,6 +15,11 @@
 #include "cmd.h"
 #include "mqtt.h"
 #include "hwmark.h"   // lib/KpLink — 메인·서브 공용
+#if FEATURE_SUBLINK
+#include <KpLink.h>
+#include <KpOta.h>
+#include "sublink.h"
+#endif
 #include <Update.h>
 #include <Preferences.h>
 #include "esp_ota_ops.h"
@@ -29,9 +34,14 @@ static bool     s_pendingVerify = false;  // 실행 이미지가 PENDING_VERIFY(
 static bool     s_confirmed     = false;  // onHealthy로 mark_valid 완료했는가
 static uint32_t s_trialStart    = 0;      // PENDING_VERIFY 부팅 기준 millis (期限 계산용)
 
+// 서브 OTA 결과 판정 기준 시각(RAM). 메인이 그 사이 재부팅했으면 0 — 기다릴 근거가 없다.
+static uint32_t s_subSavedAt = 0;
+
 // --- NVS pending helpers -----------------------------------------------------
 // result="" → 부팅 후 버전 검증으로 done/failed 판정. result="failed" → 그대로 확정.
-static void savePending(const String &cmdId, const String &version, const char *result)
+// target="sub" → 서브 OTA. 판정은 메인 FW_VERSION 이 아니라 서브가 HELLO 로 알린 fw 로 한다.
+static void savePending(const String &cmdId, const String &version, const char *result,
+                        const char *target = "")
 {
     Preferences p;
     p.begin(kNs, /*readOnly=*/false);
@@ -39,8 +49,10 @@ static void savePending(const String &cmdId, const String &version, const char *
     p.putString("cmd", cmdId);
     p.putString("ver", version);
     p.putString("result", result);
+    p.putString("tgt", target);
     p.end();
     s_pendingRam = true;
+    if (target[0]) s_subSavedAt = millis() ? millis() : 1;
 }
 
 static void clearPending()
@@ -219,7 +231,183 @@ bool start(TinyGsm &modem, Stream &log,
     return true;   // 도달하지 않음
 }
 
+#if FEATURE_SUBLINK
+// --- 서브 OTA 중계 -------------------------------------------------------------
+// OTA_ACK 는 Sublink::poll() 안에서 onSubAck() 로 들어온다. 중계 루프는 loop 를 막고 돌므로
+// 그 안에서 Sublink::poll() 을 직접 불러 ACK 수신·하트비트를 유지한다.
+static volatile bool    s_ackReady = false;
+static KpOta::Phase     s_ackPhase;
+static KpOta::Status    s_ackStatus;
+static uint32_t         s_ackNext;
+
+void onSubAck(const uint8_t *payload, size_t len)
+{
+    KpOta::Phase ph; KpOta::Status st; uint32_t next;
+    if (!KpOta::decodeAck(payload, len, &ph, &st, &next)) return;
+    s_ackPhase = ph; s_ackStatus = st; s_ackNext = next;
+    s_ackReady = true;
+}
+
+// 프레임 1개를 보내고 원하는 단계의 ACK 를 기다린다. 시간 초과면 같은 프레임을 다시 보낸다.
+// 반환 false = 응답 없음 또는 링크 다운. true 면 *st·*next 에 서브의 답.
+static bool subXfer(uint8_t type, const uint8_t *p, uint16_t len, KpOta::Phase want,
+                    uint32_t timeoutMs, int tries, KpOta::Status *st, uint32_t *next)
+{
+    for (int i = 0; i < tries; i++) {
+        s_ackReady = false;
+        if (!Sublink::sendFrame(type, p, len)) return false;
+        const uint32_t t0 = millis();
+        while (millis() - t0 < timeoutMs) {
+            Sublink::poll();
+            if (s_ackReady && s_ackPhase == want) {
+                *st = s_ackStatus;
+                *next = s_ackNext;
+                return true;
+            }
+            delay(1);
+        }
+    }
+    return false;
+}
+
+bool startSub(TinyGsm &modem, Stream &log,
+              const String &cmdId, const String &url,
+              const String &md5, const String &version)
+{
+    if (url.isEmpty() || !url.startsWith("http")) {
+        LOGE(log, "[OTA:SUB] 잘못된 URL: '%s' — 실패\n", url.c_str());
+        savePending(cmdId, version, "failed", "sub");
+        return false;
+    }
+    if (!Sublink::up()) {
+        LOGE(log, "[OTA:SUB] 서브 링크 다운 — 다운로드 안 함\n");
+        savePending(cmdId, version, "failed", "sub");
+        return false;
+    }
+    if (md5.length() > KPOTA_MD5_LEN || version.length() > KPOTA_VER_MAX) {
+        LOGE(log, "[OTA:SUB] md5/version 길이 초과 — 실패\n");
+        savePending(cmdId, version, "failed", "sub");
+        return false;
+    }
+    LOGI(log, "[OTA:SUB] 시작 cmd=%s ver=%s (서브 현재 %s)\n  url=%s\n",
+         cmdId.c_str(), version.c_str(), Sublink::peerFw(), url.c_str());
+
+    Mqtt::stopService(modem);
+    delay(200);
+    modem.https_begin();
+    size_t fwSize = 0;
+    int httpCode = modem.https_set_url(url) ? modem.https_get(&fwSize) : -1;
+    if (httpCode != 200 || fwSize == 0) {
+        LOGE(log, "[OTA:SUB] HTTP GET 실패 code=%d size=%u\n", httpCode, (unsigned)fwSize);
+        modem.https_end();
+        savePending(cmdId, version, "failed", "sub");
+        return false;
+    }
+    LOGI(log, "[OTA:SUB] 이미지 %u bytes — 서브로 중계 시작\n", (unsigned)fwSize);
+
+    // 로그 중계를 멈춘다 — 진행 로그는 USB-C 에만 남고 링크는 조각 전송만 한다.
+    Sublink::setLogMuted(true);
+    bool     switched = false;
+    bool     ok = false;
+    const char *why = "";
+    KpOta::Status st = KpOta::Status::OK;
+    uint32_t next = 0;
+
+    // ① BEGIN — 서브가 Update.begin 후 OK. 고속 전환은 ACK 를 받은 뒤 양쪽이 한다.
+    {
+        KpOta::Begin b = {};
+        b.size = (uint32_t)fwSize;
+        b.baud = (SUBLINK_OTA_BAUD != SUBLINK_BAUD) ? SUBLINK_OTA_BAUD : 0;
+        strncpy(b.md5, md5.c_str(), KPOTA_MD5_LEN);
+        strncpy(b.version, version.c_str(), KPOTA_VER_MAX);
+        uint8_t buf[KPOTA_BEGIN_MAX];
+        size_t  n = KpOta::encodeBegin(b, buf, sizeof(buf));
+        // 서브는 전환 후 1.5초 안에 프레임이 없으면 옛 속도로 돌아온다 — 그보다 길게 기다린다.
+        if (!subXfer(KpLink::OTA_BEGIN, buf, (uint16_t)n, KpOta::Phase::BEGIN, 2000, 3, &st, &next)) {
+            why = "BEGIN 무응답";
+            goto done;
+        }
+        if (st != KpOta::Status::OK) { why = KpOta::statusName(st); goto done; }
+        if (b.baud) {
+            delay(20);   // 서브가 ACK 를 다 내보내고 속도를 바꿀 시간
+            Sublink::setBaud(b.baud);
+            switched = true;
+        }
+    }
+
+    // ② 조각 — 모뎀에서 읽은 만큼 그대로. 서브가 받아야 다음 조각을 읽는다(stop-and-wait).
+    {
+        uint8_t  data[KPOTA_CHUNK_MAX];
+        uint8_t  frame[4 + KPOTA_CHUNK_MAX];
+        uint32_t total = 0;
+        int      lastPct = 0;
+        uint32_t lastAdvance = millis();
+        while (total < fwSize) {
+            int len = modem.https_body(data, KPOTA_CHUNK_MAX);
+            if (len <= 0) {
+                if (millis() - lastAdvance > OTA_STALL_TIMEOUT_MS) { why = "다운로드 무진전"; goto done; }
+                Sublink::poll();   // 하트비트 유지
+                delay(10);
+                continue;
+            }
+            size_t fl = KpOta::encodeChunk(total, data, (size_t)len, frame, sizeof(frame));
+            if (!subXfer(KpLink::OTA_CHUNK, frame, (uint16_t)fl, KpOta::Phase::CHUNK,
+                         SUB_OTA_ACK_TIMEOUT_MS, SUB_OTA_RETRIES, &st, &next)) {
+                why = "조각 무응답";
+                goto done;
+            }
+            if (st != KpOta::Status::OK || next != total + (uint32_t)len) {
+                why = (st != KpOta::Status::OK) ? KpOta::statusName(st) : "오프셋 불일치";
+                goto done;
+            }
+            total += (uint32_t)len;
+            lastAdvance = millis();
+            int pct = (int)((total * 100ULL) / fwSize);
+            if (pct - lastPct >= OTA_PROGRESS_STEP_PCT || pct == 100) {
+                lastPct = pct;
+                LOGI(log, "[OTA:SUB] %d%% (%u/%u)\n", pct, (unsigned)total, (unsigned)fwSize);
+            }
+        }
+    }
+
+    // ③ END — 서브가 마커·MD5 검증 후 확정하고 재부팅한다.
+    {
+        uint8_t buf[4];
+        size_t  n = KpOta::encodeEnd((uint32_t)fwSize, buf, sizeof(buf));
+        if (!subXfer(KpLink::OTA_END, buf, (uint16_t)n, KpOta::Phase::END, 5000, 2, &st, &next)) {
+            why = "END 무응답";
+            goto done;
+        }
+        if (st != KpOta::Status::OK) { why = KpOta::statusName(st); goto done; }
+        ok = true;
+    }
+
+done:
+    modem.https_end();
+    if (switched) Sublink::setBaud(SUBLINK_BAUD);
+    Sublink::setLogMuted(false);
+    if (!ok) {
+        // 서브 쪽 Update 는 실패 응답 때 이미 닫혔거나, 무응답이면 서브가 10초 무진전으로 포기한다.
+        LOGE(log, "[OTA:SUB] 실패 — %s\n", why);
+        savePending(cmdId, version, "failed", "sub");
+        return false;
+    }
+    LOGI(log, "[OTA:SUB] 전송·검증 완료 — 서브 재부팅, 새 버전(%s)으로 다시 연결되면 done\n",
+         version.isEmpty() ? "?" : version.c_str());
+    savePending(cmdId, version, "", "sub");
+    return true;
+}
+#endif  // FEATURE_SUBLINK
+
 // --- pending ack flush (MQTT 접속 상태에서 loop가 호출) -----------------------
+#if FEATURE_SUBLINK
+// 기대 버전 미지정이면 "다시 연결됨"만으로 성공(메인 경로와 같은 best-effort).
+static bool version_ok(const String &want, const String &peer)
+{
+    return want.isEmpty() || want == peer;
+}
+#endif
+
 void flushPendingAck(TinyGsm &modem, Stream &log)
 {
     if (!s_pendingRam) return;
@@ -229,11 +417,36 @@ void flushPendingAck(TinyGsm &modem, Stream &log)
     String cmdId  = p.getString("cmd", "");
     String ver    = p.getString("ver", "");
     String stored = p.getString("result", "");
+    String tgt    = p.getString("tgt", "");
     p.end();
 
     if (cmdId.isEmpty()) { clearPending(); return; }
 
     const char *result;
+#if FEATURE_SUBLINK
+    if (tgt == "sub" && stored.isEmpty()) {
+        // 서브 OTA 성공 경로 — 서브가 새 버전으로 다시 연결될 때까지 기다린다(이 함수는 매 틱 불린다).
+        const uint32_t age = s_subSavedAt ? millis() - s_subSavedAt : UINT32_MAX;
+        const String   peer = Sublink::peerFw();
+        if (Sublink::up() && (version_ok(ver, peer))) {
+            result = "done";
+        } else if (Sublink::up() && age >= SUB_OTA_SETTLE_MS) {
+            result = "failed";   // 다른 버전으로 연결된 채 정착 — 롤백됐다
+        } else if (!Sublink::up() && age >= OTA_CONFIRM_DEADLINE_MS) {
+            result = "failed";   // 서브가 돌아오지 않는다
+        } else {
+            return;              // 아직 판단할 수 없다
+        }
+        if (!Mqtt::publishGapElapsed(millis(), PUBLISH_MIN_GAP_MS)) return;
+        LOGI(log, "[OTA:SUB] pending ack: cmd=%s 기대=%s 서브=%s(%s) → %s\n",
+             cmdId.c_str(), ver.isEmpty() ? "(미지정)" : ver.c_str(),
+             peer.length() ? peer.c_str() : "?", Sublink::up() ? "UP" : "DOWN", result);
+        Cmd::sendAck(modem, log, cmdId, result);
+        clearPending();
+        s_subSavedAt = 0;
+        return;
+    }
+#endif
     if (stored.length()) {
         result = stored.c_str();                 // 재부팅 전 실패 등 확정 결과
     } else {

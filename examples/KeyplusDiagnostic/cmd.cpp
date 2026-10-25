@@ -324,6 +324,14 @@ void handle(TinyGsm &modem, Stream &log)
         //    나중에 빼는 코드는 실패 경로에서만 도는 셈이 된다(재부팅 시엔 RAM 큐가
         //    통째로 사라져 무해하지만, 순서를 규칙으로 못 박아 두는 편이 안전하다).
         qPop();
+#if FEATURE_SUBLINK
+        // hw 가 서브 세대면 서브 OTA — 메인은 받은 바이트를 링크로 중계만 하고 재부팅하지 않는다.
+        // 결과 ack 는 서브가 새 버전으로 다시 연결된 뒤 flushPendingAck() 가 낸다(작업서 S5).
+        if (hw == SUBLINK_PEER_HW) {
+            Ota::startSub(modem, log, cmdId, url, md5, ver);
+            return;
+        }
+#endif
         // Ota::start는 성공 시 재부팅(반환 안 함), 실패 시 NVS에 failed 기록 후 false.
         // ⚠️ 어느 경우든 결과 ack는 여기서 발행하지 않는다 — MQTT (재)접속 후 loop의
         //    Ota::flushPendingAck()가 발행(다운로드 중 MQTT 단절로 즉시 ack 유실 방지).

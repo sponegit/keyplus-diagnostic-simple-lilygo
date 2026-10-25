@@ -572,6 +572,16 @@
 #define SUBLINK_TX_BUF              (4096)
 // 링크 상대의 HW_MODEL. 다르면 연결은 하되 경고한다(배선 실수·엉뚱한 보드 탐지).
 #define SUBLINK_PEER_HW             "v2-sub"
+// 서브 OTA(작업서 S5) 중 링크 속도. SUBLINK_BAUD 와 같게 두면 전환하지 않는다.
+// 921600 이면 링크가 병목이 아니게 된다(115200 은 약 11KB/s — 500KB 이미지에 45초+).
+// 배선이 길어 고속에서 오류가 나면 115200 으로 내린다(작업서 V5 항목).
+#define SUBLINK_OTA_BAUD            (921600)
+// 서브 OTA 후 판정: 서브가 다시 연결돼 HELLO 의 fw 가 기대 버전이면 done.
+// 다른 버전으로 연결된 채 이 시간이 지나면(롤백) failed. 서브가 아예 안 돌아오면
+// OTA_CONFIRM_DEADLINE_MS 뒤 failed.
+#define SUB_OTA_SETTLE_MS           (30000UL)
+#define SUB_OTA_ACK_TIMEOUT_MS      (1000UL)   // 조각 ACK 대기(플래시 섹터 지우기 포함)
+#define SUB_OTA_RETRIES             (5)
 #define AUX_CONSOLE_TX_PIN          (13)  // 헤더 노출, TF Card CS(미사용), 스트랩 아님
 #define AUX_CONSOLE_RX_PIN          (34)  // 헤더 노출, 미사용, 입력 전용(RX 전용으로 적합)
 #define AUX_CONSOLE_BAUD            (115200)

@@ -36,6 +36,10 @@ const char *peerFw();
 // 앱 프레임 송신(차키 KEY_CMD 등). 링크 다운이면 보내지 않고 false.
 bool sendFrame(uint8_t type, const uint8_t *payload, uint16_t len);
 
+// 서브 OTA 지원(S5) — 링크 UART 속도 변경, 로그 중계 억제(OTA 조각과 대역을 다투지 않게).
+void setBaud(uint32_t baud);
+void setLogMuted(bool muted);
+
 // 서브 소프트 재부팅 요청(RESET 프레임). 링크가 업일 때만 보낸다.
 bool requestReset();
 

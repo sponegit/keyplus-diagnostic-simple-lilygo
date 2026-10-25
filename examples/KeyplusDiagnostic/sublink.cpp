@@ -13,6 +13,9 @@
 #if FEATURE_CARKEY
 #include "carkey.h"
 #endif
+#if FEATURE_OTA
+#include "ota.h"
+#endif
 
 namespace Sublink {
 
@@ -20,6 +23,7 @@ static HardwareSerial     s_uart(2);
 static KpLink::Session    s_sess;
 static uint32_t           s_lastMismatchLogAt = 0;
 static uint32_t           s_mismatchSeen      = 0;
+static bool               s_logMuted          = false;   // 서브 OTA 중 로그 중계 억제
 
 // --- 콘솔 중계 스트림 (S3) ----------------------------------------------------
 // ⚠️ 잠금이 없다 — 로그는 loop 태스크에서만 쓴다는 전제다(LED Ticker 는 출력하지 않는다).
@@ -72,6 +76,7 @@ private:
         const size_t n = len_;
         len_ = 0;
         if (!s_sess.up()) { droppedDown_++; return; }   // 링크 다운 — 쌓아 둘 곳이 없다
+        if (s_logMuted)   { droppedBusy_++; return; }   // 서브 OTA 중 — 조각 전송이 우선
 
         // 혼잡으로 버린 줄이 있으면 이번 줄 앞에 알린다(서브 화면에서 누락을 알 수 있게).
         char    pre[40];
@@ -142,6 +147,11 @@ static void onFrame(const KpLink::Frame &f, void *)
         // 서브 콘솔 'm <명령>' — 메인 콘솔 입력으로. Prov::handleSerial 이 DbgConsole 에서 읽는다.
         linkConsole().pushInput(f.payload, f.len);
         break;
+#if FEATURE_OTA
+    case KpLink::OTA_ACK:
+        Ota::onSubAck(f.payload, f.len);
+        break;
+#endif
 #if FEATURE_CARKEY
     case KpLink::KEY_RESULT:
         Carkey::onResult(f.payload, f.len);
@@ -203,6 +213,14 @@ bool sendFrame(uint8_t type, const uint8_t *payload, uint16_t len)
     if (!s_sess.up()) return false;
     return s_sess.send(type, payload, len) >= 0;
 }
+
+void setBaud(uint32_t baud)
+{
+    s_uart.flush();
+    s_uart.updateBaudRate(baud);
+}
+
+void setLogMuted(bool muted) { s_logMuted = muted; }
 
 bool requestReset()
 {
