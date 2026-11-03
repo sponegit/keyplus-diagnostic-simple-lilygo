@@ -6,6 +6,8 @@
 #include "config.h"
 
 #include <Wire.h>
+#include <VOCGasIndexAlgorithm.h>
+#include <NOxGasIndexAlgorithm.h>
 
 namespace Air {
 
@@ -16,7 +18,7 @@ static const uint8_t  SHT41_ADDR        = 0x44;
 static const uint8_t  SHT41_CMD_MEASURE = 0xFD;   // 고정밀, 히터 끔
 static const uint32_t SHT41_CONV_MS     = 10;
 
-enum class Phase : uint8_t { IDLE, CONVERTING };
+enum class Phase : uint8_t { IDLE, CONVERTING, SGP_CONVERTING };
 
 static Phase    s_phase     = Phase::IDLE;
 static uint32_t s_cmdAt     = 0;
@@ -309,6 +311,117 @@ static void scdCycle(uint32_t now)
     s_scdReads++;
 }
 
+// --- SGP41 ------------------------------------------------------------------
+// 데이터시트(Sensirion SGP41 v1.0) §4. 원시값(SRAW)을 Sensirion gas index 알고리즘(라이브러리)에 1초마다
+// 넣어 VOC·NOx 지수를 얻는다. 지수는 상대값이다 — 100 = 그 환경의 평소(학습된 기준), 높을수록 나쁨.
+// ⚠️ 알고리즘은 정확히 1초 간격을 전제한다(AIR_CYCLE_MS). 주기를 바꾸면 생성자 sampling_interval 도 바꿀 것.
+static const uint8_t  SGP41_ADDR       = 0x59;
+static const uint16_t SGP_CMD_COND     = 0x2612;   // execute_conditioning — 켠 뒤 처음 10초만
+static const uint16_t SGP_CMD_MEASURE  = 0x2619;   // measure_raw_signals
+static const uint16_t SGP_CMD_SERIAL   = 0x3682;
+static const uint32_t SGP_CONV_MS      = 50;
+static const uint8_t  SGP_COND_CYCLES  = 10;       // 데이터시트: 10초 권장, 넘기면 NOx 픽셀 손상
+
+static VOCGasIndexAlgorithm s_vocAlgo;
+static NOxGasIndexAlgorithm s_noxAlgo;
+static bool     s_sgpFound   = false;
+static uint32_t s_sgpProbeAt = 0;
+static uint8_t  s_sgpCond    = 0;      // 남은 컨디셔닝 횟수
+static bool     s_sgpCondNow = false;  // 지금 변환 중인 것이 컨디셔닝인가
+static bool     s_sgpOk      = false;
+static uint16_t s_srawVoc    = 0, s_srawNox = 0;
+static int32_t  s_vocIndex   = 0, s_noxIndex = 0;
+static uint32_t s_sgpAt      = 0;
+static uint32_t s_sgpReads   = 0, s_sgpNack = 0, s_sgpCrc = 0;
+static uint8_t  s_sgpFailRun = 0;
+
+static bool sgpWriteCmd(uint16_t cmd, const uint16_t *args, uint8_t n)
+{
+    Wire.beginTransmission(SGP41_ADDR);
+    Wire.write((uint8_t)(cmd >> 8));
+    Wire.write((uint8_t)cmd);
+    for (uint8_t i = 0; i < n; i++) {
+        const uint8_t w[2] = {(uint8_t)(args[i] >> 8), (uint8_t)args[i]};
+        Wire.write(w, 2);
+        Wire.write(crc8(w, 2));
+    }
+    return Wire.endTransmission() == 0;
+}
+
+// n 워드를 읽는다. 0 = 성공, 1 = 응답 없음, 2 = CRC
+static int sgpReadWords(uint16_t *out, uint8_t n)
+{
+    const uint8_t len = (uint8_t)(n * 3);
+    if (Wire.requestFrom(SGP41_ADDR, len) != len) return 1;
+    for (uint8_t i = 0; i < n; i++) {
+        uint8_t b[3];
+        for (int k = 0; k < 3; k++) b[k] = (uint8_t)Wire.read();
+        if (crc8(b, 2) != b[2]) return 2;
+        out[i] = (uint16_t)(b[0] << 8 | b[1]);
+    }
+    return 0;
+}
+
+static void sgpProbe(uint32_t now)
+{
+    if (s_sgpProbeAt && (uint32_t)(now - s_sgpProbeAt) < AIR_PROBE_MS) return;
+    s_sgpProbeAt = now;
+    uint16_t sn[3];
+    if (!sgpWriteCmd(SGP_CMD_SERIAL, nullptr, 0)) return;
+    delay(1);
+    if (sgpReadWords(sn, 3) != 0) return;
+    s_sgpFound   = true;
+    s_sgpFailRun = 0;
+    s_sgpCond    = SGP_COND_CYCLES;
+    s_vocAlgo.reset();   // 새로 꽂힌 센서 — 학습을 처음부터
+    s_noxAlgo.reset();
+    Serial.printf("[AIR] SGP41 발견 0x%02X — 시리얼 %04X%04X%04X, 컨디셔닝 %u초\n",
+                  SGP41_ADDR, sn[0], sn[1], sn[2], (unsigned)SGP_COND_CYCLES);
+}
+
+static void sgpFail(bool crc)
+{
+    (crc ? s_sgpCrc : s_sgpNack)++;
+    s_sgpOk = false;
+    if (++s_sgpFailRun >= 5) s_sgpFound = false;   // 뽑힌 것으로 보고 다시 찾는다(컨디셔닝부터 다시)
+}
+
+// SHT41 측정 직후에 부른다 — 방금 읽은 온·습도로 보상한다(없으면 데이터시트 기본값 50%RH·25°C).
+static bool sgpStart()
+{
+    uint16_t args[2] = {0x8000, 0x6666};
+    if (s_shtOk) {
+        args[0] = (uint16_t)(s_rh * 65535.0f / 100.0f);
+        args[1] = (uint16_t)((s_tempC + 45.0f) * 65535.0f / 175.0f);
+    }
+    s_sgpCondNow = s_sgpCond > 0;
+    if (!sgpWriteCmd(s_sgpCondNow ? SGP_CMD_COND : SGP_CMD_MEASURE, args, 2)) {
+        sgpFail(false);
+        return false;
+    }
+    return true;
+}
+
+static void sgpFinish(uint32_t now)
+{
+    uint16_t w[2];
+    int r = sgpReadWords(w, s_sgpCondNow ? 1 : 2);
+    if (r != 0) { sgpFail(r == 2); return; }
+    s_sgpFailRun = 0;
+    if (s_sgpCondNow) {   // 컨디셔닝 중에는 VOC 원시값만 나온다 — 지수 계산에 넣지 않는다
+        s_srawVoc = w[0];
+        if (--s_sgpCond == 0) Serial.println("[AIR] SGP41 컨디셔닝 끝 — 지수 학습 시작(약 1분 뒤부터 값)");
+        return;
+    }
+    s_srawVoc  = w[0];
+    s_srawNox  = w[1];
+    s_vocIndex = s_vocAlgo.process(s_srawVoc);
+    s_noxIndex = s_noxAlgo.process(s_srawNox);
+    s_sgpOk    = true;
+    s_sgpAt    = now;
+    s_sgpReads++;
+}
+
 // --- 공통 -------------------------------------------------------------------
 
 void begin()
@@ -333,6 +446,14 @@ static void printValues(Stream &io)
                   (unsigned long)((millis() - s_scdAt) / 1000));
     else
         io.printf("[AIR] SCD41  %s\n", s_scdFound ? "첫 측정 대기(5초 주기)" : "없음 (0x62 응답 없음)");
+    if (s_sgpOk && s_vocIndex > 0)
+        io.printf("[AIR] SGP41  VOC %ld  NOx %ld  (raw %u/%u)\n", (long)s_vocIndex, (long)s_noxIndex,
+                  (unsigned)s_srawVoc, (unsigned)s_srawNox);
+    else if (s_sgpOk)
+        io.printf("[AIR] SGP41  지수 학습 중 (raw %u/%u)\n", (unsigned)s_srawVoc, (unsigned)s_srawNox);
+    else
+        io.printf("[AIR] SGP41  %s\n", !s_sgpFound ? "없음 (0x59 응답 없음)" :
+                                       s_sgpCond ? "컨디셔닝 중" : "읽기 실패");
 }
 
 void update()
@@ -344,6 +465,7 @@ void update()
         s_lastCycle = now;
         bmpCycle(now);   // 연속 측정 중이라 결과만 읽는다 — SHT41 변환을 기다리는 동안 버스가 비어 있다
         scdCycle(now);   // BMP280 다음 — 방금 읽은 기압으로 보정
+        if (!s_sgpFound) sgpProbe(now);
         if (shtStart()) {
             s_cmdAt = now;
             s_phase = Phase::CONVERTING;
@@ -356,6 +478,17 @@ void update()
     case Phase::CONVERTING:
         if ((uint32_t)(now - s_cmdAt) < SHT41_CONV_MS) return;
         shtFinish();
+        if (s_sgpFound && sgpStart()) {
+            s_cmdAt = now;
+            s_phase = Phase::SGP_CONVERTING;
+            return;
+        }
+        s_phase = Phase::IDLE;
+        if (s_watch) printValues(Serial);
+        break;
+    case Phase::SGP_CONVERTING:
+        if ((uint32_t)(now - s_cmdAt) < SGP_CONV_MS) return;
+        sgpFinish(now);
         s_phase = Phase::IDLE;
         if (s_watch) printValues(Serial);
         break;
@@ -420,6 +553,13 @@ void printStatus(Stream &io)
               (unsigned long)s_scdNack, (unsigned long)s_scdCrc);
     if (s_scdPresSent) io.printf("  SCD41 기압   : %uhPa 적용\n", (unsigned)s_scdPresSent);
     else               io.println("  SCD41 기압   : 미적용(BMP280 값 대기) — 해발 0m 기본값으로 계산");
+    if (s_sgpOk)
+        io.printf("  SGP41        : VOC %ld NOx %ld (raw %u/%u, %lus 전)\n", (long)s_vocIndex, (long)s_noxIndex,
+                  (unsigned)s_srawVoc, (unsigned)s_srawNox, (unsigned long)((millis() - s_sgpAt) / 1000));
+    else
+        io.printf("  SGP41        : %s\n", !s_sgpFound ? "없음" : s_sgpCond ? "컨디셔닝 중" : "읽기 실패");
+    io.printf("  SGP41 stats  : ok %lu, nack %lu, crc %lu, 보상 %s\n", (unsigned long)s_sgpReads,
+              (unsigned long)s_sgpNack, (unsigned long)s_sgpCrc, s_shtOk ? "SHT41" : "기본값(25°C·50%)");
 }
 
 } // namespace Air
