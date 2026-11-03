@@ -144,16 +144,11 @@ static void startKey(TinyGsm &modem, Stream &log, const String &cmdId,
     size_t      n = 0;
     KpKey::Error e = KpKey::parseStepsJson(body, steps, KPKEY_MAX_STEPS, &n);
     if (e == KpKey::Error::ABSENT) {
-        // 기본 1단계. trunk·remote_start 는 차종마다 버튼·조합이 달라(트렁크 없는 차도 있다)
-        // 기본값을 두지 않는다(작업서 D6).
-        if      (type == "door_lock")   steps[0] = {KPKEY_IO_LOCK,   CARKEY_PRESS_MS, 0};
-        else if (type == "door_unlock") steps[0] = {KPKEY_IO_UNLOCK, CARKEY_PRESS_MS, 0};
-        else {
-            LOGW(log, "[CMD] %s 는 payload.steps 가 필요하다 — failed\n", type.c_str());
-            sendAck(modem, log, cmdId, "failed");
-            return;
-        }
-        n = 1;
+        // 기본값이 없다 — 어느 버튼이 어느 채널인지는 설치마다 달라서 단말이 추측하면
+        // 엉뚱한 버튼을 누른다. 파트너사가 io 번호로 지정해 보내야 한다(작업서 D6·§5).
+        LOGW(log, "[CMD] %s 는 payload.steps 가 필요하다 — failed\n", type.c_str());
+        sendAck(modem, log, cmdId, "failed");
+        return;
     } else if (e != KpKey::Error::OK) {
         LOGW(log, "[CMD] steps 거절 (%s) — 실행 안 함\n", KpKey::errorName(e));
         sendAck(modem, log, cmdId, "failed");

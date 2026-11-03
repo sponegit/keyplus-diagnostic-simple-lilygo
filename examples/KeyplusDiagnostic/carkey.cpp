@@ -117,27 +117,20 @@ static const char *startName(KpKey::Client::Start r)
 
 bool tryConsole(const String &cmd, const String &arg, Stream &io)
 {
-    uint8_t  ioNo = 0;
-    String   rest = arg;
+    // key <io> [ms] — 채널은 번호로만 누른다(버튼 배정은 설치마다 다르다, KpKey.h).
+    if (cmd != "key") return false;
+    String rest = arg;
     rest.trim();
-
-    if      (cmd == "lock")   ioNo = KPKEY_IO_LOCK;
-    else if (cmd == "unlock") ioNo = KPKEY_IO_UNLOCK;
-    else if (cmd == "key") {
-        // key <io> [ms]
-        int sp = rest.indexOf(' ');
-        String first = sp < 0 ? rest : rest.substring(0, sp);
-        rest = sp < 0 ? String() : rest.substring(sp + 1);
-        rest.trim();
-        long v = first.toInt();
-        if (v < KPKEY_IO_MIN || v > KPKEY_IO_MAX) {
-            io.println("[KEY] 사용법: key <io 1~6> [ms]   (1 UNLOCK 2 LOCK 3 CH3 4 START 5 OPT1 6 OPT2)");
-            return true;
-        }
-        ioNo = (uint8_t)v;
-    } else {
-        return false;
+    int sp = rest.indexOf(' ');
+    String first = sp < 0 ? rest : rest.substring(0, sp);
+    rest = sp < 0 ? String() : rest.substring(sp + 1);
+    rest.trim();
+    long v = first.toInt();
+    if (v < KPKEY_IO_MIN || v > KPKEY_IO_MAX) {
+        io.println("[KEY] 사용법: key <io 1~6> [ms]   (서브 GPIO 4~9)");
+        return true;
     }
+    const uint8_t ioNo = (uint8_t)v;
 
     long ms = rest.length() ? rest.toInt() : CARKEY_PRESS_MS;
     KpKey::Step st = {ioNo, (uint16_t)(ms < 0 ? 0 : (ms > 65535 ? 65535 : ms)), 0};

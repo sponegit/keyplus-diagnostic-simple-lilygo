@@ -16,7 +16,7 @@
  *   help                     명령 목록
  *   log [레벨]               UART 로그 상세도 (Log::tryConsole)
  *   info / status [영역]     단말 정보 / 상태 조회 (앱 핸들러 — .ino)
- *   lock / unlock [ms]       차키 검증 (Carkey::tryConsole)
+ *   key <io 1~6> [ms]        차키 채널 누름 (Carkey::tryConsole)
  */
 #pragma once
 

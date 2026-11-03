@@ -30,12 +30,13 @@
 // ---------------------------------------------------------------------------
 // 차키 fob — 오픈드레인, 직렬 1kΩ. ⚠️ 부팅 시 하이임피던스 유지(내부 풀 금지)
 // ---------------------------------------------------------------------------
-#define PIN_KEY_UNLOCK              4
-#define PIN_KEY_LOCK                5
-#define PIN_KEY_CH3                 6
-#define PIN_KEY_START               7
-#define PIN_KEY_OPT1                8
-#define PIN_KEY_OPT2                9
+// 채널 번호(io 1~6) 순서. 버튼 배정은 설치마다 다르다(KpKey.h).
+#define PIN_KEY_IO1                 4
+#define PIN_KEY_IO2                 5
+#define PIN_KEY_IO3                 6
+#define PIN_KEY_IO4                 7
+#define PIN_KEY_IO5                 8
+#define PIN_KEY_IO6                 9
 
 // 구동 방식 (v1 config.h 에서 이전) — 배선이 곧 극성이다. HARDWARE.md §5.3 은 DIRECT.
 //   DIRECT = fob 패드 직결, 오픈드레인. LOW=누름 / Hi-Z=뗌. 공통 GND + fob 3.3V 상시급전 전제.

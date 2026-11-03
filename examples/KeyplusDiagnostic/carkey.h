@@ -8,7 +8,7 @@
  *
  * 결과는 비동기다(원격시동 시퀀스는 수 초). 시작한 쪽이 결과를 가져간다:
  *   REMOTE  — 서버 명령(cmd.cpp). takeRemoteOutcome() 으로 꺼내 ack 를 낸다.
- *   CONSOLE — 콘솔 lock/unlock/key. update() 가 결과를 로그로 남긴다.
+ *   CONSOLE — 콘솔 key. update() 가 결과를 로그로 남긴다.
  * 한 번에 하나만 진행한다. 진행 중이면 새 요청은 BUSY 로 거절된다(v1 과 같은 정책).
  *
  * 링크가 끊기면(Sublink) 진행 중 요청은 즉시 실패로 끝난다 — 서브가 이미 실행했을 수는 있다.
@@ -42,7 +42,7 @@ bool busy();
 void onResult(const uint8_t *payload, size_t len);
 void linkLost();
 
-// 콘솔: lock [ms] | unlock [ms] | key <io 1~6> [ms]
+// 콘솔: key <io 1~6> [ms]
 bool tryConsole(const String &cmd, const String &arg, Stream &io);
 void printStatus(Stream &io);
 

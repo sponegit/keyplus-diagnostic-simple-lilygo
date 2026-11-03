@@ -763,8 +763,8 @@
 // 버튼 1회 누름 유지시간(ms). fob가 인식하는 최소 펄스 폭 이상으로 둔다.
 // press()는 논블로킹이다 — 누름만 걸어두고 Carkey::update()가 시간이 되면 뗀다.
 // 따라서 이 값을 늘려도 loop 는 멈추지 않는다(LED·콘솔·MQTT 정상 동작).
-// 콘솔 'lock 2000' / 'unlock 2000' 처럼 인자로 일시 변경 가능.
-// 서버 명령에 steps 가 없을 때(door_lock/door_unlock) 쓰는 기본값이다.
+// 콘솔 'key 1 2000' 처럼 인자로 일시 변경 가능.
+// 콘솔 key 의 ms 생략 시 기본값. 서버 명령은 steps 의 press_ms 를 그대로 쓴다.
 #define CARKEY_PRESS_MS    (500)
 // 상한·시퀀스 한도는 lib/KpLink/KpKey.h(KPKEY_*) — 메인·서브가 같은 값으로 검증한다.
 

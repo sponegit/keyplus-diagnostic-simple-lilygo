@@ -21,7 +21,7 @@ const char* errorName(Error e) {
 }
 
 const char* ioName(uint8_t io) {
-    static const char* const names[] = {"UNLOCK", "LOCK", "CH3", "START", "OPT1", "OPT2"};
+    static const char* const names[] = {"io1", "io2", "io3", "io4", "io5", "io6"};
     return (io >= KPKEY_IO_MIN && io <= KPKEY_IO_MAX) ? names[io - 1] : "?";
 }
 

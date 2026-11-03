@@ -5,8 +5,9 @@
 // 차종별 버튼 조합(원격시동 등)은 펌웨어에 박지 않는다. 파트너사가 명령 payload 에
 // steps[{io, press_ms, wait_ms}] 로 보내고, 펌웨어는 검증 후 순서대로 실행만 한다.
 //
-//   io       1~6 = 차키 채널 (1 UNLOCK · 2 LOCK · 3 CH3 · 4 START · 5 OPT1 · 6 OPT2)
-//            3 은 범용 — 트렁크가 없는 차가 있어 이름을 붙이지 않는다. 차종별 fob 버튼에 배정
+//   io       1~6 = 차키 채널 번호 (서브 GPIO 4~9). 채널에 이름을 붙이지 않는다 —
+//            어느 fob 버튼을 어느 채널에 배선할지는 차종·설치마다 달라서, 버튼↔번호 대응은
+//            설치 기록(파트너사)이 가진다. 펌웨어·로그는 번호로만 말한다.
 //   press_ms 누름 유지 1 ~ KPKEY_PRESS_MAX_MS
 //   wait_ms  뗀 뒤 다음 단계까지 0 ~ KPKEY_WAIT_MAX_MS
 //   단계 1 ~ KPKEY_MAX_STEPS, 전체 소요 ≤ KPKEY_TOTAL_MAX_MS
@@ -26,13 +27,6 @@
 
 #define KPKEY_IO_MIN             1
 #define KPKEY_IO_MAX             6
-// 채널 번호 — 파트너 API 문서에 공개하는 번호표와 같다. 서브 GPIO 4~9 에 순서대로 대응.
-#define KPKEY_IO_UNLOCK          1
-#define KPKEY_IO_LOCK            2
-#define KPKEY_IO_CH3             3
-#define KPKEY_IO_START           4
-#define KPKEY_IO_OPT1            5
-#define KPKEY_IO_OPT2            6
 #define KPKEY_MAX_STEPS          16
 #define KPKEY_PRESS_MAX_MS       10000
 #define KPKEY_WAIT_MAX_MS        10000
@@ -64,7 +58,7 @@ enum class Error : uint8_t {
     TOO_LONG,        // 전체 소요 초과
 };
 const char* errorName(Error e);
-const char* ioName(uint8_t io);   // "UNLOCK" … "OPT2", 범위 밖은 "?"
+const char* ioName(uint8_t io);   // "io1" … "io6", 범위 밖은 "?"
 
 Error    validate(const Step* steps, size_t n);
 uint32_t totalMs(const Step* steps, size_t n);
