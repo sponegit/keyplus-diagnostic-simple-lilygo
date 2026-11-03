@@ -1083,7 +1083,7 @@ void setup()
 
 #if FEATURE_CARKEY
     // v2: 차키 GPIO 는 서브에 있다 — 여기서는 요청 id 만 준비한다(대리 모듈).
-    // 콘솔 lock/unlock/trunk/key (Prov 콘솔 미지명령 분기에서 Carkey::tryConsole 호출).
+    // 콘솔 lock/unlock/key (Prov 콘솔 미지명령 분기에서 Carkey::tryConsole 호출).
     Carkey::begin();
 #endif
 

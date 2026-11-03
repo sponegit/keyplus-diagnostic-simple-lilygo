@@ -8,7 +8,7 @@
  *   type: door_lock/door_unlock/trunk/remote_start(→Carkey, 서브 경유) / config_update / ota_start
  *   ota_start 의 hw 가 "v2-sub" 면 서브 OTA(메인 중계, Ota::startSub), 그 외는 메인 OTA.
  *   차키 명령의 선택 필드 payload.steps[{io, press_ms, wait_ms}] — 파트너사가 차종별 시퀀스를 보낸다
- *   (KpKey.h). 없으면 lock/unlock/trunk 는 기본 1단계, remote_start 는 steps 필수(없으면 failed).
+ *   (KpKey.h). 없으면 lock/unlock 는 기본 1단계, trunk·remote_start 는 steps 필수(없으면 failed).
  *   ⚠️ v2 차키 ack 는 비동기다: done = 서브가 시퀀스를 끝까지 실행했다(v1 은 "누름 시작").
  *      서브 무응답·링크 끊김·DONE 유실은 failed — 실행 여부를 확인 못 했다는 뜻이다.
  *   result: received(비종결) / done / failed / rejected_ignition_on / expired_on_device

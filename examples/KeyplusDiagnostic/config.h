@@ -766,8 +766,6 @@
 // 콘솔 'lock 2000' / 'unlock 2000' 처럼 인자로 일시 변경 가능.
 // 서버 명령에 steps 가 없을 때(door_lock/door_unlock) 쓰는 기본값이다.
 #define CARKEY_PRESS_MS    (500)
-// trunk 기본 누름 — 트렁크는 대개 길게 눌러야 열린다. 차종별 값은 파트너사가 steps 로 보낸다.
-#define CARKEY_TRUNK_PRESS_MS (1000)
 // 상한·시퀀스 한도는 lib/KpLink/KpKey.h(KPKEY_*) — 메인·서브가 같은 값으로 검증한다.
 
 // ===========================================================================

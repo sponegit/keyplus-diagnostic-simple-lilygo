@@ -2,7 +2,7 @@
  * @file      carkey.h
  * @brief     차키 fob 버튼 구동 — 서브 (작업서 S4)
  *
- * GPIO4~9 = 채널 1~6 (LOCK·UNLOCK·TRUNK·START·OPT1·OPT2). 시퀀스 실행·중복 방지·검증은
+ * GPIO4~9 = 채널 1~6 (UNLOCK·LOCK·CH3·START·OPT1·OPT2). 시퀀스 실행·중복 방지·검증은
  * lib/KpLink 의 KpKey::Executor 가 하고, 여기서는 채널을 핀에 잇고 결과를 링크로 돌려보낸다.
  *
  * ⚠️ 부팅 시 차키 핀은 하이임피던스여야 한다(fob 풀업이 "뗌" 유지). begin() 은 출력 레벨을

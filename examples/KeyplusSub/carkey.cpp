@@ -23,7 +23,7 @@ static const int RELEASE_LEVEL = LOW;
 #endif
 
 static const uint8_t kPins[KPKEY_IO_MAX] = {
-    PIN_KEY_LOCK, PIN_KEY_UNLOCK, PIN_KEY_TRUNK, PIN_KEY_START, PIN_KEY_OPT1, PIN_KEY_OPT2,
+    PIN_KEY_UNLOCK, PIN_KEY_LOCK, PIN_KEY_CH3, PIN_KEY_START, PIN_KEY_OPT1, PIN_KEY_OPT2,
 };
 
 static KpKey::Executor s_exec;

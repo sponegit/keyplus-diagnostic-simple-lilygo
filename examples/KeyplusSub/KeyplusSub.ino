@@ -27,7 +27,7 @@ static void printHelp()
 {
     Serial.println("[SUB] 명령: m <명령>      메인 콘솔로 전달 (예: m status, m help)");
     Serial.println("            status        메인 링크·차키 상태");
-    Serial.println("            key <io> [ms] 차키 채널 1~6 누름 (1 LOCK 2 UNLOCK 3 TRUNK 4 START 5·6 OPT)");
+    Serial.println("            key <io> [ms] 차키 채널 1~6 누름 (1 UNLOCK 2 LOCK 3 CH3 4 START 5·6 OPT)");
     Serial.println("            key abort     진행 중 시퀀스 중단(모두 뗌)");
     Serial.println("            reset         서브 재부팅");
     Serial.println("            hang          ⚠️ 시험용 — loop 를 멈춰 워치독 재부팅(5초) 확인");

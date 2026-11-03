@@ -231,9 +231,9 @@ void printHelp(Stream &io)
     if (s_appHelp) s_appHelp(io);
 #if FEATURE_CARKEY
     // 기본 펄스폭을 숫자로 보여준다 — 값이 바뀌어도 도움말이 낡지 않게.
-    io.printf("[KEY]  명령: lock [ms] | unlock [ms] | trunk [ms] | key <io 1~6> [ms]"
-              "   (기본 %dms, 트렁크 %dms, 상한 %dms — 서브 경유)\n",
-              CARKEY_PRESS_MS, CARKEY_TRUNK_PRESS_MS, KPKEY_PRESS_MAX_MS);
+    io.printf("[KEY]  명령: lock [ms] | unlock [ms] | key <io 1~6> [ms]"
+              "   (기본 %dms, 상한 %dms — 서브 경유)\n",
+              CARKEY_PRESS_MS, KPKEY_PRESS_MAX_MS);
 #endif
 }
 
@@ -283,7 +283,7 @@ static void processLine(const String &raw, Stream &io)
         // 앱 명령(info/status 등) — 모뎀/GPS/OBD 상태에 접근하므로 .ino가 처리한다.
         if (s_appConsole && s_appConsole(cmd, arg, io)) return;
 #if FEATURE_CARKEY
-        // 차키 명령(lock/unlock/trunk/key)을 이 단일 시리얼 소유자에서 위임.
+        // 차키 명령(lock/unlock/key)을 이 단일 시리얼 소유자에서 위임.
         if (Carkey::tryConsole(cmd, arg, io)) return;
 #endif
         io.printf("[PROV] 알 수 없는 명령: '%s'\n", cmd.c_str());

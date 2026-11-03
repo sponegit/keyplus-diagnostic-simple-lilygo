@@ -144,10 +144,10 @@ static void startKey(TinyGsm &modem, Stream &log, const String &cmdId,
     size_t      n = 0;
     KpKey::Error e = KpKey::parseStepsJson(body, steps, KPKEY_MAX_STEPS, &n);
     if (e == KpKey::Error::ABSENT) {
-        // 기본 1단계. remote_start 는 차종마다 조합이 달라 기본값을 두지 않는다(작업서 D6).
+        // 기본 1단계. trunk·remote_start 는 차종마다 버튼·조합이 달라(트렁크 없는 차도 있다)
+        // 기본값을 두지 않는다(작업서 D6).
         if      (type == "door_lock")   steps[0] = {KPKEY_IO_LOCK,   CARKEY_PRESS_MS, 0};
         else if (type == "door_unlock") steps[0] = {KPKEY_IO_UNLOCK, CARKEY_PRESS_MS, 0};
-        else if (type == "trunk")       steps[0] = {KPKEY_IO_TRUNK,  CARKEY_TRUNK_PRESS_MS, 0};
         else {
             LOGW(log, "[CMD] %s 는 payload.steps 가 필요하다 — failed\n", type.c_str());
             sendAck(modem, log, cmdId, "failed");

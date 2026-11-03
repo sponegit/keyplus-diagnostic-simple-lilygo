@@ -118,13 +118,11 @@ static const char *startName(KpKey::Client::Start r)
 bool tryConsole(const String &cmd, const String &arg, Stream &io)
 {
     uint8_t  ioNo = 0;
-    uint16_t defMs = CARKEY_PRESS_MS;
     String   rest = arg;
     rest.trim();
 
     if      (cmd == "lock")   ioNo = KPKEY_IO_LOCK;
     else if (cmd == "unlock") ioNo = KPKEY_IO_UNLOCK;
-    else if (cmd == "trunk") { ioNo = KPKEY_IO_TRUNK; defMs = CARKEY_TRUNK_PRESS_MS; }
     else if (cmd == "key") {
         // key <io> [ms]
         int sp = rest.indexOf(' ');
@@ -133,7 +131,7 @@ bool tryConsole(const String &cmd, const String &arg, Stream &io)
         rest.trim();
         long v = first.toInt();
         if (v < KPKEY_IO_MIN || v > KPKEY_IO_MAX) {
-            io.println("[KEY] 사용법: key <io 1~6> [ms]   (1 LOCK 2 UNLOCK 3 TRUNK 4 START 5 OPT1 6 OPT2)");
+            io.println("[KEY] 사용법: key <io 1~6> [ms]   (1 UNLOCK 2 LOCK 3 CH3 4 START 5 OPT1 6 OPT2)");
             return true;
         }
         ioNo = (uint8_t)v;
@@ -141,7 +139,7 @@ bool tryConsole(const String &cmd, const String &arg, Stream &io)
         return false;
     }
 
-    long ms = rest.length() ? rest.toInt() : defMs;
+    long ms = rest.length() ? rest.toInt() : CARKEY_PRESS_MS;
     KpKey::Step st = {ioNo, (uint16_t)(ms < 0 ? 0 : (ms > 65535 ? 65535 : ms)), 0};
     KpKey::Error err = KpKey::Error::OK;
     KpKey::Client::Start r = start(&st, 1, Owner::CONSOLE, &err);
@@ -170,8 +168,8 @@ void printStatus(Stream &io)
                   s_lastDone ? "" : " — ", s_lastDone ? "" : KpKey::failName(s_lastWhy),
                   (unsigned long)((millis() - s_lastAt) / 1000));
     }
-    io.printf("  %-14s: 누름 %dms / 트렁크 %dms (상한 %dms, 시퀀스 %d단계·%dms)\n", "기본값",
-              CARKEY_PRESS_MS, CARKEY_TRUNK_PRESS_MS, KPKEY_PRESS_MAX_MS,
+    io.printf("  %-14s: 누름 %dms (상한 %dms, 시퀀스 %d단계·%dms)\n", "기본값",
+              CARKEY_PRESS_MS, KPKEY_PRESS_MAX_MS,
               KPKEY_MAX_STEPS, KPKEY_TOTAL_MAX_MS);
 }
 

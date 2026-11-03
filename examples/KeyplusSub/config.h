@@ -30,9 +30,9 @@
 // ---------------------------------------------------------------------------
 // 차키 fob — 오픈드레인, 직렬 1kΩ. ⚠️ 부팅 시 하이임피던스 유지(내부 풀 금지)
 // ---------------------------------------------------------------------------
-#define PIN_KEY_LOCK                4
-#define PIN_KEY_UNLOCK              5
-#define PIN_KEY_TRUNK               6
+#define PIN_KEY_UNLOCK              4
+#define PIN_KEY_LOCK                5
+#define PIN_KEY_CH3                 6
 #define PIN_KEY_START               7
 #define PIN_KEY_OPT1                8
 #define PIN_KEY_OPT2                9
