@@ -71,6 +71,122 @@ static void shtFinish()
     s_shtReads++;
 }
 
+// --- BMP280 -----------------------------------------------------------------
+// 데이터시트 BST-BMP280-DS001 §3.11(보정식)·§4(레지스터). BME280(칩 ID 0x60)도 온도·기압은 같다.
+static const uint8_t BMP_REG_CALIB = 0x88;   // dig_T1..dig_P9, 24바이트 LE
+static const uint8_t BMP_REG_ID    = 0xD0;
+static const uint8_t BMP_REG_CTRL  = 0xF4;
+static const uint8_t BMP_REG_CONF  = 0xF5;
+static const uint8_t BMP_REG_DATA  = 0xF7;   // press[3] temp[3]
+// ctrl_meas: osrs_t ×2 · osrs_p ×16 · normal 모드 (데이터시트 표 7 "indoor navigation" 에 가깝게)
+static const uint8_t BMP_CTRL_VAL  = (0b010 << 5) | (0b101 << 2) | 0b11;
+// config: t_standby 500ms · IIR 필터 ×4 — 1초에 한 번 읽으므로 그 사이 측정이 최소 한 번은 끝난다
+static const uint8_t BMP_CONF_VAL  = (0b100 << 5) | (0b010 << 2);
+
+static uint8_t  s_bmpAddr    = 0;      // 0 = 아직 못 찾음
+static uint8_t  s_bmpChip    = 0;
+static uint32_t s_bmpProbeAt = 0;
+static bool     s_bmpOk      = false;
+static float    s_bmpHpa     = NAN;
+static float    s_bmpTempC   = NAN;
+static uint32_t s_bmpAt      = 0;
+static uint32_t s_bmpReads   = 0, s_bmpNack = 0;
+
+static uint16_t T1; static int16_t T2, T3;
+static uint16_t P1; static int16_t P2, P3, P4, P5, P6, P7, P8, P9;
+
+static bool readRegs(uint8_t addr, uint8_t reg, uint8_t *buf, uint8_t n)
+{
+    Wire.beginTransmission(addr);
+    Wire.write(reg);
+    if (Wire.endTransmission(false) != 0) return false;
+    if (Wire.requestFrom(addr, n) != n) return false;
+    for (uint8_t i = 0; i < n; i++) buf[i] = (uint8_t)Wire.read();
+    return true;
+}
+
+static bool writeReg(uint8_t addr, uint8_t reg, uint8_t val)
+{
+    Wire.beginTransmission(addr);
+    Wire.write(reg);
+    Wire.write(val);
+    return Wire.endTransmission() == 0;
+}
+
+static bool bmpProbe()
+{
+    static const uint8_t addrs[] = {0x76, 0x77};
+    for (uint8_t a : addrs) {
+        uint8_t id;
+        if (!readRegs(a, BMP_REG_ID, &id, 1) || (id != 0x58 && id != 0x60)) continue;
+        uint8_t c[24];
+        if (!readRegs(a, BMP_REG_CALIB, c, sizeof(c))) continue;
+        auto u16 = [&](int i) { return (uint16_t)(c[i] | c[i + 1] << 8); };
+        T1 = u16(0);           T2 = (int16_t)u16(2);  T3 = (int16_t)u16(4);
+        P1 = u16(6);           P2 = (int16_t)u16(8);  P3 = (int16_t)u16(10);
+        P4 = (int16_t)u16(12); P5 = (int16_t)u16(14); P6 = (int16_t)u16(16);
+        P7 = (int16_t)u16(18); P8 = (int16_t)u16(20); P9 = (int16_t)u16(22);
+        // config 는 sleep 모드에서만 확실히 먹는다 — 모드 비트 0 으로 내린 뒤 쓴다.
+        if (!writeReg(a, BMP_REG_CTRL, 0x00) || !writeReg(a, BMP_REG_CONF, BMP_CONF_VAL) ||
+            !writeReg(a, BMP_REG_CTRL, BMP_CTRL_VAL)) continue;
+        s_bmpAddr = a;
+        s_bmpChip = id;
+        Serial.printf("[AIR] %s 발견 0x%02X\n", id == 0x58 ? "BMP280" : "BME280", a);
+        return true;
+    }
+    return false;
+}
+
+static void bmpRead()
+{
+    uint8_t d[6];
+    if (!readRegs(s_bmpAddr, BMP_REG_DATA, d, sizeof(d))) {
+        s_bmpNack++;
+        s_bmpOk = false;
+        // 연속 실패면 뽑힌 것으로 보고 다시 찾는다(다시 꽂으면 재초기화가 필요하다 — 전원이 끊겼다 왔다).
+        if (s_bmpNack % 5 == 0) s_bmpAddr = 0;
+        return;
+    }
+    const int32_t adcP = (int32_t)((uint32_t)d[0] << 12 | (uint32_t)d[1] << 4 | d[2] >> 4);
+    const int32_t adcT = (int32_t)((uint32_t)d[3] << 12 | (uint32_t)d[4] << 4 | d[5] >> 4);
+    if (adcT == 0x80000) { s_bmpOk = false; return; }   // 첫 측정 전(리셋값) — 다음 주기에 다시
+
+    // 데이터시트 §3.11.3 — 32비트 온도, 64비트 기압. 결과: 0.01°C, Pa/256.
+    int32_t v1 = ((((adcT >> 3) - ((int32_t)T1 << 1))) * T2) >> 11;
+    int32_t v2 = (((((adcT >> 4) - (int32_t)T1) * ((adcT >> 4) - (int32_t)T1)) >> 12) * T3) >> 14;
+    const int32_t tFine = v1 + v2;
+    s_bmpTempC = ((tFine * 5 + 128) >> 8) / 100.0f;
+
+    int64_t p1 = (int64_t)tFine - 128000;
+    int64_t p2 = p1 * p1 * P6;
+    p2 = p2 + ((p1 * P5) << 17);
+    p2 = p2 + ((int64_t)P4 << 35);
+    p1 = ((p1 * p1 * P3) >> 8) + ((p1 * P2) << 12);
+    p1 = ((((int64_t)1) << 47) + p1) * P1 >> 33;
+    if (p1 == 0) { s_bmpOk = false; return; }           // 0 으로 나누기 방지(데이터시트 그대로)
+    int64_t p = 1048576 - adcP;
+    p = (((p << 31) - p2) * 3125) / p1;
+    p1 = ((int64_t)P9 * (p >> 13) * (p >> 13)) >> 25;
+    p2 = ((int64_t)P8 * p) >> 19;
+    p = ((p + p1 + p2) >> 8) + ((int64_t)P7 << 4);
+    s_bmpHpa = (float)p / 256.0f / 100.0f;
+
+    s_bmpOk = true;
+    s_bmpAt = millis();
+    s_bmpReads++;
+}
+
+static void bmpCycle(uint32_t now)
+{
+    if (!s_bmpAddr) {
+        s_bmpOk = false;
+        if (s_bmpProbeAt && (uint32_t)(now - s_bmpProbeAt) < AIR_PROBE_MS) return;
+        s_bmpProbeAt = now;
+        if (!bmpProbe()) return;
+    }
+    bmpRead();
+}
+
 // --- 공통 -------------------------------------------------------------------
 
 void begin()
@@ -86,6 +202,10 @@ static void printValues(Stream &io)
     else
         io.printf("[AIR] SHT41  없음 (응답 없음 %lu · CRC 오류 %lu)\n",
                   (unsigned long)s_shtNack, (unsigned long)s_shtCrc);
+    if (s_bmpOk)
+        io.printf("[AIR] BMP280 %.2fhPa  %.2f°C\n", s_bmpHpa, s_bmpTempC);
+    else
+        io.printf("[AIR] BMP280 없음%s\n", s_bmpAddr ? " (측정 대기·읽기 실패)" : " (0x76·0x77 응답 없음)");
 }
 
 void update()
@@ -95,6 +215,7 @@ void update()
     case Phase::IDLE:
         if ((uint32_t)(now - s_lastCycle) < AIR_CYCLE_MS) return;
         s_lastCycle = now;
+        bmpCycle(now);   // 연속 측정 중이라 결과만 읽는다 — SHT41 변환을 기다리는 동안 버스가 비어 있다
         if (shtStart()) {
             s_cmdAt = now;
             s_phase = Phase::CONVERTING;
@@ -156,6 +277,12 @@ void printStatus(Stream &io)
         io.println("  SHT41        : 없음");
     io.printf("  SHT41 stats  : ok %lu, nack %lu, crc %lu\n", (unsigned long)s_shtReads,
               (unsigned long)s_shtNack, (unsigned long)s_shtCrc);
+    if (s_bmpOk)
+        io.printf("  BMP280       : %.2fhPa %.2f°C (0x%02X, %lums 전)\n", s_bmpHpa, s_bmpTempC,
+                  s_bmpAddr, (unsigned long)(millis() - s_bmpAt));
+    else
+        io.printf("  BMP280       : 없음%s\n", s_bmpAddr ? " (읽기 실패)" : "");
+    io.printf("  BMP280 stats : ok %lu, nack %lu\n", (unsigned long)s_bmpReads, (unsigned long)s_bmpNack);
 }
 
 } // namespace Air
