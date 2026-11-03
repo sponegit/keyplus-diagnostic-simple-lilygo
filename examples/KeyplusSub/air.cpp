@@ -187,6 +187,128 @@ static void bmpCycle(uint32_t now)
     bmpRead();
 }
 
+// --- SCD41 ------------------------------------------------------------------
+// 데이터시트(Sensirion SCD4x v1.6) §3. 명령은 16비트, 데이터는 [msb, lsb, crc] 워드 단위(CRC 는 SHT41 과 같다).
+// 주기 측정 모드에서 5초마다 새 값이 나온다. ASC·재보정은 건드리지 않는다(작업서 D5 — 공장 기본값 유지).
+static const uint8_t  SCD41_ADDR           = 0x62;
+static const uint16_t SCD_CMD_START        = 0x21B1;   // start_periodic_measurement
+static const uint16_t SCD_CMD_STOP         = 0x3F86;   // stop_periodic_measurement (끝나는 데 500ms)
+static const uint16_t SCD_CMD_READY        = 0xE4B8;   // get_data_ready_status
+static const uint16_t SCD_CMD_READ         = 0xEC05;   // read_measurement
+static const uint16_t SCD_CMD_PRESSURE     = 0xE000;   // set_ambient_pressure (hPa, 측정 중에도 허용)
+static const uint16_t SCD_CMD_SERIAL       = 0x3682;   // get_serial_number (idle 에서만)
+
+static bool     s_scdFound    = false;
+static uint32_t s_scdProbeAt  = 0;
+static bool     s_scdOk       = false;
+static uint16_t s_co2         = 0;
+static float    s_scdTempC    = NAN;
+static float    s_scdRh       = NAN;
+static uint32_t s_scdAt       = 0;
+static uint32_t s_scdReads    = 0, s_scdNack = 0, s_scdCrc = 0;
+static uint8_t  s_scdFailRun  = 0;
+static uint16_t s_scdPresSent = 0;   // 마지막으로 보낸 기압(hPa). 0 = 보낸 적 없음
+static uint32_t s_scdPresAt   = 0;
+
+static bool scdCmd(uint16_t cmd)
+{
+    Wire.beginTransmission(SCD41_ADDR);
+    Wire.write((uint8_t)(cmd >> 8));
+    Wire.write((uint8_t)cmd);
+    return Wire.endTransmission() == 0;
+}
+
+static bool scdCmdArg(uint16_t cmd, uint16_t arg)
+{
+    const uint8_t w[2] = {(uint8_t)(arg >> 8), (uint8_t)arg};
+    Wire.beginTransmission(SCD41_ADDR);
+    Wire.write((uint8_t)(cmd >> 8));
+    Wire.write((uint8_t)cmd);
+    Wire.write(w, 2);
+    Wire.write(crc8(w, 2));
+    return Wire.endTransmission() == 0;
+}
+
+// 명령 후 1ms(데이터시트 실행 시간) 기다렸다가 n 워드를 읽는다. 0 = 성공, 1 = 응답 없음, 2 = CRC
+static int scdReadWords(uint16_t cmd, uint16_t *out, uint8_t n)
+{
+    if (!scdCmd(cmd)) return 1;
+    delay(1);
+    const uint8_t len = (uint8_t)(n * 3);
+    if (Wire.requestFrom(SCD41_ADDR, len) != len) return 1;
+    for (uint8_t i = 0; i < n; i++) {
+        uint8_t b[3];
+        for (int k = 0; k < 3; k++) b[k] = (uint8_t)Wire.read();
+        if (crc8(b, 2) != b[2]) return 2;
+        out[i] = (uint16_t)(b[0] << 8 | b[1]);
+    }
+    return 0;
+}
+
+static bool scdProbe()
+{
+    // 서브만 리셋되면 센서는 전원이 유지된 채 주기 측정 중이다 — 먼저 멈춰야 idle 명령이 먹는다.
+    if (!scdCmd(SCD_CMD_STOP)) return false;   // 응답 없음 = 센서 없음, 기다리지 않는다
+    delay(500);                                // 데이터시트: stop 후 500ms 동안 명령 금지 (찾았을 때 한 번만)
+    uint16_t sn[3];
+    if (scdReadWords(SCD_CMD_SERIAL, sn, 3) != 0) return false;
+    if (!scdCmd(SCD_CMD_START)) return false;
+    s_scdFound    = true;
+    s_scdFailRun  = 0;
+    s_scdPresSent = 0;
+    Serial.printf("[AIR] SCD41 발견 0x%02X — 시리얼 %04X%04X%04X, 첫 값은 약 5초 뒤\n",
+                  SCD41_ADDR, sn[0], sn[1], sn[2]);
+    return true;
+}
+
+static void scdFail(bool crc)
+{
+    (crc ? s_scdCrc : s_scdNack)++;
+    s_scdOk = false;
+    // 연속 실패면 뽑힌 것으로 보고 다시 찾는다(다시 꽂으면 주기 측정을 새로 시작해야 한다).
+    if (++s_scdFailRun >= 5) s_scdFound = false;
+}
+
+// BMP280 기압을 SCD41 에 알린다 — 기압 1hPa 차이가 CO2 약 0.1% 오차. 바뀌었을 때(≥1hPa)나 1분마다.
+static void scdPressure(uint32_t now)
+{
+    if (!s_bmpOk) return;
+    const uint16_t hpa = (uint16_t)(s_bmpHpa + 0.5f);
+    if (hpa < 700 || hpa > 1200) return;   // 데이터시트 허용 범위
+    const bool changed = !s_scdPresSent || (hpa > s_scdPresSent ? hpa - s_scdPresSent : s_scdPresSent - hpa) >= 1;
+    if (!changed && (uint32_t)(now - s_scdPresAt) < 60000UL) return;
+    if (scdCmdArg(SCD_CMD_PRESSURE, hpa)) {
+        s_scdPresSent = hpa;
+        s_scdPresAt   = now;
+    }
+}
+
+static void scdCycle(uint32_t now)
+{
+    if (!s_scdFound) {
+        s_scdOk = false;
+        if (s_scdProbeAt && (uint32_t)(now - s_scdProbeAt) < AIR_PROBE_MS) return;
+        s_scdProbeAt = now;
+        scdProbe();
+        return;   // 찾았어도 방금 시작했다 — 첫 값은 5초 뒤
+    }
+    scdPressure(now);
+    uint16_t ready;
+    int r = scdReadWords(SCD_CMD_READY, &ready, 1);
+    if (r != 0) { scdFail(r == 2); return; }
+    if ((ready & 0x07FF) == 0) { s_scdFailRun = 0; return; }   // 아직 새 값 없음(5초 주기)
+    uint16_t m[3];
+    r = scdReadWords(SCD_CMD_READ, m, 3);
+    if (r != 0) { scdFail(r == 2); return; }
+    s_co2      = m[0];
+    s_scdTempC = -45.0f + 175.0f * m[1] / 65535.0f;
+    s_scdRh    = 100.0f * m[2] / 65535.0f;
+    s_scdOk    = true;
+    s_scdAt    = now;
+    s_scdFailRun = 0;
+    s_scdReads++;
+}
+
 // --- 공통 -------------------------------------------------------------------
 
 void begin()
@@ -206,6 +328,11 @@ static void printValues(Stream &io)
         io.printf("[AIR] BMP280 %.2fhPa  %.2f°C\n", s_bmpHpa, s_bmpTempC);
     else
         io.printf("[AIR] BMP280 없음%s\n", s_bmpAddr ? " (측정 대기·읽기 실패)" : " (0x76·0x77 응답 없음)");
+    if (s_scdOk)
+        io.printf("[AIR] SCD41  %uppm CO2  (%.1f°C %.0f%%RH, %lus 전)\n", (unsigned)s_co2, s_scdTempC, s_scdRh,
+                  (unsigned long)((millis() - s_scdAt) / 1000));
+    else
+        io.printf("[AIR] SCD41  %s\n", s_scdFound ? "첫 측정 대기(5초 주기)" : "없음 (0x62 응답 없음)");
 }
 
 void update()
@@ -216,6 +343,7 @@ void update()
         if ((uint32_t)(now - s_lastCycle) < AIR_CYCLE_MS) return;
         s_lastCycle = now;
         bmpCycle(now);   // 연속 측정 중이라 결과만 읽는다 — SHT41 변환을 기다리는 동안 버스가 비어 있다
+        scdCycle(now);   // BMP280 다음 — 방금 읽은 기압으로 보정
         if (shtStart()) {
             s_cmdAt = now;
             s_phase = Phase::CONVERTING;
@@ -283,6 +411,15 @@ void printStatus(Stream &io)
     else
         io.printf("  BMP280       : 없음%s\n", s_bmpAddr ? " (읽기 실패)" : "");
     io.printf("  BMP280 stats : ok %lu, nack %lu\n", (unsigned long)s_bmpReads, (unsigned long)s_bmpNack);
+    if (s_scdOk)
+        io.printf("  SCD41        : %uppm %.1f°C %.0f%%RH (%lus 전)\n", (unsigned)s_co2, s_scdTempC, s_scdRh,
+                  (unsigned long)((millis() - s_scdAt) / 1000));
+    else
+        io.printf("  SCD41        : %s\n", s_scdFound ? "첫 측정 대기" : "없음");
+    io.printf("  SCD41 stats  : ok %lu, nack %lu, crc %lu\n", (unsigned long)s_scdReads,
+              (unsigned long)s_scdNack, (unsigned long)s_scdCrc);
+    if (s_scdPresSent) io.printf("  SCD41 기압   : %uhPa 적용\n", (unsigned)s_scdPresSent);
+    else               io.println("  SCD41 기압   : 미적용(BMP280 값 대기) — 해발 0m 기본값으로 계산");
 }
 
 } // namespace Air
