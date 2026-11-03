@@ -63,6 +63,9 @@
 #define PIN_PMS_RX                  18       // PMS5003 — UART2
 #define PIN_PMS_TX                  21
 #define PIN_PMS_SET                 47
+#define I2C_FREQ_HZ                 100000UL // 센서 5종 모두 100kHz 지원. 체인이 길어 400kHz 는 쓰지 않는다
+#define I2C_TIMEOUT_MS              20       // 버스가 붙잡혀도 loop 워치독(5초)까지 가지 않게
+#define AIR_CYCLE_MS                1000UL   // 센서 측정 주기
 
 // ---------------------------------------------------------------------------
 // 전원 레일 게이트 — HIGH = ON. 외부 10kΩ 풀다운 전제, 부팅 기본값은 전부 OFF
