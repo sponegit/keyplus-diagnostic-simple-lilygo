@@ -62,7 +62,10 @@
 #define PIN_GNSS_TX                 16
 #define PIN_PMS_RX                  18       // PMS5003 — UART2
 #define PIN_PMS_TX                  21
-#define PIN_PMS_SET                 47
+#define PIN_PMS_SET                 47       // HIGH·미연결 = 동작, LOW = 슬립
+#define PMS_BAUD                    9600
+#define PMS_WARMUP_MS               30000UL  // 깨운 뒤 팬·레이저 안정화(데이터시트 30초)
+#define PMS_STALE_MS                5000UL   // 이 시간 프레임이 없으면 값 무효(active 모드 최대 간격 2.3초)
 #define I2C_FREQ_HZ                 100000UL // 센서 5종 모두 100kHz 지원. 체인이 길어 400kHz 는 쓰지 않는다
 #define I2C_TIMEOUT_MS              20       // 버스가 붙잡혀도 loop 워치독(5초)까지 가지 않게
 #define AIR_CYCLE_MS                1000UL   // 센서 측정 주기

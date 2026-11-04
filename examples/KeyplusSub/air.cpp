@@ -4,6 +4,7 @@
  */
 #include "air.h"
 #include "config.h"
+#include "pms.h"
 
 #include <Wire.h>
 #include <VOCGasIndexAlgorithm.h>
@@ -454,6 +455,7 @@ static void printValues(Stream &io)
     else
         io.printf("[AIR] SGP41  %s\n", !s_sgpFound ? "없음 (0x59 응답 없음)" :
                                        s_sgpCond ? "컨디셔닝 중" : "읽기 실패");
+    Pms::printValues(io);   // UART 센서지만 'air' 한 화면에서 같이 본다
 }
 
 void update()

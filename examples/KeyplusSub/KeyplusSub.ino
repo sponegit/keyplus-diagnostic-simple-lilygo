@@ -7,7 +7,8 @@
 //                  메인 로그 중계([M] 접두) + 'm <명령>' 으로 메인 콘솔 사용,
 //                  차키 6채널 시퀀스 실행(KEY_CMD), 메인 중계 OTA 수신(롤백 포함),
 //                  USB-CDC 콘솔, loop 워치독.
-//                  센서 벤치 1~4단계: SHT41 온·습도, BMP280 기압, SCD41 CO2, SGP41 VOC·NOx(I2C).
+//                  센서 벤치 1~5단계: SHT41 온·습도, BMP280 기압, SCD41 CO2, SGP41 VOC·NOx(I2C),
+//                  PMS5003 미세먼지(UART2).
 // ===========================================================================
 #include <Arduino.h>
 #include <KpLink.h>
@@ -16,6 +17,7 @@
 #include "carkey.h"
 #include "ota.h"
 #include "air.h"
+#include "pms.h"
 
 // arduino-esp32 는 부팅 시 새 OTA 이미지를 자동 확정한다 — 끄고 메인 링크 업 때 직접 확정한다(ota.h).
 extern "C" bool verifyRollbackLater() { return true; }
@@ -33,6 +35,7 @@ static void printHelp()
     Serial.println("            key abort     진행 중 시퀀스 중단(모두 뗌)");
     Serial.println("            i2c           I2C 버스 스캔(센서 주소 확인)");
     Serial.println("            air           센서 현재 값 · air watch 새 값마다 출력(토글)");
+    Serial.println("            pms           미세먼지 값·통계 · pms sleep / pms wake");
     Serial.println("            reset         서브 재부팅");
     Serial.println("            hang          ⚠️ 시험용 — loop 를 멈춰 워치독 재부팅(5초) 확인");
     Serial.println("            help          이 도움말");
@@ -49,11 +52,13 @@ static void runCommand(const char *cmd)
     }
     if (Carkey::tryConsole(cmd)) return;
     if (Air::tryConsole(cmd)) return;
+    if (Pms::tryConsole(cmd)) return;
     if (!strcmp(cmd, "status") || !strcmp(cmd, "status link")) {
         Link::printStatus(Serial);
         Carkey::printStatus(Serial);
         Ota::printStatus(Serial);
         Air::printStatus(Serial);
+        Pms::printStatus(Serial);
     } else if (!strcmp(cmd, "reset")) {
         Serial.println("[SUB] 재부팅");
         Serial.flush();
@@ -96,6 +101,7 @@ void setup() {
     Carkey::begin();
     Ota::begin();
     Air::begin();
+    Pms::begin();
 
     Serial.begin(115200);
     // USB 를 안 꽂은 채(차량 장착) 돌 때 콘솔 출력이 loop 를 막지 않게 한다 —
@@ -117,6 +123,7 @@ void loop() {
     Carkey::update();
     Ota::tick();
     Air::update();
+    Pms::update();
     handleConsole();
     delay(1);
 }
