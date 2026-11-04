@@ -23,6 +23,7 @@ static uint16_t s_cnt03 = 0, s_cnt25 = 0;    // 0.3µm↑ · 2.5µm↑ 입자 �
 static uint32_t s_at       = 0;              // 마지막 정상 프레임
 static uint32_t s_wakeAt   = 0;              // 마지막으로 깨운 시각(부팅 포함)
 static bool     s_sleeping = false;
+static bool     s_off      = true;           // 레일 꺼짐(온도 가드·부팅 직후) — UART 도 닫혀 있다
 static uint32_t s_frames = 0, s_badSum = 0, s_badLen = 0;
 
 static uint16_t be16(const uint8_t *p) { return (uint16_t)(p[0] << 8 | p[1]); }
@@ -67,15 +68,39 @@ static void setSleep(bool sleep)
 
 void begin()
 {
-    // SET 은 HIGH = 동작. 배선하지 않은 벤치에서는 아무 영향이 없다.
-    digitalWrite(PIN_PMS_SET, HIGH);
+    // 레일을 켤 때까지(Guard 첫 판단) SET LOW · UART 닫음. 배선하지 않은 벤치에서는 SET 이 아무 영향이 없다.
+    digitalWrite(PIN_PMS_SET, LOW);
     pinMode(PIN_PMS_SET, OUTPUT);
-    s_uart.begin(PMS_BAUD, SERIAL_8N1, PIN_PMS_RX, PIN_PMS_TX);
-    s_wakeAt = millis();
+    s_off = true;
+}
+
+void setPower(bool on)
+{
+    if (on == !s_off) return;
+    if (on) {
+        digitalWrite(PIN_PMS_SET, HIGH);
+        s_uart.begin(PMS_BAUD, SERIAL_8N1, PIN_PMS_RX, PIN_PMS_TX);
+        s_off = false;
+        // 게이트 회로가 있으면 방금 전원이 들어와 이미 동작 중이다. 벤치(상시 전원)에서는 슬립을 풀어야 한다.
+        setSleep(false);
+        return;
+    }
+    // 벤치에서는 전원이 그대로라 팬을 명령으로 세운다(차단이 눈에 보이게). 게이트가 있으면 무해하다.
+    sendCmd(0xE4, 0x0000);
+    s_uart.flush();
+    s_uart.end();
+    // 꺼진 센서로 신호선이 전류를 밀어 넣지 않게(back-feed) TX·SET 을 내린다.
+    pinMode(PIN_PMS_TX, INPUT);
+    digitalWrite(PIN_PMS_SET, LOW);
+    s_off      = true;
+    s_sleeping = false;
+    s_ok       = false;
+    s_pos      = 0;
 }
 
 void update()
 {
+    if (s_off) return;
     while (s_uart.available() > 0) {
         const uint8_t c = (uint8_t)s_uart.read();
         // 머리(42 4D)를 맞출 때까지 한 바이트씩 버린다 — 중간부터 받아도 다음 프레임에서 맞는다.
@@ -91,11 +116,11 @@ void update()
     if (s_ok && (uint32_t)(millis() - s_at) > PMS_STALE_MS) s_ok = false;
 }
 
-static bool warming() { return !s_sleeping && (uint32_t)(millis() - s_wakeAt) < PMS_WARMUP_MS; }
+static bool warming() { return !s_off && !s_sleeping && (uint32_t)(millis() - s_wakeAt) < PMS_WARMUP_MS; }
 
 bool get(uint16_t *pm1, uint16_t *pm25, uint16_t *pm10)
 {
-    if (s_sleeping || !s_ok || warming()) return false;
+    if (s_off || s_sleeping || !s_ok || warming()) return false;
     *pm1  = s_pm1;
     *pm25 = s_pm25;
     *pm10 = s_pm10;
@@ -104,7 +129,9 @@ bool get(uint16_t *pm1, uint16_t *pm25, uint16_t *pm10)
 
 void printValues(Stream &io)
 {
-    if (s_sleeping)
+    if (s_off)
+        io.println("[AIR] PMS5003 꺼짐 (온도 가드 — guard)");
+    else if (s_sleeping)
         io.println("[AIR] PMS5003 슬립 중 (pms wake)");
     else if (s_ok)
         io.printf("[AIR] PMS5003 PM1.0 %u  PM2.5 %u  PM10 %u µg/m³%s\n",
@@ -118,6 +145,10 @@ bool tryConsole(const char *line)
     if (!strcmp(line, "pms")) {
         printValues(Serial);
         printStatus(Serial);
+        return true;
+    }
+    if (s_off && (!strcmp(line, "pms sleep") || !strcmp(line, "pms wake"))) {
+        Serial.println("[PMS] 레일이 꺼져 있다(온도 가드) — guard 로 확인");
         return true;
     }
     if (!strcmp(line, "pms sleep")) {
@@ -136,7 +167,8 @@ bool tryConsole(const char *line)
 void printStatus(Stream &io)
 {
     io.println("[PMS] PMS5003");
-    io.printf("  state        : %s\n", s_sleeping ? "슬립" : warming() ? "안정화 중" : s_ok ? "측정" : "수신 없음");
+    io.printf("  state        : %s\n", s_off ? "꺼짐(가드)" : s_sleeping ? "슬립" : warming() ? "안정화 중" :
+                                       s_ok ? "측정" : "수신 없음");
     if (s_ok)
         io.printf("  last         : PM2.5 %u µg/m³, 입자 0.3µm↑ %u · 2.5µm↑ %u /0.1L (%lums 전)\n",
                   (unsigned)s_pm25, (unsigned)s_cnt03, (unsigned)s_cnt25, (unsigned long)(millis() - s_at));

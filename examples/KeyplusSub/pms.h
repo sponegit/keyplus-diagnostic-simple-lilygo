@@ -16,8 +16,12 @@
 
 namespace Pms {
 
-void begin();
+void begin();                        // 꺼진 상태로 시작 — Guard 가 첫 판단 후 setPower(true)
 void update();                       // loop 매 틱 — 쌓인 바이트를 파싱
+
+// 5V 먼지 레일(GPIO39)에 맞춰 부른다(Guard). 켜면 UART 열고 30초 안정화, 끄면 슬립 명령 후
+// UART 를 닫고 TX·SET 을 내린다(꺼진 센서로 back-feed 방지).
+void setPower(bool on);
 
 // 발행할 만한 값이면 true — 수신 중이고 슬립·안정화 중이 아닐 때만.
 bool get(uint16_t *pm1, uint16_t *pm25, uint16_t *pm10);

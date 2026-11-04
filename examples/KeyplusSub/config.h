@@ -72,6 +72,14 @@
 #define AIR_PROBE_MS                5000UL   // 없는 센서를 다시 찾는 주기(벤치에서 나중에 꽂아도 잡히게)
 #define AIR_PUB_MS                  5000UL   // AIR 프레임 발행 주기 — 메인은 telemetry 때 최신값만 쓴다
 #define AIR_SCD_STALE_MS            15000UL  // SCD41 값 유효 시간(5초 주기 × 3)
+#define AIR_SCD_SKIP                3        // 레일을 켠 뒤 버리는 SCD41 첫 값 수(작업서 S8 "수 사이클")
+
+// 온도 가드 (HARDWARE §5.1) — SHT41 온도로 센서 레일(39·40·41)을 끊는다. 히스테리시스 5°C.
+#define GUARD_HOT_OFF_C             50.0f    // 넘으면 차단 (SGP41·ZE15-CO 상한 55°C − 마진)
+#define GUARD_HOT_ON_C              45.0f    // 내려오면 복귀
+#define GUARD_COLD_OFF_C            (-5.0f)  // 밑돌면 차단 (SCD41·PMS5003·ZE15-CO 하한 −10°C + 마진)
+#define GUARD_COLD_ON_C             0.0f     // 올라오면 복귀
+#define GUARD_BOOT_WAIT_MS          5000UL   // 부팅 후 SHT41 이 이 안에 안 나오면 감시 없이 켠다
 
 // ---------------------------------------------------------------------------
 // 전원 레일 게이트 — HIGH = ON. 외부 10kΩ 풀다운 전제, 부팅 기본값은 전부 OFF

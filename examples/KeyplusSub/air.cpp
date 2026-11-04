@@ -6,6 +6,7 @@
 #include "config.h"
 #include "pms.h"
 #include "link.h"
+#include "guard.h"
 
 #include <KpAir.h>
 #include <KpLink.h>
@@ -215,6 +216,7 @@ static uint32_t s_scdReads    = 0, s_scdNack = 0, s_scdCrc = 0;
 static uint8_t  s_scdFailRun  = 0;
 static uint16_t s_scdPresSent = 0;   // 마지막으로 보낸 기압(hPa). 0 = 보낸 적 없음
 static uint32_t s_scdPresAt   = 0;
+static uint8_t  s_scdSkip     = 0;   // 레일을 켠 뒤 버릴 남은 값 수
 
 static bool scdCmd(uint16_t cmd)
 {
@@ -306,6 +308,8 @@ static void scdCycle(uint32_t now)
     uint16_t m[3];
     r = scdReadWords(SCD_CMD_READ, m, 3);
     if (r != 0) { scdFail(r == 2); return; }
+    s_scdFailRun = 0;
+    if (s_scdSkip) { s_scdSkip--; return; }   // 레일 복귀 직후 — 첫 몇 값은 안정되지 않았다
     s_co2      = m[0];
     s_scdTempC = -45.0f + 175.0f * m[1] / 65535.0f;
     s_scdRh    = 100.0f * m[2] / 65535.0f;
@@ -456,6 +460,30 @@ static void collect(KpAir::Values &v, uint32_t now)
         v.nox  = (uint16_t)s_noxIndex;
     }
     if (Pms::get(&v.pm1, &v.pm25, &v.pm10)) v.mask |= KpAir::PM;
+    if (Guard::known()) {
+        v.mask |= KpAir::GUARD;
+        v.guard = (uint8_t)Guard::state();
+    }
+}
+
+// --- 센서 레일(GPIO40) 전이 -----------------------------------------------------
+// 꺼지면 레일 위 센서(BMP280·SCD41·SGP41)를 "없음"으로 돌리고 통신하지 않는다. 켜지면 다시 찾는다 —
+// 전원이 끊겼다 왔으니 SCD41 은 주기 측정을 새로 시작하고 SGP41 은 컨디셔닝부터 다시 한다.
+static bool s_railWasOn = false;
+
+static void railOff()
+{
+    s_bmpAddr  = 0;     s_bmpOk = false;
+    s_scdFound = false; s_scdOk = false;
+    s_sgpFound = false; s_sgpOk = false;
+    s_sgpCond  = 0;
+}
+
+static void railOn(uint32_t now)
+{
+    // 전원이 막 들어왔다 — 바로 찾지 말고 AIR_PROBE_MS 뒤에(SCD41 기동 1초 등).
+    s_bmpProbeAt = s_scdProbeAt = s_sgpProbeAt = now;
+    s_scdSkip = AIR_SCD_SKIP;
 }
 
 static void publish(uint32_t now)
@@ -487,6 +515,12 @@ static void printValues(Stream &io)
     else
         io.printf("[AIR] SHT41  없음 (응답 없음 %lu · CRC 오류 %lu)\n",
                   (unsigned long)s_shtNack, (unsigned long)s_shtCrc);
+    if (!Guard::sensorsOn()) {
+        io.printf("[AIR] 센서 레일 꺼짐 — %s (BMP280·SCD41·SGP41·PMS5003 측정 안 함, guard)\n",
+                  !Guard::known() ? "첫 판단 전" :
+                  Guard::state() == KpAir::Guard::HOT ? "고온 차단" : "저온 차단");
+        return;
+    }
     if (s_bmpOk)
         io.printf("[AIR] BMP280 %.2fhPa  %.2f°C\n", s_bmpHpa, s_bmpTempC);
     else
@@ -515,22 +549,31 @@ void update()
         publish(now);    // 측정 사이(버스가 빈 때) — 직전 주기의 결과를 보낸다
         if ((uint32_t)(now - s_lastCycle) < AIR_CYCLE_MS) return;
         s_lastCycle = now;
-        bmpCycle(now);   // 연속 측정 중이라 결과만 읽는다 — SHT41 변환을 기다리는 동안 버스가 비어 있다
-        scdCycle(now);   // BMP280 다음 — 방금 읽은 기압으로 보정
-        if (!s_sgpFound) sgpProbe(now);
+        if (Guard::sensorsOn() != s_railWasOn) {
+            s_railWasOn = Guard::sensorsOn();
+            if (s_railWasOn) railOn(now);
+            else             railOff();
+        }
+        if (s_railWasOn) {
+            bmpCycle(now);   // 연속 측정 중이라 결과만 읽는다 — SHT41 변환을 기다리는 동안 버스가 비어 있다
+            scdCycle(now);   // BMP280 다음 — 방금 읽은 기압으로 보정
+            if (!s_sgpFound) sgpProbe(now);
+        }
         if (shtStart()) {
             s_cmdAt = now;
             s_phase = Phase::CONVERTING;
         } else {
             s_shtNack++;
             s_shtOk = false;
+            Guard::update(now, false, NAN);
             if (s_watch) printValues(Serial);
         }
         break;
     case Phase::CONVERTING:
         if ((uint32_t)(now - s_cmdAt) < SHT41_CONV_MS) return;
         shtFinish();
-        if (s_sgpFound && sgpStart()) {
+        Guard::update(now, s_shtOk, s_tempC);   // 레일 전이는 다음 주기 IDLE 에서 센서 쪽에 반영
+        if (s_sgpFound && Guard::sensorsOn() && sgpStart()) {
             s_cmdAt = now;
             s_phase = Phase::SGP_CONVERTING;
             return;

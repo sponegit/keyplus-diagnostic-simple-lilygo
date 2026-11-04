@@ -18,6 +18,7 @@
 #include "ota.h"
 #include "air.h"
 #include "pms.h"
+#include "guard.h"
 
 // arduino-esp32 는 부팅 시 새 OTA 이미지를 자동 확정한다 — 끄고 메인 링크 업 때 직접 확정한다(ota.h).
 extern "C" bool verifyRollbackLater() { return true; }
@@ -36,6 +37,7 @@ static void printHelp()
     Serial.println("            i2c           I2C 버스 스캔(센서 주소 확인)");
     Serial.println("            air           센서 현재 값 · air watch 새 값마다 출력(토글)");
     Serial.println("            pms           미세먼지 값·통계 · pms sleep / pms wake");
+    Serial.println("            guard         온도 가드 상태 · guard sim <°C> 가짜 온도 · guard sim off");
     Serial.println("            reset         서브 재부팅");
     Serial.println("            hang          ⚠️ 시험용 — loop 를 멈춰 워치독 재부팅(5초) 확인");
     Serial.println("            help          이 도움말");
@@ -53,12 +55,14 @@ static void runCommand(const char *cmd)
     if (Carkey::tryConsole(cmd)) return;
     if (Air::tryConsole(cmd)) return;
     if (Pms::tryConsole(cmd)) return;
+    if (Guard::tryConsole(cmd)) return;
     if (!strcmp(cmd, "status") || !strcmp(cmd, "status link")) {
         Link::printStatus(Serial);
         Carkey::printStatus(Serial);
         Ota::printStatus(Serial);
         Air::printStatus(Serial);
         Pms::printStatus(Serial);
+        Guard::printStatus(Serial);
     } else if (!strcmp(cmd, "reset")) {
         Serial.println("[SUB] 재부팅");
         Serial.flush();
@@ -102,6 +106,7 @@ void setup() {
     Ota::begin();
     Air::begin();
     Pms::begin();
+    Guard::begin();   // 레일은 위에서 LOW — SHT41 첫 값을 보고 켠다
 
     Serial.begin(115200);
     // USB 를 안 꽂은 채(차량 장착) 돌 때 콘솔 출력이 loop 를 막지 않게 한다 —
