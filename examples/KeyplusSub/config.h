@@ -70,6 +70,8 @@
 #define I2C_TIMEOUT_MS              20       // 버스가 붙잡혀도 loop 워치독(5초)까지 가지 않게
 #define AIR_CYCLE_MS                1000UL   // 센서 측정 주기
 #define AIR_PROBE_MS                5000UL   // 없는 센서를 다시 찾는 주기(벤치에서 나중에 꽂아도 잡히게)
+#define AIR_PUB_MS                  5000UL   // AIR 프레임 발행 주기 — 메인은 telemetry 때 최신값만 쓴다
+#define AIR_SCD_STALE_MS            15000UL  // SCD41 값 유효 시간(5초 주기 × 3)
 
 // ---------------------------------------------------------------------------
 // 전원 레일 게이트 — HIGH = ON. 외부 10kΩ 풀다운 전제, 부팅 기본값은 전부 OFF

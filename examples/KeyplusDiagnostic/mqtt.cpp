@@ -13,6 +13,10 @@
 #include "cfg.h"
 #include "clk.h"
 #include "log.h"
+#if FEATURE_SUBLINK
+#include <KpAir.h>
+#include "sublink.h"
+#endif
 
 namespace Mqtt {
 
@@ -393,7 +397,8 @@ bool publishTelemetry(TinyGsm &modem, const GpsFix &fix, bool fixFresh, const Ob
     if (ts) { s_lastTs = ts; s_lastTsUp = up_s; }
 
     // 계약 스키마(§3)대로 손 조립. gps는 fix일 때만 좌표 포함.
-    char buf[640];
+    // 크기: v1 최대(meta·obd 전부·VIN) ≈ 500B + air 최대 KPAIR_JSON_MAX(160) + 여유.
+    char buf[768];
     int n = snprintf(buf, sizeof(buf),
         "{\"ts\":%u,\"seq\":%u,\"gps\":{\"fix\":%s",
         ts, seq, fix.valid ? "true" : "false");
@@ -434,6 +439,15 @@ bool publishTelemetry(TinyGsm &modem, const GpsFix &fix, bool fixFresh, const Ob
         if (obd.has_vin)      { n += snprintf(buf+n, sizeof(buf)-n, "%s\"vin\":\"%s\"",   o++?",":"", obd.vin); }
         n += snprintf(buf + n, sizeof(buf) - n, "}");
     }
+
+#if FEATURE_SUBLINK
+    // 서브 공기질(작업서 S8) — 최근에 받았고 담긴 값이 있을 때만. 항목별 생략은 서브가 한다.
+    if (n > 0 && n < (int)sizeof(buf) - 8) {
+        char air[KPAIR_JSON_MAX];
+        if (Sublink::airJson(air, sizeof(air)))
+            n += snprintf(buf + n, sizeof(buf) - n, ",\"air\":%s", air);
+    }
+#endif
 
     if (withMeta) {
         // 최초 발행: device_id ↔ 하드웨어 매핑용 메타. imei/mac은 신원 아님.

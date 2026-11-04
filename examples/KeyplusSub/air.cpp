@@ -5,7 +5,10 @@
 #include "air.h"
 #include "config.h"
 #include "pms.h"
+#include "link.h"
 
+#include <KpAir.h>
+#include <KpLink.h>
 #include <Wire.h>
 #include <VOCGasIndexAlgorithm.h>
 #include <NOxGasIndexAlgorithm.h>
@@ -423,6 +426,52 @@ static void sgpFinish(uint32_t now)
     s_sgpReads++;
 }
 
+// --- AIR 발행 ---------------------------------------------------------------
+// 지금 믿을 만한 값만 담는다. SGP41 지수 0 = 학습 전, SCD41 은 마지막 값이 오래되면 뺀다.
+static uint32_t s_pubAt    = 0;
+static uint32_t s_pubSent  = 0, s_pubSkip = 0;
+static uint16_t s_pubMask  = 0;
+
+static int16_t to10(float v) { return (int16_t)(v >= 0 ? v * 10.0f + 0.5f : v * 10.0f - 0.5f); }
+
+static void collect(KpAir::Values &v, uint32_t now)
+{
+    v = {};
+    if (s_shtOk) {
+        v.mask |= KpAir::T | KpAir::RH;
+        v.t10  = to10(s_tempC);
+        v.rh10 = (uint16_t)to10(s_rh);
+    }
+    if (s_bmpOk) {
+        v.mask |= KpAir::P;
+        v.p10  = (uint16_t)to10(s_bmpHpa);
+    }
+    if (s_scdOk && (uint32_t)(now - s_scdAt) < AIR_SCD_STALE_MS) {
+        v.mask |= KpAir::CO2;
+        v.co2  = s_co2;
+    }
+    if (s_sgpOk && s_vocIndex > 0) {
+        v.mask |= KpAir::VOC | KpAir::NOX;
+        v.voc  = (uint16_t)s_vocIndex;
+        v.nox  = (uint16_t)s_noxIndex;
+    }
+    if (Pms::get(&v.pm1, &v.pm25, &v.pm10)) v.mask |= KpAir::PM;
+}
+
+static void publish(uint32_t now)
+{
+    if (s_pubAt && (uint32_t)(now - s_pubAt) < AIR_PUB_MS) return;
+    s_pubAt = now;
+    KpAir::Values v;
+    collect(v, now);
+    s_pubMask = v.mask;
+    uint8_t buf[KPAIR_PAYLOAD_LEN];
+    const size_t n = KpAir::encode(v, buf, sizeof(buf));
+    // 링크가 내려가 있으면 버린다 — 측정값은 최신값만 의미가 있다(작업서 §3.3).
+    if (v.mask && Link::sendFrame(KpLink::AIR, buf, (uint16_t)n)) s_pubSent++;
+    else                                                        s_pubSkip++;
+}
+
 // --- 공통 -------------------------------------------------------------------
 
 void begin()
@@ -463,6 +512,7 @@ void update()
     const uint32_t now = millis();
     switch (s_phase) {
     case Phase::IDLE:
+        publish(now);    // 측정 사이(버스가 빈 때) — 직전 주기의 결과를 보낸다
         if ((uint32_t)(now - s_lastCycle) < AIR_CYCLE_MS) return;
         s_lastCycle = now;
         bmpCycle(now);   // 연속 측정 중이라 결과만 읽는다 — SHT41 변환을 기다리는 동안 버스가 비어 있다
@@ -562,6 +612,12 @@ void printStatus(Stream &io)
         io.printf("  SGP41        : %s\n", !s_sgpFound ? "없음" : s_sgpCond ? "컨디셔닝 중" : "읽기 실패");
     io.printf("  SGP41 stats  : ok %lu, nack %lu, crc %lu, 보상 %s\n", (unsigned long)s_sgpReads,
               (unsigned long)s_sgpNack, (unsigned long)s_sgpCrc, s_shtOk ? "SHT41" : "기본값(25°C·50%)");
+    KpAir::Values v;
+    collect(v, millis());
+    char json[KPAIR_JSON_MAX];
+    io.printf("  AIR 발행     : %lus 마다, 보냄 %lu, 못 보냄 %lu (링크 다운·값 없음)\n",
+              (unsigned long)(AIR_PUB_MS / 1000), (unsigned long)s_pubSent, (unsigned long)s_pubSkip);
+    io.printf("  AIR 내용     : %s\n", KpAir::formatJson(v, json, sizeof(json)) ? json : "(값 없음)");
 }
 
 } // namespace Air

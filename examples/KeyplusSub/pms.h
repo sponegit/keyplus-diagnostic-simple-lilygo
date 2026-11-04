@@ -19,6 +19,9 @@ namespace Pms {
 void begin();
 void update();                       // loop 매 틱 — 쌓인 바이트를 파싱
 
+// 발행할 만한 값이면 true — 수신 중이고 슬립·안정화 중이 아닐 때만.
+bool get(uint16_t *pm1, uint16_t *pm25, uint16_t *pm10);
+
 bool tryConsole(const char *line);
 void printValues(Stream &io);        // 'air' 한 줄 요약
 void printStatus(Stream &io);

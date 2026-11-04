@@ -40,6 +40,10 @@ bool sendFrame(uint8_t type, const uint8_t *payload, uint16_t len);
 void setBaud(uint32_t baud);
 void setLogMuted(bool muted);
 
+// 서브 공기질(AIR, 작업서 S8) telemetry 조각 — {"t":..,...} 를 out 에 쓰고 길이를 돌려준다.
+// 받은 지 SUBLINK_AIR_STALE_MS 가 지났거나 담긴 값이 없으면 0(호출자가 air 키째 생략).
+size_t airJson(char *out, size_t cap);
+
 // 서브 소프트 재부팅 요청(RESET 프레임). 링크가 업일 때만 보낸다.
 bool requestReset();
 

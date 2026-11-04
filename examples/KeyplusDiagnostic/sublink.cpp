@@ -7,6 +7,7 @@
 
 #if FEATURE_SUBLINK
 
+#include <KpAir.h>
 #include <KpLinkSession.h>
 #include "console.h"
 #include "log.h"
@@ -24,6 +25,9 @@ static KpLink::Session    s_sess;
 static uint32_t           s_lastMismatchLogAt = 0;
 static uint32_t           s_mismatchSeen      = 0;
 static bool               s_logMuted          = false;   // 서브 OTA 중 로그 중계 억제
+static KpAir::Values      s_air               = {};      // 마지막 AIR — 최신값만 의미
+static uint32_t           s_airAt             = 0;       // 받은 시각. 0 = 받은 적 없음
+static uint32_t           s_airFrames = 0, s_airBad = 0;
 
 // --- 콘솔 중계 스트림 (S3) ----------------------------------------------------
 // ⚠️ 잠금이 없다 — 로그는 loop 태스크에서만 쓴다는 전제다(LED Ticker 는 출력하지 않는다).
@@ -157,6 +161,15 @@ static void onFrame(const KpLink::Frame &f, void *)
         Carkey::onResult(f.payload, f.len);
         break;
 #endif
+    case KpLink::AIR:
+        if (KpAir::decode(f.payload, f.len, &s_air)) {
+            s_airAt = millis();
+            if (!s_airAt) s_airAt = 1;   // 0 은 "받은 적 없음"
+            s_airFrames++;
+        } else {
+            s_airBad++;
+        }
+        break;
     default:
         LOGD(DbgConsole, "[LINK] 미처리 프레임 type=0x%02X seq=%u len=%u\n",
              f.type, (unsigned)f.seq, (unsigned)f.len);
@@ -222,6 +235,12 @@ void setBaud(uint32_t baud)
 
 void setLogMuted(bool muted) { s_logMuted = muted; }
 
+size_t airJson(char *out, size_t cap)
+{
+    if (!s_airAt || (uint32_t)(millis() - s_airAt) > SUBLINK_AIR_STALE_MS) return 0;
+    return KpAir::formatJson(s_air, out, cap);
+}
+
 bool requestReset()
 {
     if (!s_sess.up()) return false;
@@ -238,6 +257,15 @@ void printStatus(Stream &io)
     io.printf("  log relay    : sent %lu, drop(down) %lu, drop(busy) %lu, input drop %lu\n",
               (unsigned long)c.sent(), (unsigned long)c.droppedDown(),
               (unsigned long)c.droppedBusy(), (unsigned long)c.inDropped());
+    char json[KPAIR_JSON_MAX];
+    if (!s_airAt)
+        io.println("  air          : 받은 적 없음");
+    else if (airJson(json, sizeof(json)))
+        io.printf("  air          : %s (%lus 전)\n", json, (unsigned long)((millis() - s_airAt) / 1000));
+    else
+        io.printf("  air          : 오래됨·값 없음 (%lus 전) — telemetry 에서 생략\n",
+                  (unsigned long)((millis() - s_airAt) / 1000));
+    io.printf("  air stats    : frames %lu, bad %lu\n", (unsigned long)s_airFrames, (unsigned long)s_airBad);
 }
 
 bool tryConsole(const String &cmd, const String &arg, Stream &io)

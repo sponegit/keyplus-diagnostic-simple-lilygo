@@ -93,6 +93,15 @@ void update()
 
 static bool warming() { return !s_sleeping && (uint32_t)(millis() - s_wakeAt) < PMS_WARMUP_MS; }
 
+bool get(uint16_t *pm1, uint16_t *pm25, uint16_t *pm10)
+{
+    if (s_sleeping || !s_ok || warming()) return false;
+    *pm1  = s_pm1;
+    *pm25 = s_pm25;
+    *pm10 = s_pm10;
+    return true;
+}
+
 void printValues(Stream &io)
 {
     if (s_sleeping)
