@@ -5,6 +5,7 @@
 #include "guard.h"
 #include "config.h"
 #include "pms.h"
+#include "co.h"
 
 namespace Guard {
 
@@ -36,6 +37,7 @@ static void applyRails(bool on)
     digitalWrite(PIN_RAIL_PMS_5V, lvl);
     digitalWrite(PIN_RAIL_CO_5V, lvl);
     Pms::setPower(on);
+    Co::setPower(on);
 }
 
 static void enter(KpAir::Guard next, float t, uint32_t now)
@@ -60,6 +62,7 @@ void begin()
     // 핀 방향·LOW 는 setup 이 이미 잡았다(외부 풀다운과 같은 상태). 여기서는 상태만 맞춘다.
     s_railOn = false;
     Pms::setPower(false);
+    Co::setPower(false);
 }
 
 void update(uint32_t now, bool valid, float tempC)

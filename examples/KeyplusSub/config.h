@@ -54,8 +54,11 @@
 // ---------------------------------------------------------------------------
 // 센서 버스
 // ---------------------------------------------------------------------------
-#define PIN_CO_RX                   11       // ZE15-CO — SW serial
-#define PIN_CO_TX                   12
+#define PIN_CO_RX                   11       // ZE15-CO — SW serial. 센서 TXD(PIN8, 3V TTL)
+#define PIN_CO_TX                   12       // 센서 RXD(PIN7). 자동 송신 모드라 보내지 않고 HIGH 유지
+#define CO_BAUD                     9600
+#define CO_WARMUP_MS                30000UL  // 전원 후 예열(데이터시트 30초. 처음 쓰는 센서는 5분 이상)
+#define CO_STALE_MS                 5000UL   // 이 시간 프레임이 없으면 값 무효(자동 송신 1초 주기)
 #define PIN_I2C_SDA                 13       // 온보드 Qwiic — SHT41·SGP41·SCD41·BMP280·INA228
 #define PIN_I2C_SCL                 14
 #define PIN_GNSS_RX                 15       // MAX-M10S — UART1

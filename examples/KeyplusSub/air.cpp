@@ -5,6 +5,7 @@
 #include "air.h"
 #include "config.h"
 #include "pms.h"
+#include "co.h"
 #include "link.h"
 #include "guard.h"
 
@@ -460,6 +461,7 @@ static void collect(KpAir::Values &v, uint32_t now)
         v.nox  = (uint16_t)s_noxIndex;
     }
     if (Pms::get(&v.pm1, &v.pm25, &v.pm10)) v.mask |= KpAir::PM;
+    if (Co::get(&v.co10))                    v.mask |= KpAir::CO;
     if (Guard::known()) {
         v.mask |= KpAir::GUARD;
         v.guard = (uint8_t)Guard::state();
@@ -516,7 +518,7 @@ static void printValues(Stream &io)
         io.printf("[AIR] SHT41  없음 (응답 없음 %lu · CRC 오류 %lu)\n",
                   (unsigned long)s_shtNack, (unsigned long)s_shtCrc);
     if (!Guard::sensorsOn()) {
-        io.printf("[AIR] 센서 레일 꺼짐 — %s (BMP280·SCD41·SGP41·PMS5003 측정 안 함, guard)\n",
+        io.printf("[AIR] 센서 레일 꺼짐 — %s (BMP280·SCD41·SGP41·PMS5003·ZE15-CO 측정 안 함, guard)\n",
                   !Guard::known() ? "첫 판단 전" :
                   Guard::state() == KpAir::Guard::HOT ? "고온 차단" : "저온 차단");
         return;
@@ -539,6 +541,7 @@ static void printValues(Stream &io)
         io.printf("[AIR] SGP41  %s\n", !s_sgpFound ? "없음 (0x59 응답 없음)" :
                                        s_sgpCond ? "컨디셔닝 중" : "읽기 실패");
     Pms::printValues(io);   // UART 센서지만 'air' 한 화면에서 같이 본다
+    Co::printValues(io);
 }
 
 void update()
