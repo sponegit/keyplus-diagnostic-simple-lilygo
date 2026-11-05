@@ -20,6 +20,7 @@
 #include "pms.h"
 #include "co.h"
 #include "guard.h"
+#include "pwr.h"
 
 // arduino-esp32 는 부팅 시 새 OTA 이미지를 자동 확정한다 — 끄고 메인 링크 업 때 직접 확정한다(ota.h).
 extern "C" bool verifyRollbackLater() { return true; }
@@ -39,6 +40,7 @@ static void printHelp()
     Serial.println("            air           센서 현재 값 · air watch 새 값마다 출력(토글)");
     Serial.println("            pms           미세먼지 값·통계 · pms sleep / pms wake");
     Serial.println("            co            일산화탄소 값·통계");
+    Serial.println("            pwr           전압·전류(INA228) · pwr reset 최소/최대 초기화");
     Serial.println("            guard         온도 가드 상태 · guard sim <°C> 가짜 온도 · guard sim off");
     Serial.println("            reset         서브 재부팅");
     Serial.println("            hang          ⚠️ 시험용 — loop 를 멈춰 워치독 재부팅(5초) 확인");
@@ -59,6 +61,7 @@ static void runCommand(const char *cmd)
     if (Pms::tryConsole(cmd)) return;
     if (Co::tryConsole(cmd)) return;
     if (Guard::tryConsole(cmd)) return;
+    if (Pwr::tryConsole(cmd)) return;
     if (!strcmp(cmd, "status") || !strcmp(cmd, "status link")) {
         Link::printStatus(Serial);
         Carkey::printStatus(Serial);
@@ -67,6 +70,7 @@ static void runCommand(const char *cmd)
         Pms::printStatus(Serial);
         Co::printStatus(Serial);
         Guard::printStatus(Serial);
+        Pwr::printStatus(Serial);
     } else if (!strcmp(cmd, "reset")) {
         Serial.println("[SUB] 재부팅");
         Serial.flush();
@@ -111,6 +115,7 @@ void setup() {
     Air::begin();
     Pms::begin();
     Co::begin();
+    Pwr::begin();
     Guard::begin();   // 레일은 위에서 LOW — SHT41 첫 값을 보고 켠다
 
     Serial.begin(115200);
@@ -135,6 +140,7 @@ void loop() {
     Air::update();
     Pms::update();
     Co::update();
+    Pwr::update();
     handleConsole();
     delay(1);
 }

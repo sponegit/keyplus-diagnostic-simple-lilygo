@@ -77,6 +77,10 @@
 #define AIR_SCD_STALE_MS            15000UL  // SCD41 값 유효 시간(5초 주기 × 3)
 #define AIR_SCD_SKIP                3        // 레일을 켠 뒤 버리는 SCD41 첫 값 수(작업서 S8 "수 사이클")
 
+// INA228 전원 감시 (작업서 S6, HARDWARE §2.1) — 하이사이드, VBUS = IN+ (차량 쪽 전압)
+#define PWR_SHUNT_UOHM              2000UL   // 션트 R002 = 2mΩ. 모듈 기본 R100(0.1Ω)이면 100000 — 1.64A 에서 포화
+#define PWR_CYCLE_MS                1000UL   // 읽기 주기(ADC 는 그 사이 128회 평균 ≈ 0.4초)
+
 // 온도 가드 (HARDWARE §5.1) — SHT41 온도로 센서 레일(39·40·41)을 끊는다. 히스테리시스 5°C.
 #define GUARD_HOT_OFF_C             50.0f    // 넘으면 차단 (SGP41·ZE15-CO 상한 55°C − 마진)
 #define GUARD_HOT_ON_C              45.0f    // 내려오면 복귀
