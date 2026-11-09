@@ -44,6 +44,9 @@ void setLogMuted(bool muted);
 // 받은 지 SUBLINK_AIR_STALE_MS 가 지났거나 담긴 값이 없으면 0(호출자가 air 키째 생략).
 size_t airJson(char *out, size_t cap);
 
+// 서브 전원(POWER, 작업서 S6) telemetry 조각 — {"v":..,"i":..,"uv":..}. 오래됐거나 받은 적 없으면 0.
+size_t pwrJson(char *out, size_t cap);
+
 // 서브 소프트 재부팅 요청(RESET 프레임). 링크가 업일 때만 보낸다.
 bool requestReset();
 

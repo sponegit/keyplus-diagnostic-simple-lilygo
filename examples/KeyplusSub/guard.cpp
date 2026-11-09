@@ -13,6 +13,7 @@ static KpAir::Guard s_state    = KpAir::Guard::NORMAL;
 static bool         s_known    = false;
 static bool         s_railOn   = false;
 static bool         s_noSensor = false;   // SHT41 없이 켰다(감시 불가)
+static bool         s_pwrBlock = false;   // 저전압 경고·차단 중(pwr.cpp)
 static bool         s_simOn    = false;
 static float        s_simT     = 0;
 static float        s_lastT    = NAN;
@@ -40,6 +41,9 @@ static void applyRails(bool on)
     Co::setPower(on);
 }
 
+// 레일은 온도가 정상이고 저전압이 아닐 때만 켠다. 첫 판단 전에는 끈 채로 둔다.
+static void refresh() { applyRails(s_known && s_state == KpAir::Guard::NORMAL && !s_pwrBlock); }
+
 static void enter(KpAir::Guard next, float t, uint32_t now)
 {
     const bool first = !s_known;
@@ -51,10 +55,10 @@ static void enter(KpAir::Guard next, float t, uint32_t now)
         Serial.printf("[GUARD] %s — %.1f°C, 센서 레일 차단(GPIO%d·%d·%d)\n", stateName(next), t,
                       PIN_RAIL_PMS_5V, PIN_RAIL_SENSOR_3V3, PIN_RAIL_CO_5V);
     } else {
-        Serial.printf("[GUARD] %s — %.1f°C, 센서 레일 켬%s\n", first ? "첫 판단" : "복귀", t,
-                      first ? "" : " (복귀 직후 값은 버린다)");
+        Serial.printf("[GUARD] %s — %.1f°C, 센서 레일 %s\n", first ? "첫 판단" : "복귀", t,
+                      s_pwrBlock ? "꺼 둠 (저전압 — pwr)" : first ? "켬" : "켬 (복귀 직후 값은 버린다)");
     }
-    applyRails(next == KpAir::Guard::NORMAL);
+    refresh();
 }
 
 void begin()
@@ -99,6 +103,14 @@ void update(uint32_t now, bool valid, float tempC)
     if (!s_known || next != s_state) enter(next, tempC, now);
 }
 
+void setPowerBlock(bool block)
+{
+    if (block == s_pwrBlock) return;
+    s_pwrBlock = block;
+    refresh();
+}
+
+bool         powerBlocked() { return s_pwrBlock; }
 bool         known()     { return s_known; }
 bool         sensorsOn() { return s_railOn; }
 KpAir::Guard state()     { return s_state; }
@@ -132,8 +144,9 @@ bool tryConsole(const char *line)
 void printStatus(Stream &io)
 {
     io.println("[GUARD] 온도 가드");
-    io.printf("  state        : %s%s, 레일 %s (%lus 전 바뀜)\n", s_known ? stateName(s_state) : "판단 전",
-              s_noSensor ? " · ⚠️ SHT41 없음(감시 불가)" : "", s_railOn ? "켬" : "끔",
+    io.printf("  state        : %s%s%s, 레일 %s (%lus 전 바뀜)\n", s_known ? stateName(s_state) : "판단 전",
+              s_noSensor ? " · ⚠️ SHT41 없음(감시 불가)" : "", s_pwrBlock ? " · 저전압 차단(pwr)" : "",
+              s_railOn ? "켬" : "끔",
               (unsigned long)((millis() - s_changeAt) / 1000));
     io.printf("  온도         : %.1f°C%s\n", s_lastT, s_simOn ? " (가짜 — guard sim off 로 해제)" : "");
     io.printf("  기준         : >%.0f 차단 / <%.0f 복귀, <%.0f 차단 / >%.0f 복귀\n", GUARD_HOT_OFF_C,

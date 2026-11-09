@@ -41,6 +41,7 @@ static void printHelp()
     Serial.println("            pms           미세먼지 값·통계 · pms sleep / pms wake");
     Serial.println("            co            일산화탄소 값·통계");
     Serial.println("            pwr           전압·전류(INA228) · pwr reset 최소/최대 초기화");
+    Serial.println("            pwr sim <V>   가짜 전압으로 저전압 판정 · pwr sim off 해제");
     Serial.println("            guard         온도 가드 상태 · guard sim <°C> 가짜 온도 · guard sim off");
     Serial.println("            reset         서브 재부팅");
     Serial.println("            hang          ⚠️ 시험용 — loop 를 멈춰 워치독 재부팅(5초) 확인");

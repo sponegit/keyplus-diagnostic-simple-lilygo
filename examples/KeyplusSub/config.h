@@ -80,6 +80,17 @@
 // INA228 전원 감시 (작업서 S6, HARDWARE §2.1) — 하이사이드, VBUS = IN+ (차량 쪽 전압)
 #define PWR_SHUNT_UOHM              2000UL   // 션트 R002 = 2mΩ. 모듈 기본 R100(0.1Ω)이면 100000 — 1.64A 에서 포화
 #define PWR_CYCLE_MS                1000UL   // 읽기 주기(ADC 는 그 사이 128회 평균 ≈ 0.4초)
+#define PWR_PUB_MS                  5000UL   // POWER 프레임 주기. 저전압 상태가 바뀌면 바로 보낸다
+
+// 저전압 2단 (HARDWARE §2.3) — 판정은 서브, 모뎀 차단은 메인. 실차 전압 로그로 조정할 값(§8-7)
+#define UV_WARN_MV                  12400    // 밑으로 UV_WARN_MS 이어지면 경고 → 센서 레일 차단
+#define UV_WARN_MS                  60000UL
+#define UV_CUT_MV                   11800    // 밑으로 UV_CUT_MS 이어지면 소프트 차단
+#define UV_CUT_MS                   60000UL
+#define UV_RECOVER_MV               13200    // 위로 UV_RECOVER_MS 이어지면 정상(알터네이터 가동)
+#define UV_RECOVER_MS               10000UL
+#define UV_BAND_MV                  50       // 임계 근처 잡음에 타이머가 리셋되지 않게 두는 폭
+#define UV_GAP_MS                   5000UL   // 측정이 이보다 오래 끊기면 진행 중 타이머를 버린다
 
 // 온도 가드 (HARDWARE §5.1) — SHT41 온도로 센서 레일(39·40·41)을 끊는다. 히스테리시스 5°C.
 #define GUARD_HOT_OFF_C             50.0f    // 넘으면 차단 (SGP41·ZE15-CO 상한 55°C − 마진)

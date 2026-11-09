@@ -11,6 +11,7 @@
  * 부팅: 레일은 setup 에서 LOW(외부 풀다운과 같은 상태)로 시작하고, SHT41 첫 값을 보고 켠다.
  *   GUARD_BOOT_WAIT_MS 안에 SHT41 이 없으면 감시 없이 켠다 — 감시자 하나 고장으로 센서 전부를 잃지 않게.
  * 운전 중 SHT41 이 응답하지 않으면 마지막 상태를 유지한다.
+ * 저전압 경고·소프트 차단(pwr.cpp, 작업서 S6) 중에도 레일을 끈다 — 온도 판단과 별개의 사유로 겹쳐 둔다.
  *
  * 레일을 끄고 켤 때 센서 쪽 처리(재탐색·SGP41 컨디셔닝·SCD41 첫 값 버림·PMS 30초 안정화)는
  * air.cpp·pms.cpp 가 sensorsOn() 을 보고 한다.
@@ -31,6 +32,10 @@ namespace Guard {
 void begin();
 // SHT41 측정 직후 부른다. valid=false 면 이번 값은 없음.
 void update(uint32_t now, bool valid, float tempC);
+
+// 저전압 경고·차단 중이면 true — 온도가 정상이어도 레일을 끈다.
+void          setPowerBlock(bool block);
+bool          powerBlocked();
 
 bool          known();       // 첫 판단을 내렸나
 bool          sensorsOn();   // 센서 레일이 켜져 있나

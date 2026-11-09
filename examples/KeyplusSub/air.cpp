@@ -518,9 +518,10 @@ static void printValues(Stream &io)
         io.printf("[AIR] SHT41  없음 (응답 없음 %lu · CRC 오류 %lu)\n",
                   (unsigned long)s_shtNack, (unsigned long)s_shtCrc);
     if (!Guard::sensorsOn()) {
-        io.printf("[AIR] 센서 레일 꺼짐 — %s (BMP280·SCD41·SGP41·PMS5003·ZE15-CO 측정 안 함, guard)\n",
+        io.printf("[AIR] 센서 레일 꺼짐 — %s (BMP280·SCD41·SGP41·PMS5003·ZE15-CO 측정 안 함, guard·pwr)\n",
                   !Guard::known() ? "첫 판단 전" :
-                  Guard::state() == KpAir::Guard::HOT ? "고온 차단" : "저온 차단");
+                  Guard::state() == KpAir::Guard::HOT ? "고온 차단" :
+                  Guard::state() == KpAir::Guard::COLD ? "저온 차단" : "저전압 차단(pwr)");
         return;
     }
     if (s_bmpOk)

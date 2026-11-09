@@ -4,7 +4,10 @@
  */
 #include "pwr.h"
 #include "config.h"
+#include "guard.h"
+#include "link.h"
 
+#include <KpLink.h>
 #include <Wire.h>
 
 namespace Pwr {
@@ -38,6 +41,15 @@ static float    s_vMin = NAN, s_vMax = NAN, s_aMax = NAN;
 static uint32_t s_at       = 0;
 static uint32_t s_reads = 0, s_nack = 0;
 static uint8_t  s_failRun  = 0;
+
+static KpPower::UvMachine s_uv({UV_WARN_MV, UV_CUT_MV, UV_RECOVER_MV, UV_BAND_MV, UV_WARN_MS, UV_CUT_MS,
+                                UV_RECOVER_MS, UV_GAP_MS});
+static bool     s_simOn    = false;
+static float    s_simV     = 0;
+static uint32_t s_uvAt     = 0;   // 마지막 전이 시각
+static uint32_t s_uvTrips  = 0;
+static uint32_t s_pubAt    = 0;
+static uint32_t s_pubSent = 0, s_pubSkip = 0;
 
 static bool readReg(uint8_t reg, uint8_t *buf, uint8_t n)
 {
@@ -104,6 +116,48 @@ static void read()
 
 void begin() {}   // Wire 는 Air::begin 이 연다(같은 버스)
 
+bool get(int32_t *mv, int32_t *ma)
+{
+    if (!s_ok && !s_simOn) return false;
+    *mv = (int32_t)lroundf((s_simOn ? s_simV : s_v) * 1000.0f);
+    *ma = s_ok ? (int32_t)lroundf(s_a * 1000.0f) : 0;
+    return true;
+}
+
+KpPower::Uv uv() { return s_uv.state(); }
+
+static void publish(uint32_t now, int32_t mv, int32_t ma, bool force)
+{
+    if (!force && s_pubAt && (uint32_t)(now - s_pubAt) < PWR_PUB_MS) return;
+    s_pubAt = now;
+    KpPower::Values v;
+    v.mv = (uint16_t)constrain(mv, 0, 65535);
+    v.ma = (int16_t)constrain(ma, -32768, 32767);
+    v.uv = (uint8_t)s_uv.state();
+    uint8_t buf[KPPOWER_PAYLOAD_LEN];
+    const size_t n = KpPower::encode(v, buf, sizeof(buf));
+    // 링크가 내려가 있으면 버린다 — 측정값은 최신값만 의미가 있다(작업서 §3.3).
+    if (Link::sendFrame(KpLink::POWER, buf, (uint16_t)n)) s_pubSent++;
+    else                                                 s_pubSkip++;
+}
+
+// 이번 주기 값으로 저전압을 판정하고 발행한다. 값이 없으면 판정을 멈춘다(상태 유지).
+static void judge(uint32_t now)
+{
+    int32_t mv, ma;
+    if (!get(&mv, &ma)) return;
+    const bool changed = s_uv.update(now, (uint16_t)constrain(mv, 0, 65535));
+    if (changed) {
+        const KpPower::Uv st = s_uv.state();
+        s_uvAt = now;
+        if (st != KpPower::Uv::NORMAL) s_uvTrips++;
+        Serial.printf("[PWR] %s — %.2f V%s\n", KpPower::uvName(st), mv / 1000.0f,
+                      st == KpPower::Uv::NORMAL ? ", 센서 레일 복귀 허용" : ", 센서 레일 차단");
+        Guard::setPowerBlock(st != KpPower::Uv::NORMAL);
+    }
+    publish(now, mv, ma, changed);
+}
+
 void update()
 {
     const uint32_t now = millis();
@@ -111,20 +165,14 @@ void update()
     s_cycleAt = now;
     if (!s_found) {
         s_ok = false;
-        if (s_probeAt && (uint32_t)(now - s_probeAt) < AIR_PROBE_MS) return;
-        s_probeAt = now;
-        probe();
-        return;   // 방금 설정했다 — 첫 평균이 끝나기 전
+        if (!s_probeAt || (uint32_t)(now - s_probeAt) >= AIR_PROBE_MS) {
+            s_probeAt = now;
+            probe();   // 찾았어도 이번 주기는 값 없음 — 첫 평균이 끝나기 전
+        }
+    } else {
+        read();
     }
-    read();
-}
-
-bool get(int32_t *mv, int32_t *ma)
-{
-    if (!s_ok) return false;
-    *mv = (int32_t)lroundf(s_v * 1000.0f);
-    *ma = (int32_t)lroundf(s_a * 1000.0f);
-    return true;
+    judge(now);
 }
 
 bool tryConsole(const char *line)
@@ -136,6 +184,23 @@ bool tryConsole(const char *line)
     if (!strcmp(line, "pwr reset")) {
         s_vMin = s_vMax = s_aMax = NAN;
         Serial.println("[PWR] 최소/최대 초기화");
+        return true;
+    }
+    if (!strcmp(line, "pwr sim off")) {
+        s_simOn = false;
+        Serial.println("[PWR] 가짜 전압 끔 — INA228 값으로 판정");
+        return true;
+    }
+    if (!strncmp(line, "pwr sim ", 8)) {
+        char *end;
+        const float v = strtof(line + 8, &end);
+        if (end == line + 8 || v < 0 || v > 60) {
+            Serial.println("[PWR] 사용법: pwr sim <V> (0~60) | pwr sim off");
+            return true;
+        }
+        s_simOn = true;
+        s_simV  = v;
+        Serial.printf("[PWR] 가짜 전압 %.2f V — 판정·POWER 프레임에 이 값을 쓴다(전류는 실측)\n", v);
         return true;
     }
     return false;
@@ -154,6 +219,20 @@ void printStatus(Stream &io)
                   s_aMax * 1000.0f);
     io.printf("  stats        : ok %lu, nack %lu, 션트 %lu µΩ\n", (unsigned long)s_reads, (unsigned long)s_nack,
               (unsigned long)PWR_SHUNT_UOHM);
+    if (s_simOn) io.printf("  sim          : %.2f V (가짜 — pwr sim off 로 해제)\n", s_simV);
+
+    const uint32_t now = millis();
+    io.printf("  저전압       : %s (%lus 전 바뀜, 경고·차단 %lu회)\n", KpPower::uvName(s_uv.state()),
+              (unsigned long)((now - s_uvAt) / 1000), (unsigned long)s_uvTrips);
+    KpPower::Uv next;
+    uint32_t    left;
+    if (s_uv.pending(now, &next, &left))
+        io.printf("  진행 중      : %s 까지 %lus\n", KpPower::uvName(next), (unsigned long)((left + 999) / 1000));
+    io.printf("  기준         : 경고 <%.1fV %lus / 차단 <%.1fV %lus / 복귀 ≥%.1fV %lus\n", UV_WARN_MV / 1000.0f,
+              (unsigned long)(UV_WARN_MS / 1000), UV_CUT_MV / 1000.0f, (unsigned long)(UV_CUT_MS / 1000),
+              UV_RECOVER_MV / 1000.0f, (unsigned long)(UV_RECOVER_MS / 1000));
+    io.printf("  POWER 발행   : 보냄 %lu, 못 보냄(링크 다운) %lu, 주기 %lus\n", (unsigned long)s_pubSent,
+              (unsigned long)s_pubSkip, (unsigned long)(PWR_PUB_MS / 1000));
 }
 
 } // namespace Pwr

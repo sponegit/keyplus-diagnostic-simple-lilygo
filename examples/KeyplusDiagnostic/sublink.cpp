@@ -8,6 +8,7 @@
 #if FEATURE_SUBLINK
 
 #include <KpAir.h>
+#include <KpPower.h>
 #include <KpLinkSession.h>
 #include "console.h"
 #include "log.h"
@@ -28,6 +29,9 @@ static bool               s_logMuted          = false;   // 서브 OTA 중 로�
 static KpAir::Values      s_air               = {};      // 마지막 AIR — 최신값만 의미
 static uint32_t           s_airAt             = 0;       // 받은 시각. 0 = 받은 적 없음
 static uint32_t           s_airFrames = 0, s_airBad = 0;
+static KpPower::Values    s_pwr               = {};      // 마지막 POWER — 최신값만 의미
+static uint32_t           s_pwrAt             = 0;       // 받은 시각. 0 = 받은 적 없음
+static uint32_t           s_pwrFrames = 0, s_pwrBad = 0;
 
 // --- 콘솔 중계 스트림 (S3) ----------------------------------------------------
 // ⚠️ 잠금이 없다 — 로그는 loop 태스크에서만 쓴다는 전제다(LED Ticker 는 출력하지 않는다).
@@ -170,6 +174,22 @@ static void onFrame(const KpLink::Frame &f, void *)
             s_airBad++;
         }
         break;
+    case KpLink::POWER: {
+        KpPower::Values v;
+        if (!KpPower::decode(f.payload, f.len, &v)) {
+            s_pwrBad++;
+            break;
+        }
+        // 저전압 판정은 서브가 한다. 메인은 전이만 기록한다(경고 발행·모뎀 차단은 다음 단계).
+        if (s_pwrAt && v.uv != s_pwr.uv)
+            LOGI(DbgConsole, "[PWR] 서브 판정: %s → %s (%u.%02uV)\n", KpPower::uvName((KpPower::Uv)s_pwr.uv),
+                 KpPower::uvName((KpPower::Uv)v.uv), v.mv / 1000, (v.mv % 1000) / 10);
+        s_pwr   = v;
+        s_pwrAt = millis();
+        if (!s_pwrAt) s_pwrAt = 1;   // 0 은 "받은 적 없음"
+        s_pwrFrames++;
+        break;
+    }
     default:
         LOGD(DbgConsole, "[LINK] 미처리 프레임 type=0x%02X seq=%u len=%u\n",
              f.type, (unsigned)f.seq, (unsigned)f.len);
@@ -241,6 +261,12 @@ size_t airJson(char *out, size_t cap)
     return KpAir::formatJson(s_air, out, cap);
 }
 
+size_t pwrJson(char *out, size_t cap)
+{
+    if (!s_pwrAt || (uint32_t)(millis() - s_pwrAt) > SUBLINK_PWR_STALE_MS) return 0;
+    return KpPower::formatJson(s_pwr, out, cap);
+}
+
 bool requestReset()
 {
     if (!s_sess.up()) return false;
@@ -266,6 +292,16 @@ void printStatus(Stream &io)
         io.printf("  air          : 오래됨·값 없음 (%lus 전) — telemetry 에서 생략\n",
                   (unsigned long)((millis() - s_airAt) / 1000));
     io.printf("  air stats    : frames %lu, bad %lu\n", (unsigned long)s_airFrames, (unsigned long)s_airBad);
+    char pj[KPPOWER_JSON_MAX];
+    if (!s_pwrAt)
+        io.println("  pwr          : 받은 적 없음");
+    else if (pwrJson(pj, sizeof(pj)))
+        io.printf("  pwr          : %s %s (%lus 전)\n", pj, KpPower::uvName((KpPower::Uv)s_pwr.uv),
+                  (unsigned long)((millis() - s_pwrAt) / 1000));
+    else
+        io.printf("  pwr          : 오래됨 (%lus 전) — telemetry 에서 생략\n",
+                  (unsigned long)((millis() - s_pwrAt) / 1000));
+    io.printf("  pwr stats    : frames %lu, bad %lu\n", (unsigned long)s_pwrFrames, (unsigned long)s_pwrBad);
 }
 
 bool tryConsole(const String &cmd, const String &arg, Stream &io)

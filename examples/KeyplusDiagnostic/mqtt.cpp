@@ -15,6 +15,7 @@
 #include "log.h"
 #if FEATURE_SUBLINK
 #include <KpAir.h>
+#include <KpPower.h>
 #include "sublink.h"
 #endif
 
@@ -397,8 +398,8 @@ bool publishTelemetry(TinyGsm &modem, const GpsFix &fix, bool fixFresh, const Ob
     if (ts) { s_lastTs = ts; s_lastTsUp = up_s; }
 
     // 계약 스키마(§3)대로 손 조립. gps는 fix일 때만 좌표 포함.
-    // 크기: v1 최대(meta·obd 전부·VIN) ≈ 500B + air 최대 KPAIR_JSON_MAX(160) + 여유.
-    char buf[768];
+    // 크기: v1 최대(meta·obd 전부·VIN) ≈ 500B + air 최대 KPAIR_JSON_MAX(160) + pwr 48 + 여유.
+    char buf[832];
     int n = snprintf(buf, sizeof(buf),
         "{\"ts\":%u,\"seq\":%u,\"gps\":{\"fix\":%s",
         ts, seq, fix.valid ? "true" : "false");
@@ -446,6 +447,12 @@ bool publishTelemetry(TinyGsm &modem, const GpsFix &fix, bool fixFresh, const Ob
         char air[KPAIR_JSON_MAX];
         if (Sublink::airJson(air, sizeof(air)))
             n += snprintf(buf + n, sizeof(buf) - n, ",\"air\":%s", air);
+    }
+    // 서브 전원(작업서 S6) — 차량 쪽 전압·장치 전류·저전압 판정. 위 sys.vbat_mv(모뎀 레일)와 다른 값이다.
+    if (n > 0 && n < (int)sizeof(buf) - 8) {
+        char pwr[KPPOWER_JSON_MAX];
+        if (Sublink::pwrJson(pwr, sizeof(pwr)))
+            n += snprintf(buf + n, sizeof(buf) - n, ",\"pwr\":%s", pwr);
     }
 #endif
 
