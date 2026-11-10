@@ -41,7 +41,7 @@ static void printHelp()
     Serial.println("            i2c           I2C 버스 스캔(센서 주소 확인)");
     Serial.println("            air           센서 현재 값 · air watch 새 값마다 출력(토글)");
     Serial.println("            pms           미세먼지 값·통계 · pms sleep / pms wake");
-    Serial.println("            co            일산화탄소 값·통계");
+    Serial.println("            co            일산화탄소 값·통계 · co raw 바이트 · co pin 신호 레벨 · co query 질의");
     Serial.println("            pwr           전압·전류(INA228) · pwr reset 최소/최대 초기화");
     Serial.println("            pwr sim <V>   가짜 전압으로 저전압 판정 · pwr sim off 해제");
     Serial.println("            gnss          GNSS fix·위성·통계 · gnss raw NMEA 원문(토글) · gnss scan 속도 찾기");
