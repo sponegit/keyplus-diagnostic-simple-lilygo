@@ -63,7 +63,7 @@
 #define PIN_I2C_SCL                 14
 #define PIN_GNSS_RX                 15       // MAX-M10S — UART1. 모듈 TX → 여기
 #define PIN_GNSS_TX                 16       // 모듈 RX ← 여기
-#define GNSS_BAUD                   9600     // 모듈 기본값(NMEA)
+#define GNSS_BAUD                   38400    // 벤치 모듈 실측(11-10 gnss scan). u-blox 공장값은 9600 — 판매처 설정으로 보임
 #define GNSS_FIX_STALE_MS           3000UL   // 위치 갱신이 이보다 오래되면 fix 없음(1초 주기 × 3)
 #define GNSS_RX_STALE_MS            3000UL   // 바이트가 이 시간 없으면 "끊김"
 #define PIN_PMS_RX                  18       // PMS5003 — UART2

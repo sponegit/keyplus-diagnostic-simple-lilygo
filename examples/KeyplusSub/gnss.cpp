@@ -19,11 +19,12 @@ static bool     s_hadFix    = false;
 static bool     s_raw       = false;
 static char     s_line[100];          // NMEA 문장은 최대 82자
 static uint8_t  s_lineLen   = 0;
+static uint32_t s_baud      = GNSS_BAUD;
 
 void begin()
 {
     digitalWrite(PIN_RAIL_GNSS, HIGH);   // 게이트 회로가 있으면 전원 ON. 듀티는 2단계
-    s_uart.begin(GNSS_BAUD, SERIAL_8N1, PIN_GNSS_RX, PIN_GNSS_TX);
+    s_uart.begin(s_baud, SERIAL_8N1, PIN_GNSS_RX, PIN_GNSS_TX);
     s_powerAt = millis();
 }
 
@@ -38,8 +39,14 @@ static void rawByte(char c)
         s_line[s_lineLen] = '\0';
         Serial.printf("[GNSS] %s\n", s_line);
         s_lineLen = 0;
-    } else if (c != '\r' && s_lineLen + 1 < sizeof(s_line)) {
-        s_line[s_lineLen++] = c;
+    } else if (c != '\r') {
+        // 속도가 틀리면 줄바꿈이 안 온다 — 쓰레기라도 보이게 넘칠 때 그대로 내보낸다.
+        s_line[s_lineLen++] = (c >= 0x20 && c < 0x7F) ? c : '.';
+        if (s_lineLen + 1 >= sizeof(s_line)) {
+            s_line[s_lineLen] = '\0';
+            Serial.printf("[GNSS] %s (줄바꿈 없음 — 속도 확인: gnss scan)\n", s_line);
+            s_lineLen = 0;
+        }
     }
 }
 
@@ -65,8 +72,41 @@ void update()
     }
 }
 
+// 속도를 바꿔 가며 체크섬이 맞는 NMEA 문장이 오는 속도를 찾는다. 콘솔 진단용 — 약 1.5초 × 후보 수 동안 막힌다.
+static void scan()
+{
+    static const uint32_t cands[] = {9600, 38400, 115200, 57600, 19200, 4800, 230400};
+    uint32_t found = 0;
+    for (uint32_t b : cands) {
+        s_uart.updateBaudRate(b);
+        while (s_uart.available()) s_uart.read();
+        TinyGPSPlus probe;
+        const uint32_t t0 = millis();
+        while ((uint32_t)(millis() - t0) < 1500) {
+            while (s_uart.available()) probe.encode((char)s_uart.read());
+            feedLoopWDT();
+            delay(5);
+        }
+        Serial.printf("[GNSS] %6lu bps : bytes %lu, 문장 %lu, 체크섬 오류 %lu\n", (unsigned long)b,
+                      (unsigned long)probe.charsProcessed(), (unsigned long)probe.passedChecksum(),
+                      (unsigned long)probe.failedChecksum());
+        if (!found && probe.passedChecksum() >= 2) found = b;
+    }
+    s_baud = found ? found : s_baud;
+    s_uart.updateBaudRate(s_baud);
+    if (found)
+        Serial.printf("[GNSS] %lu bps 로 맞춤 — 재부팅하면 %d 로 돌아간다(맞으면 GNSS_BAUD 를 바꾼다)\n",
+                      (unsigned long)found, GNSS_BAUD);
+    else
+        Serial.printf("[GNSS] 맞는 속도 없음 — %lu bps 유지. 배선(TX→15)·GND·잡음 확인\n", (unsigned long)s_baud);
+}
+
 bool tryConsole(const char *line)
 {
+    if (!strcmp(line, "gnss scan")) {
+        scan();
+        return true;
+    }
     if (!strcmp(line, "gnss")) {
         printStatus(Serial);
         return true;
@@ -83,13 +123,13 @@ bool tryConsole(const char *line)
 void printStatus(Stream &io)
 {
     const uint32_t now = millis();
-    io.printf("[GNSS] MAX-M10S (UART1 RX%d·TX%d @%d)\n", PIN_GNSS_RX, PIN_GNSS_TX, GNSS_BAUD);
+    io.printf("[GNSS] MAX-M10S (UART1 RX%d·TX%d @%lu)\n", PIN_GNSS_RX, PIN_GNSS_TX, (unsigned long)s_baud);
     if (!s_gps.charsProcessed()) {
         io.println("  수신         : 없음 — 모듈 TX→GPIO15 배선·3.3V 전원 확인");
     } else if ((uint32_t)(now - s_lastByte) > GNSS_RX_STALE_MS) {
         io.printf("  수신         : %lus 동안 없음 (끊김)\n", (unsigned long)((now - s_lastByte) / 1000));
     } else if (!s_gps.passedChecksum()) {
-        io.println("  수신         : 바이트는 오는데 문장이 없음 — 속도(9600)·잡음 확인, gnss raw 로 원문 보기");
+        io.println("  수신         : 바이트는 오는데 문장이 없음 — 속도 불일치 의심, gnss scan 으로 찾기");
     }
     if (fix()) {
         io.printf("  fix          : 있음  %.6f, %.6f  고도 %.1fm\n", s_gps.location.lat(), s_gps.location.lng(),
