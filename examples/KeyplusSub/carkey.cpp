@@ -5,6 +5,7 @@
 #include "carkey.h"
 #include "config.h"
 #include "link.h"
+#include "led.h"
 
 #include <KpKey.h>
 #include <KpLink.h>
@@ -32,7 +33,7 @@ static void setLine(uint8_t io, bool pressed, void *)
 {
     if (io < KPKEY_IO_MIN || io > KPKEY_IO_MAX) return;
     digitalWrite(kPins[io - 1], pressed ? PRESS_LEVEL : RELEASE_LEVEL);
-    digitalWrite(PIN_STATUS_LED, pressed ? LED_ON_LEVEL : !LED_ON_LEVEL);
+    Led::setKey(io, pressed);
     Serial.printf("[KEY] %s %s\n", KpKey::ioName(io), pressed ? "press" : "release");
 }
 
@@ -53,8 +54,6 @@ void begin()
         digitalWrite(pin, RELEASE_LEVEL);   // 레벨 먼저 — carkey.h 주석
         pinMode(pin, PIN_MODE_SEL);
     }
-    digitalWrite(PIN_STATUS_LED, !LED_ON_LEVEL);
-    pinMode(PIN_STATUS_LED, OUTPUT);
     s_exec.begin(setLine, reply, nullptr);
 }
 
@@ -69,7 +68,7 @@ void abort()
     s_exec.abort();
     // 실행기 밖에서도 확실히 — 모든 채널을 뗀다.
     for (uint8_t pin : kPins) digitalWrite(pin, RELEASE_LEVEL);
-    digitalWrite(PIN_STATUS_LED, !LED_ON_LEVEL);
+    Led::clearKeys();
 }
 
 bool tryConsole(const char *line)

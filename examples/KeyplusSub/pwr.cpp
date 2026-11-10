@@ -125,6 +125,7 @@ bool get(int32_t *mv, int32_t *ma)
 }
 
 KpPower::Uv uv() { return s_uv.state(); }
+bool        present() { return s_found; }
 
 static void publish(uint32_t now, int32_t mv, int32_t ma, bool force)
 {

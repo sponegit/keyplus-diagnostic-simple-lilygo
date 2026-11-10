@@ -9,7 +9,8 @@
 //                  USB-CDC 콘솔, loop 워치독.
 //                  센서 벤치 1~5단계: SHT41 온·습도, BMP280 기압, SCD41 CO2, SGP41 VOC·NOx(I2C),
 //                  PMS5003 미세먼지(UART2).
-//                  S6 전원 감시(INA228·저전압 판정·POWER), S7 1단계 GNSS 수신(UART1, 콘솔만).
+//                  S6 전원 감시(INA228·저전압 판정·POWER), S7 1단계 GNSS 수신(UART1, 콘솔만),
+//                  서브 LED(GPIO10) 센싱·전원 패턴.
 // ===========================================================================
 #include <Arduino.h>
 #include <KpLink.h>
@@ -23,6 +24,7 @@
 #include "guard.h"
 #include "pwr.h"
 #include "gnss.h"
+#include "led.h"
 
 // arduino-esp32 는 부팅 시 새 OTA 이미지를 자동 확정한다 — 끄고 메인 링크 업 때 직접 확정한다(ota.h).
 extern "C" bool verifyRollbackLater() { return true; }
@@ -45,6 +47,7 @@ static void printHelp()
     Serial.println("            pwr           전압·전류(INA228) · pwr reset 최소/최대 초기화");
     Serial.println("            pwr sim <V>   가짜 전압으로 저전압 판정 · pwr sim off 해제");
     Serial.println("            gnss          GNSS fix·위성·통계 · gnss raw NMEA 원문(토글) · gnss scan 속도 찾기");
+    Serial.println("            led           서브 LED 패턴·사유 · led test 패턴 차례로 보기(토글)");
     Serial.println("            guard         온도 가드 상태 · guard sim <°C> 가짜 온도 · guard sim off");
     Serial.println("            reset         서브 재부팅");
     Serial.println("            hang          ⚠️ 시험용 — loop 를 멈춰 워치독 재부팅(5초) 확인");
@@ -67,6 +70,7 @@ static void runCommand(const char *cmd)
     if (Guard::tryConsole(cmd)) return;
     if (Pwr::tryConsole(cmd)) return;
     if (Gnss::tryConsole(cmd)) return;
+    if (Led::tryConsole(cmd)) return;
     if (!strcmp(cmd, "status") || !strcmp(cmd, "status link")) {
         Link::printStatus(Serial);
         Carkey::printStatus(Serial);
@@ -77,6 +81,7 @@ static void runCommand(const char *cmd)
         Guard::printStatus(Serial);
         Pwr::printStatus(Serial);
         Gnss::printStatus(Serial);
+        Led::printStatus(Serial);
     } else if (!strcmp(cmd, "reset")) {
         Serial.println("[SUB] 재부팅");
         Serial.flush();
@@ -116,6 +121,7 @@ void setup() {
         pinMode(pin, OUTPUT);
     }
     // 차키 핀(4~9)을 "뗌"으로 확정 — DIRECT 배선이면 Hi-Z(fob 풀업 유지). 레벨을 먼저 쓴다.
+    Led::begin();     // GPIO10 끔 — 차키보다 먼저(차키가 LED 를 켠다)
     Carkey::begin();
     Ota::begin();
     Air::begin();
@@ -149,6 +155,7 @@ void loop() {
     Co::update();
     Pwr::update();
     Gnss::update();
+    Led::update();
     handleConsole();
     delay(1);
 }

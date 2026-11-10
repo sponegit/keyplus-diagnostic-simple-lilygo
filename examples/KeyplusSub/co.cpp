@@ -121,6 +121,8 @@ bool get(uint16_t *co10)
     return true;
 }
 
+bool fault() { return !s_off && s_fault; }
+
 void printValues(Stream &io)
 {
     if (s_off)

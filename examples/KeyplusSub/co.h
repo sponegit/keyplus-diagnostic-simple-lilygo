@@ -29,6 +29,7 @@ void setPower(bool on);
 
 // 발행할 만한 값이면 true(0.1ppm 단위) — 수신 중·예열 끝·고장 비트 없음.
 bool get(uint16_t *co10);
+bool fault();                        // 켜져 있고 마지막 프레임에 고장 비트(LED 센서 고장)
 
 bool tryConsole(const char *line);
 void printValues(Stream &io);        // 'air' 한 줄 요약

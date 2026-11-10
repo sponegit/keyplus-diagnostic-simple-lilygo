@@ -27,6 +27,7 @@ void update();                       // loop 매 틱
 // 최근 값이 유효하면 true. mV · mA(부호 있음 — 역류면 음수). pwr sim 중이면 가짜 전압.
 bool get(int32_t *mv, int32_t *ma);
 KpPower::Uv uv();
+bool present();                      // INA228 이 응답한다(없으면 저전압 감시 불가 — LED 센서 고장)
 
 bool tryConsole(const char *line);
 void printStatus(Stream &io);

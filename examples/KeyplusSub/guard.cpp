@@ -112,6 +112,7 @@ void setPowerBlock(bool block)
 
 bool         powerBlocked() { return s_pwrBlock; }
 bool         known()     { return s_known; }
+bool         noSensor()  { return s_noSensor; }
 bool         sensorsOn() { return s_railOn; }
 KpAir::Guard state()     { return s_state; }
 

@@ -48,8 +48,12 @@
 // 콘솔 'key <io>' 에서 ms 를 생략했을 때의 누름 시간. 상한·시퀀스 한도는 KpKey.h(KPKEY_*).
 #define CARKEY_PRESS_MS             500
 
-#define PIN_STATUS_LED              10       // 서브 전용 외장 LED (D4) — 지금은 차키 누름 중 점등
+#define PIN_STATUS_LED              10       // 서브 전용 외장 LED (D4) — 센싱·전원 표시(led.h, HARDWARE §5.4)
 #define LED_ON_LEVEL                HIGH
+#define LED_PERIOD_MS               2000UL   // 깜빡임 패턴 한 주기
+#define LED_BLINK_GAP_MS            300UL    // 짧은 깜빡임 간격
+#define LED_BLINK_ON_MS             120UL    // 짧은 깜빡임 켜는 시간
+#define LED_FAULT_GRACE_MS          10000UL  // 부팅 후 이 동안은 센서 고장을 보지 않는다(첫 탐색·SHT41 대기 5초)
 
 // ---------------------------------------------------------------------------
 // 센서 버스

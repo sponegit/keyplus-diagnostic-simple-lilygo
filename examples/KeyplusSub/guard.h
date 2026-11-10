@@ -38,6 +38,7 @@ void          setPowerBlock(bool block);
 bool          powerBlocked();
 
 bool          known();       // 첫 판단을 내렸나
+bool          noSensor();    // 부팅 때 SHT41 이 없어 감시 없이 켰다(LED 센서 고장)
 bool          sensorsOn();   // 센서 레일이 켜져 있나
 KpAir::Guard  state();
 
