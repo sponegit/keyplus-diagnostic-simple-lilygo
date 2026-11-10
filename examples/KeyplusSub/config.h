@@ -61,8 +61,11 @@
 #define CO_STALE_MS                 5000UL   // 이 시간 프레임이 없으면 값 무효(자동 송신 1초 주기)
 #define PIN_I2C_SDA                 13       // 온보드 Qwiic — SHT41·SGP41·SCD41·BMP280·INA228
 #define PIN_I2C_SCL                 14
-#define PIN_GNSS_RX                 15       // MAX-M10S — UART1
-#define PIN_GNSS_TX                 16
+#define PIN_GNSS_RX                 15       // MAX-M10S — UART1. 모듈 TX → 여기
+#define PIN_GNSS_TX                 16       // 모듈 RX ← 여기
+#define GNSS_BAUD                   9600     // 모듈 기본값(NMEA)
+#define GNSS_FIX_STALE_MS           3000UL   // 위치 갱신이 이보다 오래되면 fix 없음(1초 주기 × 3)
+#define GNSS_RX_STALE_MS            3000UL   // 바이트가 이 시간 없으면 "끊김"
 #define PIN_PMS_RX                  18       // PMS5003 — UART2
 #define PIN_PMS_TX                  21
 #define PIN_PMS_SET                 47       // HIGH·미연결 = 동작, LOW = 슬립

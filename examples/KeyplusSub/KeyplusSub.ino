@@ -9,6 +9,7 @@
 //                  USB-CDC 콘솔, loop 워치독.
 //                  센서 벤치 1~5단계: SHT41 온·습도, BMP280 기압, SCD41 CO2, SGP41 VOC·NOx(I2C),
 //                  PMS5003 미세먼지(UART2).
+//                  S6 전원 감시(INA228·저전압 판정·POWER), S7 1단계 GNSS 수신(UART1, 콘솔만).
 // ===========================================================================
 #include <Arduino.h>
 #include <KpLink.h>
@@ -21,6 +22,7 @@
 #include "co.h"
 #include "guard.h"
 #include "pwr.h"
+#include "gnss.h"
 
 // arduino-esp32 는 부팅 시 새 OTA 이미지를 자동 확정한다 — 끄고 메인 링크 업 때 직접 확정한다(ota.h).
 extern "C" bool verifyRollbackLater() { return true; }
@@ -42,6 +44,7 @@ static void printHelp()
     Serial.println("            co            일산화탄소 값·통계");
     Serial.println("            pwr           전압·전류(INA228) · pwr reset 최소/최대 초기화");
     Serial.println("            pwr sim <V>   가짜 전압으로 저전압 판정 · pwr sim off 해제");
+    Serial.println("            gnss          GNSS fix·위성·통계 · gnss raw NMEA 원문(토글)");
     Serial.println("            guard         온도 가드 상태 · guard sim <°C> 가짜 온도 · guard sim off");
     Serial.println("            reset         서브 재부팅");
     Serial.println("            hang          ⚠️ 시험용 — loop 를 멈춰 워치독 재부팅(5초) 확인");
@@ -63,6 +66,7 @@ static void runCommand(const char *cmd)
     if (Co::tryConsole(cmd)) return;
     if (Guard::tryConsole(cmd)) return;
     if (Pwr::tryConsole(cmd)) return;
+    if (Gnss::tryConsole(cmd)) return;
     if (!strcmp(cmd, "status") || !strcmp(cmd, "status link")) {
         Link::printStatus(Serial);
         Carkey::printStatus(Serial);
@@ -72,6 +76,7 @@ static void runCommand(const char *cmd)
         Co::printStatus(Serial);
         Guard::printStatus(Serial);
         Pwr::printStatus(Serial);
+        Gnss::printStatus(Serial);
     } else if (!strcmp(cmd, "reset")) {
         Serial.println("[SUB] 재부팅");
         Serial.flush();
@@ -117,6 +122,7 @@ void setup() {
     Pms::begin();
     Co::begin();
     Pwr::begin();
+    Gnss::begin();    // GPIO38 레일 ON — 온도 가드 대상 아님
     Guard::begin();   // 레일은 위에서 LOW — SHT41 첫 값을 보고 켠다
 
     Serial.begin(115200);
@@ -142,6 +148,7 @@ void loop() {
     Pms::update();
     Co::update();
     Pwr::update();
+    Gnss::update();
     handleConsole();
     delay(1);
 }
