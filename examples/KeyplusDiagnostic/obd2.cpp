@@ -72,10 +72,10 @@ static bool supported(uint8_t pid)
 }
 
 // TWAI 설치·시작(NORMAL 모드 — 요청 송신 필요). 성공 시 s_installed=true.
-static bool install(int kbps, Stream &log)
+static bool install(int kbps, Stream &log, twai_mode_t mode = TWAI_MODE_NORMAL)
 {
     twai_general_config_t g = TWAI_GENERAL_CONFIG_DEFAULT(
-        (gpio_num_t)PIN_CAN_TX, (gpio_num_t)PIN_CAN_RX, TWAI_MODE_NORMAL);
+        (gpio_num_t)PIN_CAN_TX, (gpio_num_t)PIN_CAN_RX, mode);
     // 실차 버스는 프레임이 폭주(수백/초) → 기본 RX 큐(5)로는 VIN ISO-TP 다중프레임
     // 재조립 중 큐 오버플로로 CF를 놓친다. 큐를 키워 멀티프레임 수신을 보장한다.
     g.rx_queue_len = 32;
@@ -533,6 +533,267 @@ void print(const Data &d, Stream &log)
         lastVin[sizeof(lastVin) - 1] = 0;
         log.printf("[OBD2] VIN=%s\n", d.vin);
     }
+}
+
+// ===========================================================================
+// 콘솔 'can …' (obd2.h). 프레임은 모두 단발(ss) 송신 — 상대가 없어 ACK 가 안 와도
+// 무한 재전송으로 TX 큐를 막지 않는다.
+// ===========================================================================
+
+static int consoleRate(int want)
+{
+    if (s_installed && s_bitrate) return s_bitrate;      // 링크 중이면 그 속도뿐
+    if (want == 250 || want == 500) return want;
+    return s_lastGood ? s_lastGood : 500;
+}
+
+// 드라이버가 없으면 잠깐 설치한다. temp=true 면 명령 끝에 내려야 한다.
+static bool ensureDriver(int want, Stream &io, bool &temp)
+{
+    temp = false;
+    if (s_installed) {
+        if (want && want != s_bitrate)
+            io.printf("[CAN] OBD 링크가 %dkbps 로 잡혀 있어 @%d 은 무시\n", s_bitrate, want);
+        return true;
+    }
+    if (!install(consoleRate(want), io)) return false;
+    temp = true;
+    return true;
+}
+
+static void releaseDriver(bool temp)
+{
+    if (!temp) return;
+    twai_stop();
+    twai_driver_uninstall();
+    s_installed = false;
+    parkPins();
+}
+
+static void printFrame(Stream &io, const char *dir, const twai_message_t &m, uint32_t t0)
+{
+    io.printf("[CAN] %s +%4lums %*s%0*X [%d]", dir, (unsigned long)(millis() - t0), m.extd ? 0 : 5, "",
+              m.extd ? 8 : 3, (unsigned)m.identifier, m.data_length_code);
+    if (m.rtr) io.print(" RTR");
+    else
+        for (int i = 0; i < m.data_length_code && i < 8; i++) io.printf(" %02X", m.data[i]);
+    io.println();
+}
+
+static const char *stateName(twai_state_t s)
+{
+    switch (s) {
+    case TWAI_STATE_STOPPED:    return "정지";
+    case TWAI_STATE_RUNNING:    return "동작";
+    case TWAI_STATE_BUS_OFF:    return "BUS-OFF (송신 오류 누적 — 배선·속도 확인)";
+    case TWAI_STATE_RECOVERING: return "복구 중";
+    default:                    return "?";
+    }
+}
+
+static void printCounters(Stream &io)
+{
+    twai_status_info_t st;
+    if (twai_get_status_info(&st) != ESP_OK) return;
+    io.printf("[CAN] 상태 %s · TEC %lu REC %lu · 버스 오류 %lu · TX 실패 %lu · 중재 손실 %lu · RX 놓침 %lu\n",
+              stateName(st.state), (unsigned long)st.tx_error_counter, (unsigned long)st.rx_error_counter,
+              (unsigned long)st.bus_error_count, (unsigned long)st.tx_failed_count,
+              (unsigned long)st.arb_lost_count, (unsigned long)st.rx_missed_count);
+}
+
+// ms 동안 받은 프레임을 출력한다. 출력 줄은 maxLines 까지, 나머지는 세기만 한다.
+static uint32_t listen(Stream &io, uint32_t ms, uint32_t t0, uint32_t maxLines)
+{
+    uint32_t n = 0;
+    const uint32_t start = millis();
+    twai_message_t m;
+    while ((uint32_t)(millis() - start) < ms) {
+        if (twai_receive(&m, pdMS_TO_TICKS(10)) != ESP_OK) continue;
+        if (n++ < maxLines) printFrame(io, "RX", m, t0);
+    }
+    if (n > maxLines) io.printf("[CAN] … %lu개 더 (출력 생략)\n", (unsigned long)(n - maxLines));
+    return n;
+}
+
+// "@250" / "@500" 토큰을 찾아 떼어 낸다.
+static int takeRate(char *s)
+{
+    char *at = strchr(s, '@');
+    if (!at) return 0;
+    const int r = atoi(at + 1);
+    *at = '\0';
+    return r;
+}
+
+static void cmdSend(char *args, Stream &io)
+{
+    const int want = takeRate(args);
+    char *tok = strtok(args, " ");
+    if (!tok) {
+        io.println("[CAN] 사용법: can send <id> [b0 … b7] [@250]   예: can send 7DF 02 01 0D");
+        return;
+    }
+    char *end;
+    const uint32_t id = strtoul(tok, &end, 16);
+    if (*end || id > 0x1FFFFFFF) {
+        io.printf("[CAN] id '%s' 가 16진이 아님(0~1FFFFFFF)\n", tok);
+        return;
+    }
+    twai_message_t tx = {};
+    tx.identifier = id;
+    tx.extd       = id > 0x7FF;
+    tx.ss         = 1;
+    while ((tok = strtok(nullptr, " ")) != nullptr) {
+        const unsigned long b = strtoul(tok, &end, 16);
+        if (*end || b > 0xFF) {
+            io.printf("[CAN] 바이트 '%s' 가 16진 00~FF 가 아님\n", tok);
+            return;
+        }
+        if (tx.data_length_code >= 8) {
+            io.println("[CAN] 데이터는 8바이트까지");
+            return;
+        }
+        tx.data[tx.data_length_code++] = (uint8_t)b;
+    }
+
+    bool temp;
+    if (!ensureDriver(want, io, temp)) return;
+    io.printf("[CAN] @%dkbps%s\n", consoleRate(want), temp ? " (명령 동안만 설치)" : " (OBD 링크 드라이버)");
+
+    twai_reconfigure_alerts(TWAI_ALERT_TX_SUCCESS | TWAI_ALERT_TX_FAILED | TWAI_ALERT_BUS_ERROR |
+                                TWAI_ALERT_ARB_LOST | TWAI_ALERT_BUS_OFF,
+                            nullptr);
+    uint32_t a;
+    while (twai_read_alerts(&a, 0) == ESP_OK) {}
+    twai_message_t m;
+    while (twai_receive(&m, 0) == ESP_OK) {}   // 이전 트래픽 비우기 — 아래 RX 는 송신 뒤 것만
+
+    const uint32_t t0 = millis();
+    const esp_err_t e = twai_transmit(&tx, pdMS_TO_TICKS(50));
+    if (e != ESP_OK) {
+        io.printf("[CAN] 송신 거부 — %s\n", e == ESP_ERR_INVALID_STATE ? "버스 상태 이상(BUS-OFF·정지)" :
+                                             e == ESP_ERR_TIMEOUT       ? "TX 큐 가득" : esp_err_to_name(e));
+        printCounters(io);
+        twai_reconfigure_alerts(0, nullptr);
+        releaseDriver(temp);
+        return;
+    }
+    printFrame(io, "TX", tx, t0);
+
+    uint32_t got = 0;
+    while ((uint32_t)(millis() - t0) < 100) {
+        if (twai_read_alerts(&a, pdMS_TO_TICKS(10)) != ESP_OK) continue;
+        got |= a;
+        if (a & (TWAI_ALERT_TX_SUCCESS | TWAI_ALERT_TX_FAILED)) break;
+    }
+    if (got & TWAI_ALERT_TX_SUCCESS)
+        io.println("[CAN] 송신 성공 — 버스의 다른 노드가 ACK 함");
+    else if (got & TWAI_ALERT_TX_FAILED)
+        io.println("[CAN] 송신 실패 — ACK 없음. 버스에 다른 노드가 없거나(벤치 단독), 속도·CANH/L·종단 확인. 배선은 can self");
+    else
+        io.println("[CAN] 송신 결과 알림 없음(100ms)");
+    if (got & TWAI_ALERT_ARB_LOST) io.println("[CAN] 중재 손실 — 같은 시각 더 높은 우선순위 프레임이 있었음");
+    if (got & TWAI_ALERT_BUS_OFF)  io.println("[CAN] ⚠️ BUS-OFF 진입");
+
+    const uint32_t n = listen(io, 200, t0, 40);
+    io.printf("[CAN] 200ms 동안 받은 프레임 %lu개\n", (unsigned long)n);
+    printCounters(io);
+    twai_reconfigure_alerts(0, nullptr);
+    releaseDriver(temp);
+}
+
+static void cmdSniff(char *args, Stream &io)
+{
+    const int want = takeRate(args);
+    long sec = atol(args);
+    if (sec <= 0) sec = 3;
+    if (sec > 10) sec = 10;
+    bool temp;
+    if (!ensureDriver(want, io, temp)) return;
+    io.printf("[CAN] @%dkbps %ld초 수신 — 이동안 loop 가 멈춘다\n", consoleRate(want), sec);
+    twai_message_t m;
+    while (twai_receive(&m, 0) == ESP_OK) {}
+    const uint32_t n = listen(io, (uint32_t)sec * 1000UL, millis(), 200);
+    io.printf("[CAN] %ld초 동안 %lu개 (%.0f개/초)%s\n", sec, (unsigned long)n, n / (float)sec,
+              n ? "" : " — 시동·속도(@250)·CANH/L 확인");
+    printCounters(io);
+    releaseDriver(temp);
+}
+
+// 자기 수신(self-test): NO_ACK 모드에서 self 플래그로 보내면 상대 ACK 없이 성공하고, 컨트롤러가 RX 핀으로
+// 되돌아온 비트를 받는다. 트랜시버가 없거나 전원이 없으면 RX 가 열성에 머물러 비트 오류로 실패한다.
+static void cmdSelf(Stream &io)
+{
+    const bool linked = s_installed;
+    if (linked) {
+        io.println("[CAN] OBD 링크를 내리고 시험한다 — loop 가 다시 잡는다");
+        end();
+    }
+    if (!install(500, io, TWAI_MODE_NO_ACK)) return;
+    twai_reconfigure_alerts(TWAI_ALERT_TX_SUCCESS | TWAI_ALERT_TX_FAILED | TWAI_ALERT_BUS_ERROR, nullptr);
+
+    int ok = 0;
+    const int tries = 3;
+    for (int i = 0; i < tries; i++) {
+        twai_message_t tx = {};
+        tx.identifier       = 0x123;
+        tx.self             = 1;
+        tx.data_length_code = 4;
+        tx.data[0] = 0xA5; tx.data[1] = 0x5A; tx.data[2] = (uint8_t)i; tx.data[3] = 0xC3;
+        twai_message_t m;
+        while (twai_receive(&m, 0) == ESP_OK) {}
+        if (twai_transmit(&tx, pdMS_TO_TICKS(50)) != ESP_OK) break;
+        bool back = false;
+        const uint32_t t0 = millis();
+        while (!back && (uint32_t)(millis() - t0) < 100) {
+            if (twai_receive(&m, pdMS_TO_TICKS(10)) != ESP_OK) continue;
+            back = m.identifier == tx.identifier && m.data_length_code == 4 && !memcmp(m.data, tx.data, 4);
+        }
+        if (back) ok++;
+    }
+    io.printf("[CAN] 자기 수신 %d/%d\n", ok, tries);
+    printCounters(io);
+    if (ok == tries)
+        io.printf("[CAN] ✅ 경로 정상 — GPIO%d → 트랜시버 CTX → 버스 → CRX → GPIO%d. 차량·상대 노드와는 can send 로\n",
+                  PIN_CAN_TX, PIN_CAN_RX);
+    else
+        io.printf("[CAN] ❌ 되돌아오지 않음 — 트랜시버 3.3V·GND, CTX↔GPIO%d / CRX↔GPIO%d 뒤바뀜, Rs 핀(GND=고속) 확인\n",
+                  PIN_CAN_TX, PIN_CAN_RX);
+    twai_reconfigure_alerts(0, nullptr);
+    twai_stop();
+    twai_driver_uninstall();
+    s_installed = false;
+    parkPins();
+}
+
+static void cmdStatus(Stream &io)
+{
+    io.printf("[CAN] TX GPIO%d · RX GPIO%d · 드라이버 %s", PIN_CAN_TX, PIN_CAN_RX, s_installed ? "설치됨" : "없음");
+    if (s_installed && s_bitrate) io.printf(" (OBD 링크 @%dkbps)", s_bitrate);
+    io.printf(" · 마지막 성공 속도 %s\n", s_lastGood ? (s_lastGood == 250 ? "250k" : "500k") : "없음");
+    if (s_installed) printCounters(io);
+    io.println("[CAN] 명령: can send <id> [b0…b7] [@250] · can sniff [초] [@250] · can self");
+}
+
+bool tryConsole(const String &cmd, const String &arg, Stream &io)
+{
+    if (cmd != "can") return false;
+    char buf[96];
+    String a = arg;
+    a.trim();
+    strncpy(buf, a.c_str(), sizeof(buf) - 1);
+    buf[sizeof(buf) - 1] = '\0';
+    char *rest = buf;
+    while (*rest && *rest != ' ') rest++;
+    if (*rest) *rest++ = '\0';
+    while (*rest == ' ') rest++;
+
+    if (!buf[0])                      cmdStatus(io);
+    else if (!strcmp(buf, "send"))    cmdSend(rest, io);
+    else if (!strcmp(buf, "sniff"))   cmdSniff(rest, io);
+    else if (!strcmp(buf, "self"))    cmdSelf(io);
+    else                              io.println("[CAN] 사용법: can | can send <id> [b0…b7] [@250] | can sniff [초] [@250] | can self");
+    return true;
 }
 
 } // namespace Obd2

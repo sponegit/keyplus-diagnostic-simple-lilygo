@@ -1510,6 +1510,10 @@ static void appPrintHelp(Stream &io)
     io.println("             gpsduty                      GNSS duty cycle 상태·TTFF");
     io.println("             gpsduty auto|park|drive      주차/주행 강제(계측용)");
 #endif
+    io.println("             can                          CAN 상태(오류 카운터)");
+    io.println("             can send <id> [b0..b7] [@250] CAN 프레임 송신(16진) → ACK·응답 확인");
+    io.println("             can sniff [초] [@250]         버스 프레임 출력(기본 3초, 최대 10)");
+    io.println("             can self                     자기 수신 시험(상대 노드 없이 배선 확인)");
     io.println("             canpark [on|off]             CAN 핀 주차 A/B(계측용)");
 #if FEATURE_WAKE_PROBE
     io.println("             wake                         RI(GPIO33) 엣지 카운터 — 배선 확인");
@@ -1573,6 +1577,8 @@ static bool appConsole(const String &cmd, const String &arg, Stream &io)
 #if FEATURE_SUBLINK
     if (Sublink::tryConsole(cmd, arg, io)) return true;
 #endif
+    // 'can …' — CAN 송신·수신·자기 수신 시험(obd2.h).
+    if (Obd2::tryConsole(cmd, arg, io)) return true;
     // 'canpark on|off' — CAN 핀 주차 A/B(계측용).
     // PWR_BENCH=2(OBD2 off) 기준선이 85~105mA → 60mA 로 떨어졌는데, 그 사이 들어간
     // 전력 관련 변경이 parkPins 뿐이라 이걸로 확인한다. 같은 실행 안에서 토글해야

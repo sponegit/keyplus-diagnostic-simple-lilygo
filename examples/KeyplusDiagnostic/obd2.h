@@ -111,4 +111,14 @@ bool isInstalledNow();
 // 수집 결과를 시리얼에 한 줄로 출력(응답받은 필드만 + VIN). 필드 진단용.
 void print(const Data &d, Stream &log);
 
+// 콘솔 'can …' — CAN 통신 확인용(차량·벤치). 처리했으면 true.
+//   can                          TWAI 상태(오류 카운터·버스 상태)
+//   can send <id> [b0 … b7] [@250]  프레임 1개 송신(16진, id > 7FF 면 29비트) → ACK 여부 + 200ms 응답 출력
+//   can sniff [초] [@250]        버스의 프레임을 그대로 출력(기본 3초, 최대 10초)
+//   can self                     자기 수신 시험 — 상대 노드 없이 GPIO22→트랜시버→GPIO21 경로 확인
+// 드라이버가 없으면(OBD 링크 미확립) 명령 동안만 설치했다가 내린다. 속도는 링크 속도 → 마지막 성공 속도 → 500k.
+// ⚠️ 콘솔은 loop 에서 돈다 — sniff 동안 MQTT·OBD 폴이 멈춘다(최대 10초).
+// ⚠️ can self 는 OBD 링크를 끊는다 — loop 가 OBD2_LINK_RETRY_MS 안에 다시 잡는다.
+bool tryConsole(const String &cmd, const String &arg, Stream &io);
+
 } // namespace Obd2
