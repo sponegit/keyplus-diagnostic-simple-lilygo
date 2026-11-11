@@ -25,6 +25,16 @@ static char     s_vin[18]   = {0}; // VIN 캐시(차량당 불변, 링크 확립
 static bool     s_hasVin    = false;
 static int      s_vinTries  = 0;   // VIN 재시도 횟수(미지원 차량 무한요청 방지)
 static int      s_vinSkip   = 0;   // VIN 재시도 페이싱 — 남은 스킵 폴 수
+// 마지막으로 rpm(0x0C)을 실제로 읽은 시각·값 — 전체 폴·고빈도 폴 공통(시동 판정 ign.cpp 가 쓴다)
+static uint32_t s_rpmAt     = 0;   // 0 = 읽은 적 없음
+static uint16_t s_rpmVal    = 0;
+
+static void noteRpm(uint16_t rpm)
+{
+    s_rpmVal = rpm;
+    s_rpmAt  = millis();
+    if (!s_rpmAt) s_rpmAt = 1;
+}
 
 // 폴링 대상 PID 표 — 요청 순서와 디코드에 필요한 최소 응답 바이트 수.
 // 0x20 초과 PID는 지원 마스크(0x00 응답, 0x01~0x20)로 거를 수 없어 무조건 요청하게 되므로
@@ -342,6 +352,15 @@ bool begin(Stream &log)
 
 bool isInstalled() { return s_installed; }
 
+bool lastRpm(uint32_t maxAgeMs, uint16_t &rpm, uint32_t *ageMs)
+{
+    if (!s_rpmAt) return false;
+    const uint32_t age = millis() - s_rpmAt;
+    if (ageMs) *ageMs = age;
+    rpm = s_rpmVal;
+    return age <= maxAgeMs;
+}
+
 void linkInfo(LinkInfo &out)
 {
     out.installed    = s_installed;
@@ -407,7 +426,8 @@ bool read(Data &out, Stream &log)
         if (n < minLen) continue;
 
         switch (pid) {
-        case 0x0C: out.has_rpm = true;      out.rpm = ((256 * r[0]) + r[1]) / 4.0f;      break;
+        case 0x0C: out.has_rpm = true;      out.rpm = ((256 * r[0]) + r[1]) / 4.0f;
+                   noteRpm((uint16_t)out.rpm);                                           break;
         case 0x0D: out.has_speed = true;    out.speed = r[0];                            break;
         case 0x05: out.has_coolant = true;  out.coolant = (int)r[0] - 40;                break;
         case 0x04: out.has_load = true;     out.load = r[0] * 100.0f / 255.0f;           break;
@@ -491,6 +511,7 @@ bool readFast(FastSample &out, Stream &log)
             if (n >= 2) {
                 uint32_t raw = ((uint32_t)r[0] << 8) | r[1];
                 out.has_rpm = true; out.rpm = (uint16_t)(raw / 4);
+                noteRpm(out.rpm);
             }
             break;
         case 0x11:

@@ -42,6 +42,7 @@
 #include "gps.h"
 
 #include "obd2.h"   // 항상 컴파일(Obd2::Data). 폴링은 FEATURE_OBD2일 때만.
+#include "ign.h"    // 시동 판정 — 차량 전압(서브) 기준, OBD 회전수로 보정
 #include "clk.h"    // 시각 기준(base) — 오프라인 적재/고빈도 창이 공유한다
 
 #if FEATURE_FAST_SAMPLE
@@ -576,6 +577,9 @@ static void pollGps(uint32_t now)
 // FEATURE_OBD2 미사용 빌드는 판단 근거가 없으니 항상 주행 취급(기존 주기 유지).
 static bool vehicleMoving(const Obd2::Data &d)
 {
+    // 시동 ON(전압·회전수, ign.h)이면 주행 쪽으로 본다 — 전체 폴은 telemetry 주기라 g_obd 가
+    // 그만큼 묵을 수 있고, OBD 가 없는 차량도 전압으로는 판정된다.
+    if (Ign::on()) return true;
 #if FEATURE_OBD2
     if (!d.valid) return false;
     if (d.has_speed && d.speed > 0) return true;
@@ -586,6 +590,24 @@ static bool vehicleMoving(const Obd2::Data &d)
     return true;
 #endif
 }
+
+#if FEATURE_OBD2
+// 전체 PID 폴 1회 — 주기 폴(오프라인)과 발행 직전 폴이 같이 쓴다.
+// 무응답이면 링크 끊김으로 보고 재확립 경로로 넘긴다.
+static void obdFullPoll(uint32_t now)
+{
+    g_lastObdPoll = now;
+    if (Obd2::read(g_obd, SerialMon)) {
+        Obd2::print(g_obd, SerialMon);   // 응답받은 전체 항목 + VIN 출력
+    } else {
+        // 폴 전체 무응답 → 링크 끊김(시동 off 등) → 재확립 경로로.
+        LOGI(SerialMon, "[OBD2] 링크 끊김(폴 무응답) — 재확립 대기\n");
+        Obd2::end();
+        g_obd = Obd2::Data();   // valid=false → telemetry에서 obd 생략
+        g_lastObdRetry = now;
+    }
+}
+#endif
 
 // ---------------------------------------------------------------------------
 // 부팅 원인 진단 — 차량 상시 5V에서 일정시간 후 LED 1/2번(=재부팅) 증상 추적용.
@@ -705,8 +727,8 @@ static void printDeviceInfo(TinyGsm &modem, const char *modemName)
                      (unsigned long)Cfg::telemetryIntervalMs(), Cfg::keepaliveS());
 #endif
 #if FEATURE_OBD2
-    SerialMon.printf("  obd poll   : %lums (링크실패 시 %lus 간격 재시도)\n",
-                     (unsigned long)OBD2_POLL_INTERVAL_MS,
+    SerialMon.printf("  obd poll   : 전체 %lums(telemetry 주기) · 회전수/차속 %lums (링크실패 시 %lus 간격 재시도)\n",
+                     (unsigned long)Cfg::telemetryIntervalMs(), (unsigned long)Cfg::fastMs(),
                      (unsigned long)(OBD2_LINK_RETRY_MS / 1000));
 #endif
 #if FEATURE_GPS
@@ -1439,7 +1461,7 @@ static void statusObd(Stream &io)
         io.printf("  · VIN 재시도 %d/%d\n", li.vinTries, OBD2_VIN_TRY_LIMIT);
     io.printf("  %-14s: %d/%d 미지원 확정\n", "확장PID 래치", li.extLatched, li.extTotal);
     printAgo(io, "마지막 폴", g_lastObdPoll);
-    io.printf("  %-14s: %lums\n", "폴 주기", (unsigned long)OBD2_POLL_INTERVAL_MS);
+    io.printf("  %-14s: %lums (telemetry 주기)\n", "폴 주기", (unsigned long)Cfg::telemetryIntervalMs());
     if (!li.installed) {
         io.printf("  %-14s: %lus (고정)\n", "재확립 간격",
                   (unsigned long)(OBD2_LINK_RETRY_MS / 1000));
@@ -1514,6 +1536,7 @@ static void appPrintHelp(Stream &io)
     io.println("             can send <id> [b0..b7] [@250] CAN 프레임 송신(16진) → ACK·응답 확인");
     io.println("             can sniff [초] [@250]         버스 프레임 출력(기본 3초, 최대 10)");
     io.println("             can self                     자기 수신 시험(상대 노드 없이 배선 확인)");
+    io.println("             ign                          시동 판정(전압 ≥13.0V / 회전수) 근거");
     io.println("             canpark [on|off]             CAN 핀 주차 A/B(계측용)");
 #if FEATURE_WAKE_PROBE
     io.println("             wake                         RI(GPIO33) 엣지 카운터 — 배선 확인");
@@ -1579,6 +1602,8 @@ static bool appConsole(const String &cmd, const String &arg, Stream &io)
 #endif
     // 'can …' — CAN 송신·수신·자기 수신 시험(obd2.h).
     if (Obd2::tryConsole(cmd, arg, io)) return true;
+    // 'ign' — 시동 판정 근거(전압·회전수).
+    if (Ign::tryConsole(cmd, arg, io)) return true;
     // 'canpark on|off' — CAN 핀 주차 A/B(계측용).
     // PWR_BENCH=2(OBD2 off) 기준선이 85~105mA → 60mA 로 떨어졌는데, 그 사이 들어간
     // 전력 관련 변경이 parkPins 뿐이라 이걸로 확인한다. 같은 실행 안에서 토글해야
@@ -1711,25 +1736,26 @@ void loop()
     // Debug Console 입력 처리 (setid/setpw/showid/clearid/help) — 논블로킹.
     Prov::handleSerial(SerialMon);
 
+    // 시동 판정(ign.h) — 전압(서브 POWER 1초) + OBD 회전수. 매 틱.
+    if (Ign::update(now) && Ign::on()) {
 #if FEATURE_OBD2
-    // OBD2 폴링: 링크 있으면 주기 수집, 없으면 OBD2_LINK_RETRY_MS 고정 간격으로 재확립 시도.
+        // 시동 ON 이면 OBD 링크 재시도를 기다리지 않는다(최대 OBD2_LINK_RETRY_MS 단축).
+        if (!Obd2::isInstalled()) g_lastObdRetry = now - OBD2_LINK_RETRY_MS;
+#endif
+    }
+
+#if FEATURE_OBD2
+    // OBD2 폴링: 링크 있으면 telemetry 주기로 전체 수집(접속 중이면 발행 직전 폴이 먼저 채운다),
+    // 없으면 OBD2_LINK_RETRY_MS 고정 간격으로 재확립 시도. 회전수·차속 1초 폴은 Fast::tick.
     if (Obd2::isInstalled()) {
-        if (now - g_lastObdPoll >= OBD2_POLL_INTERVAL_MS) {
-            g_lastObdPoll = now;
-            if (Obd2::read(g_obd, SerialMon)) {
-                Obd2::print(g_obd, SerialMon);   // 응답받은 전체 항목 + VIN 출력
-            } else {
-                // 폴 전체 무응답 → 링크 끊김(시동 off 등) → 재확립 경로로.
-                LOGI(SerialMon, "[OBD2] 링크 끊김(폴 무응답) — 재확립 대기\n");
-                Obd2::end();
-                g_obd = Obd2::Data();   // valid=false → telemetry에서 obd 생략
-                g_lastObdRetry = now;
-            }
-        }
+        // g_lastObdPoll == 0 — setup 에서 링크가 잡힌 뒤 아직 한 번도 안 읽었다(바로 읽는다).
+        if (g_lastObdPoll == 0 || now - g_lastObdPoll >= Cfg::telemetryIntervalMs()) obdFullPoll(now);
     } else if (now - g_lastObdRetry >= OBD2_LINK_RETRY_MS) {
         // 고정 간격 재시도. 시동을 걸면 늦어도 이 간격 안에 링크가 잡힌다.
         g_lastObdRetry = now;
-        Obd2::begin(SerialMon);   // 성공 시 다음 틱부터 폴링
+        // 성공하면 곧바로 전체 폴 1회 — 다음 주기(최대 telemetry 주기)까지 기다리면 그동안
+        // g_obd.valid 가 false 라 고빈도 폴(Fast::tick)도 시작하지 못한다.
+        if (Obd2::begin(SerialMon)) obdFullPoll(now);
     }
 #endif
 
@@ -1741,7 +1767,7 @@ void loop()
     // 여기서는 플래그만 세운다. 실제 발행은 아래 발행 체인에서(간격·우선순위 규칙 공유).
     {
         bool link = g_obd.valid;
-        bool ign  = g_obd.has_rpm && g_obd.rpm > 0;
+        bool ign  = Ign::on();   // 전압 기준 + 회전수 보정(ign.h)
         if (!g_stInit || link != g_stPrevLink || ign != g_stPrevIgn) {
             g_stPrevLink = link;
             g_stPrevIgn  = ign;
@@ -2072,6 +2098,10 @@ void loop()
         // 발행 직전 좌표 갱신 — 주기 폴에만 의존하면 실을 fix가 최대 폴 주기만큼 묵는다
         // (주행 중 10초 = 시속 100km에서 약 280m 오차). 폴 시각도 갱신되므로 중복 폴 없음.
         pollGps(now);
+#endif
+#if FEATURE_OBD2
+        // 전체 PID 는 발행 주기마다 읽는다 — 직전에 읽어야 실은 값이 주기만큼 묵지 않는다.
+        if (Obd2::isInstalled() && now - g_lastObdPoll >= OBD2_PREPUB_FRESH_MS) obdFullPoll(now);
 #endif
         bool withMeta = !g_metaSent;   // 최초 1회만 하드웨어 메타 포함
         // g_gpsFixNow(= 방금 폴에서 실제로 측위됐는가)를 함께 넘긴다. g_lastFix 는 미측위

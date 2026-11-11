@@ -575,8 +575,19 @@
 // 서브 AIR 프레임(5초 주기, 작업서 S8) 유효 시간. 넘으면 telemetry 에 air 를 싣지 않는다 —
 // 링크가 끊겼는데 마지막 값을 계속 보내면 서버가 멈춘 값을 관측값으로 받는다.
 #define SUBLINK_AIR_STALE_MS        (15000UL)
-// 서브 POWER 프레임(5초 주기, 작업서 S6) 유효 시간 — 넘으면 telemetry 에 pwr 를 싣지 않는다(AIR 와 같은 이유).
+// 서브 POWER 프레임(1초 주기, 작업서 S6) 유효 시간 — 넘으면 telemetry 에 pwr 를 싣지 않는다(AIR 와 같은 이유).
 #define SUBLINK_PWR_STALE_MS        (15000UL)
+
+// --- 시동 판정 (ign.h) — 차량 전압 기준, OBD 회전수로 보정 ---------------------
+// 시동 ON(알터네이터 가동) 13V 이상 / OFF 12V대. 크랭킹 강하(1~2초)·전장 부하 흔들림은 지연이 거른다.
+#define IGN_ON_MV                   (13000)    // 이상이 IGN_ON_MS 이어지면 ON
+#define IGN_ON_MS                   (3000UL)
+#define IGN_OFF_MV                  (12900)    // 미만이 IGN_OFF_MS 이어지면 OFF (ON 과 0.1V 벌려 흔들림 방지)
+#define IGN_OFF_MS                  (10000UL)
+#define IGN_GAP_MS                  (5000UL)   // 전압 표본이 이보다 오래 끊기면 진행 중 타이머를 버린다
+// OBD 회전수를 이 시간 안에 읽었으면 회전수가 우선한다. 실제 값은 max(이 값, telemetry 주기 + 5초) —
+// 고빈도 폴이 꺼져 있어도 전체 폴(telemetry 주기)만으로 신선하게 유지되게.
+#define IGN_RPM_FRESH_MS            (10000UL)
 // 서브 OTA(작업서 S5) 중 링크 속도. SUBLINK_BAUD 와 같게 두면 전환하지 않는다.
 // 921600 이면 링크가 병목이 아니게 된다(115200 은 약 11KB/s — 500KB 이미지에 45초+).
 // 배선이 길어 고속에서 오류가 나면 115200 으로 내린다(작업서 V5 항목).
@@ -688,11 +699,11 @@
 #define BACKFILL_GUARD_MS           (2000UL)   // 다음 실시간 발행 직전 금지 구간
 
 // --- 고빈도 샘플 ------------------------------------------------------------
-// ⚠️ 런타임 기본값은 0(비활성)이다. 서버 EMQX Rule(`v1/+/telemetry/fast`)과
-//    /ingest/telemetry/fast 가 배포되기 전에 발행하면 브로커에서 조용히 버려진다
-//    — 무해하지만 데이터·전력 낭비다. 서버 준비 후 config_update {"fast_ms":1000}
-//    으로 OTA 없이 켠다. 발행 부하가 의심되면 같은 방법으로 즉시 끌 수 있다.
-#define CFG_DEFAULT_FAST_MS         (0UL)
+// 런타임 기본값 1000(켜짐, 2.0.0~). 회전수·차속은 1초마다 모아 창(t0 + 초 오프셋 o[])으로
+// `v1/{id}/telemetry/fast` 에 발행한다 — 샘플마다 수집 시각이 따라간다.
+// 0.x 까지는 서버 준비 전이라 0(꺼짐)이었다. 발행 부하가 의심되면 config_update {"fast_ms":0}
+// 으로 OTA 없이 끈다. ⚠️ NVS 에 fast_ms 가 저장된 단말은 저장값을 따른다(기본값은 처음 한 번만).
+#define CFG_DEFAULT_FAST_MS         (1000UL)
 #define FAST_SAMPLE_MS              (1000UL)   // 1Hz — fast_ms 활성화 시 권장값
 #define CFG_FAST_MS_MIN             (1000UL)   // 1Hz 보다 빠르게는 올리지 않는다(폴 듀티·발행량)
 #define CFG_FAST_MS_MAX             (10000UL)  // 0.1Hz — 이보다 느리면 고빈도의 의미가 없다
@@ -716,8 +727,8 @@
 // 않는다. 걸리는 건 rpm 이 확정 0 인 구간뿐이라 짧게 잡아도 오종료가 없고, 짧을수록
 // 꼬리가 준다. 시동 직후 크랭킹 중 rpm 이 잠깐 0 으로 읽히는 경우를 흡수할 만큼은 된다.
 #define FAST_ENGINE_OFF_STOP_N      (5)        // rpm 확정 0 + 정지가 이만큼 연속되면 수집 중지
-// 중지 중 재시동 확인 주기. 전체 폴(OBD2_POLL_INTERVAL_MS)과 같은 5초 —
-// 그보다 촘촘히 볼 이유가 없고, 주차 중 1Hz 폴은 그 자체가 버스를 깨워 둔다.
+// 중지 중 재시동 확인 주기 5초 — 그보다 촘촘히 볼 이유가 없고, 주차 중 1Hz 폴은 그 자체가
+// 버스를 깨워 둔다. 시동 판정(ign.h)도 이 확인으로 회전수를 받는다.
 #define FAST_ENGINE_OFF_PROBE_MS    (5000UL)
 // 가감속 계산 시 인정하는 최대 샘플 간격. 이보다 벌어졌으면(발행 블로킹·폴 지연)
 // Δspd 를 그 간격으로 나눠도 의미가 없어 가감속을 계산하지 않는다 — 결측 구간을
@@ -781,7 +792,10 @@
 #define PIN_CAN_RX          (21)
 #define PIN_CAN_TX          (22)
 // 최신 차량(2008+) 표준 500kbps/11-bit. 응답 없으면 250kbps로 폴백 시도(begin에서 자동).
-#define OBD2_POLL_INTERVAL_MS   (5000UL)  // 실시간 PID 폴링 주기(주차 중 과폴 방지)
+// 전체 PID 폴은 telemetry 주기(Cfg::telemetryIntervalMs, config_update 로 변경)에 맞춘다 —
+// 발행 직전에 한 번 읽어 최신값을 싣는다. 회전수·차속은 고빈도 폴(fast.h, 1초)이 따로 모은다.
+// 미접속(오프라인) 중에는 같은 주기로 loop 가 직접 읽는다.
+#define OBD2_PREPUB_FRESH_MS    (2000UL)  // 발행 직전 폴 생략 기준 — 이보다 최근에 읽었으면 그대로 싣는다
 #define OBD2_REQ_TIMEOUT_MS     (100)     // PID 1건 응답 대기 상한
 // 링크 미확립(응답0) 시 재초기화 간격 — 고정. 시동을 걸면 늦어도 이 간격 안에 잡힌다.
 // begin 1회는 비트레이트 2종 무응답 타임아웃 + 드라이버 install/uninstall 로 수백 ms

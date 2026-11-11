@@ -261,6 +261,14 @@ size_t airJson(char *out, size_t cap)
     return KpAir::formatJson(s_air, out, cap);
 }
 
+bool pwrSample(uint16_t &mv, uint32_t &atMs)
+{
+    if (!s_pwrAt) return false;
+    mv   = s_pwr.mv;
+    atMs = s_pwrAt;
+    return true;
+}
+
 size_t pwrJson(char *out, size_t cap)
 {
     if (!s_pwrAt || (uint32_t)(millis() - s_pwrAt) > SUBLINK_PWR_STALE_MS) return 0;

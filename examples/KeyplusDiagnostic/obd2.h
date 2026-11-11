@@ -82,6 +82,10 @@ struct FastSample {
 // 링크가 죽은 채로 매초 3×타임아웃을 태우면 loop 가 초당 300ms 씩 멈춘다.
 bool readFast(FastSample &out, Stream &log);
 
+// 마지막으로 읽은 rpm(전체 폴·고빈도 폴 공통). maxAgeMs 안에 읽었으면 true.
+// 읽은 적이 있으면 rpm·ageMs 는 신선도와 무관하게 채운다(콘솔 표시용). 시동 판정(ign.h)이 쓴다.
+bool lastRpm(uint32_t maxAgeMs, uint16_t &rpm, uint32_t *ageMs = nullptr);
+
 // 드라이버 정지·제거(재초기화/비트레이트 변경 시).
 void end();
 
