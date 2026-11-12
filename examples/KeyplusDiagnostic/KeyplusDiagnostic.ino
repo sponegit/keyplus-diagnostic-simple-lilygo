@@ -118,6 +118,8 @@ static Obd2::Data g_obd;
 #if FEATURE_OBD2
 static uint32_t g_lastObdPoll  = 0;
 static uint32_t g_lastObdRetry = 0;
+static uint32_t g_ignOffAt     = 0;   // 시동 OFF 로 바뀐 시각(부팅 = 0) — OBD2_OFF_RETRY_MS 기준
+static bool     g_obdRetryIdle = false; // 시동 OFF 가 오래돼 재확립을 멈춘 상태(로그 1회용)
 #endif
 
 #if FEATURE_LTE
@@ -1951,10 +1953,14 @@ void loop()
     Prov::handleSerial(SerialMon);
 
     // 시동 판정(ign.h) — 전압(서브 POWER 1초) + OBD 회전수. 매 틱.
-    if (Ign::update(now) && Ign::on()) {
+    if (Ign::update(now)) {
 #if FEATURE_OBD2
-        // 시동 ON 이면 OBD 링크 재시도를 기다리지 않는다(최대 OBD2_LINK_RETRY_MS 단축).
-        if (!Obd2::isInstalled()) g_lastObdRetry = now - OBD2_LINK_RETRY_MS;
+        if (Ign::on()) {
+            // 시동 ON 이면 OBD 링크 재시도를 기다리지 않는다(최대 OBD2_LINK_RETRY_MS 단축).
+            if (!Obd2::isInstalled()) g_lastObdRetry = now - OBD2_LINK_RETRY_MS;
+        } else {
+            g_ignOffAt = now;
+        }
 #endif
     }
 
@@ -1967,9 +1973,18 @@ void loop()
     } else if (now - g_lastObdRetry >= OBD2_LINK_RETRY_MS) {
         // 고정 간격 재시도. 시동을 걸면 늦어도 이 간격 안에 링크가 잡힌다.
         g_lastObdRetry = now;
+        // 시동 OFF(전압 판정)가 OBD2_OFF_RETRY_MS 넘게 이어지면 멈춘다 — 잠든 CAN 에 요청을 보내지 않는다.
+        const bool idle = !Ign::on() && Ign::source() == Ign::Src::VOLT &&
+                          (uint32_t)(now - g_ignOffAt) >= OBD2_OFF_RETRY_MS;
+        if (idle != g_obdRetryIdle) {
+            g_obdRetryIdle = idle;
+            LOGI(SerialMon, idle ? "[OBD2] 시동 OFF %lu분 — 링크 재확립 멈춤(시동 ON 이면 재개)\n"
+                                 : "[OBD2] 링크 재확립 재개 (%lu분 기준)\n",
+                 (unsigned long)(OBD2_OFF_RETRY_MS / 60000UL));
+        }
         // 성공하면 곧바로 전체 폴 1회 — 다음 주기(최대 telemetry 주기)까지 기다리면 그동안
         // g_obd.valid 가 false 라 고빈도 폴(Fast::tick)도 시작하지 못한다.
-        if (Obd2::begin(SerialMon)) obdFullPoll(now);
+        if (!idle && Obd2::begin(SerialMon)) obdFullPoll(now);
     }
 #endif
 
