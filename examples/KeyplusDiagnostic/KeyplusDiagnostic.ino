@@ -36,6 +36,8 @@
 
 #if FEATURE_SUBLINK
 #include "sublink.h"    // v2 서브보드 링크(UART2 13/34) — 작업서 S2
+#include <KpLink.h>     // 프레임 종류(VEHICLE)
+#include <KpVehicle.h>  // 메인 → 서브 차량 상태(위치 주기 3단계)
 #endif
 
 // FEATURE_GPS=0(v2)이어도 포함한다 — 부팅 시 모뎀 GNSS 를 끄는 Gps::end 가 필요하다.
@@ -610,6 +612,8 @@ static bool     g_driveInit    = false;
 static uint32_t g_gpsMoveSince = 0;      // 시동 OFF 중 GNSS 속도가 PARKED_MOVE_KMH 이상이 된 시각
 static int      g_prevUv       = -1;     // 직전 서브 저전압 판정(-1 = 아직 모름)
 static uint32_t g_lastAliveAt  = 0;      // 서버 last_seen_at 을 갱신한 마지막 발행(telemetry·status·heartbeat)
+static bool     g_gnssWant     = true;   // 서브 GNSS 를 켜 둘 것인가(VEHICLE GNSS_ON, 3단계)
+static bool     g_gnssPrevFix  = false;  // 직전 틱 g_gpsFixNow — 주차 중 깨운 GNSS 의 첫 fix 엣지
 
 static uint32_t teleIntervalMs() { return g_driveMode ? Cfg::telemetryIntervalMs() : TELEMETRY_PARKED_MS; }
 
@@ -654,7 +658,47 @@ static void updateTeleMode(uint32_t now)
         g_prevUv = uv;
     }
 #endif
+#if USE_SUB_GNSS
+    // ── 서브 GNSS 주차 듀티 (위치 주기 3단계) — VEHICLE 프레임의 GNSS_ON 으로 서브에 전한다 ──
+    // 주행 = 항상 켬. 주차 = 다음 주차 telemetry 가 GNSS_WAKE_LEAD_MS 안일 때만 켬.
+    // ⚠️ 미접속이면 g_nextPubAt 이 과거라 "곧 발행"으로 읽혀 계속 켜진다 — 의도다(오프라인 적재에 위치를 싣는다).
+    const bool want = g_driveMode || (int32_t)(g_nextPubAt - now) <= (int32_t)GNSS_WAKE_LEAD_MS;
+    if (want != g_gnssWant) {
+        g_gnssWant = want;
+        if (!g_driveMode)
+            LOGI(SerialMon, "[GNSS] 서브 GNSS %s — %s\n", want ? "켬 요청" : "끔 요청",
+                 want ? "주차 telemetry 앞 위치 확보" : "주차 중 위치 받음");
+    }
+    // 주차 중 깨운 GNSS 가 fix 를 얻으면 그 위치로 주차 telemetry 를 바로 낸다 — 발행 뒤 다음 주기가
+    // 5분 뒤로 밀려 want 가 꺼지고, 서브가 GNSS 를 끈다. fix 를 못 얻으면 원래 시각에 위치 없이 나간다.
+    if (!g_driveMode && want && g_gpsFixNow && !g_gnssPrevFix) {
+        uint32_t target = now + GNSS_FIX_SETTLE_MS;
+        if ((int32_t)(target - g_nextPubAt) < 0) {
+            LOGI(SerialMon, "[GNSS] 주차 중 측위 — %lus 뒤 telemetry\n", (unsigned long)(GNSS_FIX_SETTLE_MS / 1000UL));
+            pullTelemetryForward(target);
+        }
+    }
+    g_gnssPrevFix = g_gpsFixNow;
+#endif
 }
+
+#if USE_SUB_GNSS
+// VEHICLE 프레임 — 바뀌면 즉시, 아니면 VEHICLE_PUB_MS 마다(서브는 15초 못 받으면 GNSS 를 켜 둔다).
+// 링크가 내려가 있으면 보내지 못하고 다음 틱에 다시 시도한다(sendFrame 이 바로 false).
+static void sendVehicle(uint32_t now)
+{
+    static uint8_t  s_lastFlags = 0xFF;
+    static uint32_t s_lastAt    = 0;
+    const KpVehicle::Values v = KpVehicle::make(Ign::on(), g_driveMode, g_gnssWant);
+    if (v.flags == s_lastFlags && (uint32_t)(now - s_lastAt) < VEHICLE_PUB_MS) return;
+    uint8_t buf[KPVEHICLE_PAYLOAD_LEN];
+    const size_t n = KpVehicle::encode(v, buf, sizeof(buf));
+    if (Sublink::sendFrame(KpLink::VEHICLE, buf, (uint16_t)n)) {
+        s_lastFlags = v.flags;
+        s_lastAt    = now;
+    }
+}
+#endif
 
 // 주차 중 생존 신호를 낼 때인가. 발행 체인의 다른 가드(간격·telemetry 직전 금지)와 같은 규칙.
 static bool heartbeatGateOpen(uint32_t now)
@@ -1927,6 +1971,9 @@ void loop()
 #if FEATURE_LTE
     // 위치·시동·저전압이 갱신된 뒤에 본다 — 주행/주차 주기와 즉시 발행 사유.
     updateTeleMode(now);
+#if USE_SUB_GNSS
+    sendVehicle(now);   // 시동·주행·GNSS 요청을 서브에 (3단계)
+#endif
 #endif
 
 #if FEATURE_LTE

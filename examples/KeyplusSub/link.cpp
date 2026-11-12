@@ -7,6 +7,7 @@
 
 #include <KpLinkSession.h>
 #include "carkey.h"
+#include "gnss.h"
 #include "ota.h"
 
 namespace Link {
@@ -58,6 +59,10 @@ static void onFrame(const KpLink::Frame &f, void *)
         break;
     case KpLink::KEY_CMD:
         Carkey::onCmd(f.payload, f.len);
+        break;
+    case KpLink::VEHICLE:
+        // 메인 시동·주행·GNSS 요청(위치 주기 3단계) — GNSS 전원 듀티의 근거.
+        Gnss::onVehicle(f.payload, f.len);
         break;
     default:
         Serial.printf("[LINK] 미처리 프레임 type=0x%02X seq=%u len=%u\n",

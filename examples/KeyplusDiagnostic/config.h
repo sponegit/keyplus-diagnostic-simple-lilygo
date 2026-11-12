@@ -716,6 +716,15 @@
 #define PARKED_MOVE_KMH             (10.0f)
 #define PARKED_MOVE_MS              (10000UL)
 
+// --- 서브 GNSS 주차 듀티 (위치 주기 3단계) — 메인이 VEHICLE 프레임으로 켜고 끈다 -------------
+// 주행 중엔 항상 켬. 주차 중엔 다음 주차 telemetry 가 GNSS_WAKE_LEAD_MS 안으로 다가오면 켜고,
+// 깨운 GNSS 가 fix 를 얻으면 GNSS_FIX_SETTLE_MS 뒤 그 위치로 주차 telemetry 를 바로 낸다 → 다음 주기가
+// 5분 뒤로 밀려 GNSS 가 다시 꺼진다. fix 를 못 얻으면(지하 등) 원래 시각에 위치 없이 낸다.
+// 선행 시간은 콜드 스타트 TTFF(모듈 백업 전원이 없으면 수십 초)를 덮도록 넉넉히 둔다.
+#define GNSS_WAKE_LEAD_MS           (120000UL)  // 주차 5분 중 최대 2분 켬
+#define GNSS_FIX_SETTLE_MS          (3000UL)    // 첫 fix 직후 정확도가 안정될 시간
+#define VEHICLE_PUB_MS              (5000UL)    // VEHICLE 주기 송신(바뀌면 즉시). 서브는 15초 못 받으면 켜 둔다
+
 // --- 백필 페이싱 (실시간 발행이 절대 우선) ----------------------------------
 #define BACKFILL_START_DELAY_MS     (15000UL)  // 접속 후 백필 시작까지
 #define BACKFILL_MIN_GAP_MS         (1000UL)   // 백필 발행 최소 간격(틱당 1건)

@@ -8,12 +8,19 @@
 
 #include <KpGnss.h>
 #include <KpLink.h>
+#include <KpVehicle.h>
 #include <TinyGPS++.h>
 
 namespace Gnss {
 
 static HardwareSerial s_uart(1);
 static TinyGPSPlus    s_gps;
+
+// 전원 듀티(위치 주기 3단계) — 메인 VEHICLE 프레임의 GNSS_ON 을 따른다.
+static bool              s_powerOn = true;   // 레일 상태(부팅 = 켬)
+static KpVehicle::Values s_veh     = {};
+static uint32_t          s_vehAt   = 0;      // 마지막 VEHICLE 수신 시각. 0 = 받은 적 없음
+static uint32_t          s_powerCycles = 0;  // 끈 → 켠 횟수(주차 중 깨운 횟수)
 
 static uint32_t s_pubAt     = 0;      // 마지막 GNSS 프레임 시도 시각
 static uint32_t s_pubSent   = 0, s_pubSkip = 0;
@@ -29,9 +36,46 @@ static uint32_t s_baud      = GNSS_BAUD;
 
 void begin()
 {
-    digitalWrite(PIN_RAIL_GNSS, HIGH);   // 게이트 회로가 있으면 전원 ON. 듀티는 2단계
+    // 부팅은 켠다 — 메인 VEHICLE 을 받기 전에는 시동 상태를 모른다(안전 쪽).
+    digitalWrite(PIN_RAIL_GNSS, HIGH);
     s_uart.begin(s_baud, SERIAL_8N1, PIN_GNSS_RX, PIN_GNSS_TX);
     s_powerAt = millis();
+}
+
+void onVehicle(const uint8_t *payload, size_t len)
+{
+    KpVehicle::Values v;
+    if (!KpVehicle::decode(payload, len, &v)) return;
+    s_veh   = v;
+    s_vehAt = millis();
+    if (!s_vehAt) s_vehAt = 1;   // 0 은 "받은 적 없음"
+}
+
+// 레일 켜기/끄기. 켤 때 첫 fix 측정을 다시 시작한다(깨울 때마다 TTFF 를 본다).
+// ⚠️ 게이트 회로가 없는 벤치에서는 GPIO 만 바뀌고 모듈은 계속 돈다 — 그래도 동작은 맞다(fix 가 계속 있을 뿐).
+static void setPower(bool on, const char *why)
+{
+    if (on == s_powerOn) return;
+    s_powerOn = on;
+    digitalWrite(PIN_RAIL_GNSS, on ? HIGH : LOW);
+    if (on) {
+        s_powerAt  = millis();
+        s_firstFix = 0;
+        s_hadFix   = false;
+        s_powerCycles++;
+    }
+    Serial.printf("[GNSS] 전원 %s — %s\n", on ? "켬" : "끔", why);
+}
+
+// 메인이 원하는 전원 상태. VEHICLE 이 없거나 오래됐으면 켠다(옛 메인·링크 끊김 — 위치를 잃지 않게).
+static void applyDuty(uint32_t now)
+{
+    if (!s_vehAt || (uint32_t)(now - s_vehAt) > VEHICLE_STALE_MS) {
+        setPower(true, s_vehAt ? "메인 VEHICLE 끊김(안전 쪽)" : "메인 VEHICLE 받기 전");
+        return;
+    }
+    if (s_veh.gnssOn()) setPower(true, s_veh.driving() ? "주행" : "주차 — 위치 요청(메인)");
+    else                setPower(false, "주차 — 메인이 위치를 받음");
 }
 
 bool fix()
@@ -83,6 +127,7 @@ static void publish(uint32_t now, bool force)
 
 void update()
 {
+    applyDuty(millis());
     while (s_uart.available() > 0) {
         const char c = (char)s_uart.read();
         s_lastByte = millis();
@@ -187,6 +232,13 @@ void printStatus(Stream &io)
               (unsigned long)s_gps.sentencesWithFix(), (unsigned long)s_gps.failedChecksum());
     io.printf("  GNSS 발행    : 보냄 %lu, 못 보냄(링크 다운) %lu, 주기 %lus\n", (unsigned long)s_pubSent,
               (unsigned long)s_pubSkip, (unsigned long)(GNSS_PUB_MS / 1000));
+    if (!s_vehAt)
+        io.printf("  전원         : %s (메인 VEHICLE 받기 전 — 켜 둠)\n", s_powerOn ? "켬" : "끔");
+    else
+        io.printf("  전원         : %s · 메인 요청 %s · 시동 %s · %s (VEHICLE %lus 전) · 주차 중 깨운 횟수 %lu\n",
+                  s_powerOn ? "켬" : "끔", s_veh.gnssOn() ? "켬" : "끔", s_veh.ignOn() ? "ON" : "OFF",
+                  s_veh.driving() ? "주행" : "주차", (unsigned long)((now - s_vehAt) / 1000),
+                  (unsigned long)s_powerCycles);
 }
 
 } // namespace Gnss
