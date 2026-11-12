@@ -80,7 +80,13 @@ static void applyDuty(uint32_t now)
 
 bool fix()
 {
-    return s_gps.location.isValid() && s_gps.location.age() < GNSS_FIX_STALE_MS;
+    if (!s_gps.location.isValid() || s_gps.location.age() >= GNSS_FIX_STALE_MS) return false;
+    // 품질 조건 — 모듈이 위성 0·HDOP 100 인 위치도 유효로 보낼 때가 있다(config.h GNSS_FIX_MIN_SATS).
+    if (!s_gps.satellites.isValid() || s_gps.satellites.age() >= GNSS_FIX_STALE_MS ||
+        s_gps.satellites.value() < GNSS_FIX_MIN_SATS) return false;
+    if (!s_gps.hdop.isValid() || s_gps.hdop.age() >= GNSS_FIX_STALE_MS ||
+        s_gps.hdop.hdop() > GNSS_FIX_MAX_HDOP) return false;
+    return true;
 }
 
 static void rawByte(char c)
@@ -145,7 +151,10 @@ void update()
                           (unsigned long)s_gps.satellites.value(), s_gps.hdop.hdop(),
                           (unsigned long)(s_firstFix / 1000));
         } else {
-            Serial.println("[GNSS] fix 잃음");
+            Serial.printf("[GNSS] fix 잃음 — 위성 %lu, HDOP %.1f%s\n", (unsigned long)s_gps.satellites.value(),
+                          s_gps.hdop.hdop(),
+                          s_gps.location.isValid() && s_gps.location.age() < GNSS_FIX_STALE_MS
+                              ? " (모듈은 위치 유효 — 품질 미달로 버림)" : "");
         }
     }
 }
@@ -215,8 +224,11 @@ void printStatus(Stream &io)
         io.printf("  품질         : 위성 %lu, HDOP %.1f, 속도 %.1f km/h\n", (unsigned long)s_gps.satellites.value(),
                   s_gps.hdop.hdop(), s_gps.speed.kmph());
     } else {
-        io.printf("  fix          : 없음  (위성 %lu%s)\n", (unsigned long)s_gps.satellites.value(),
-                  s_gps.location.isValid() ? ", 마지막 위치는 오래됨" : "");
+        io.printf("  fix          : 없음  (위성 %lu, HDOP %.1f%s — 기준 위성 %d↑·HDOP %.0f↓)\n",
+                  (unsigned long)s_gps.satellites.value(), s_gps.hdop.hdop(),
+                  !s_gps.location.isValid() ? "" :
+                  s_gps.location.age() < GNSS_FIX_STALE_MS ? ", 모듈 위치는 유효 — 품질 미달" : ", 마지막 위치는 오래됨",
+                  GNSS_FIX_MIN_SATS, GNSS_FIX_MAX_HDOP);
     }
     if (s_gps.date.isValid() && s_gps.time.isValid() && s_gps.date.year() > 2000)
         io.printf("  UTC          : %04u-%02u-%02u %02u:%02u:%02u\n", s_gps.date.year(), s_gps.date.month(),

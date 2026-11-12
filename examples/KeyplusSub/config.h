@@ -69,6 +69,11 @@
 #define PIN_GNSS_TX                 16       // 모듈 RX ← 여기
 #define GNSS_BAUD                   38400    // 벤치 모듈 실측(11-10 gnss scan). u-blox 공장값은 9600 — 판매처 설정으로 보임
 #define GNSS_FIX_STALE_MS           3000UL   // 위치 갱신이 이보다 오래되면 fix 없음(1초 주기 × 3)
+// 모듈이 위치를 "유효"로 보내도 위성·HDOP 가 이 조건을 못 넘으면 fix 로 보지 않는다(2026-11-12 실측:
+// 주차장 진입 순간 `위성 0, HDOP 100.0` 위치를 fix 로 받아 주차 telemetry 에 그 좌표·속도 9.2km/h 가 남았다).
+// 위성 수·HDOP 는 GGA 에서 온다 — GGA 가 GNSS_FIX_STALE_MS 넘게 없으면 역시 fix 없음.
+#define GNSS_FIX_MIN_SATS           4        // 3D fix 최소
+#define GNSS_FIX_MAX_HDOP           10.0f    // 이보다 크면 위치 오차 수십 m 이상 — 버린다
 #define GNSS_RX_STALE_MS            3000UL   // 바이트가 이 시간 없으면 "끊김"
 #define GNSS_PUB_MS                 1000UL   // GNSS 프레임 주기(모듈 NMEA 1초 주기와 같다). fix 를 얻거나 잃으면 바로 보낸다
 #define VEHICLE_STALE_MS            15000UL  // 메인 VEHICLE(5초 주기)을 이만큼 못 받으면 GNSS·공기질 듀티를 켜 둔다(안전 쪽)
