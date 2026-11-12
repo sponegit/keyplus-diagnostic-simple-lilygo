@@ -32,6 +32,9 @@ static uint32_t           s_airFrames = 0, s_airBad = 0;
 static KpPower::Values    s_pwr               = {};      // 마지막 POWER — 최신값만 의미
 static uint32_t           s_pwrAt             = 0;       // 받은 시각. 0 = 받은 적 없음
 static uint32_t           s_pwrFrames = 0, s_pwrBad = 0;
+static KpGnss::Values     s_gnss              = {};      // 마지막 GNSS — 최신값만 의미
+static uint32_t           s_gnssAt            = 0;       // 받은 시각. 0 = 받은 적 없음
+static uint32_t           s_gnssFrames = 0, s_gnssBad = 0;
 
 // --- 콘솔 중계 스트림 (S3) ----------------------------------------------------
 // ⚠️ 잠금이 없다 — 로그는 loop 태스크에서만 쓴다는 전제다(LED Ticker 는 출력하지 않는다).
@@ -190,6 +193,15 @@ static void onFrame(const KpLink::Frame &f, void *)
         s_pwrFrames++;
         break;
     }
+    case KpLink::GNSS:
+        if (KpGnss::decode(f.payload, f.len, &s_gnss)) {
+            s_gnssAt = millis();
+            if (!s_gnssAt) s_gnssAt = 1;   // 0 은 "받은 적 없음"
+            s_gnssFrames++;
+        } else {
+            s_gnssBad++;
+        }
+        break;
     default:
         LOGD(DbgConsole, "[LINK] 미처리 프레임 type=0x%02X seq=%u len=%u\n",
              f.type, (unsigned)f.seq, (unsigned)f.len);
@@ -269,6 +281,14 @@ bool pwrSample(uint16_t &mv, uint32_t &atMs)
     return true;
 }
 
+bool gnssSample(KpGnss::Values &v, uint32_t &atMs)
+{
+    if (!s_gnssAt) return false;
+    v    = s_gnss;
+    atMs = s_gnssAt;
+    return true;
+}
+
 size_t pwrJson(char *out, size_t cap)
 {
     if (!s_pwrAt || (uint32_t)(millis() - s_pwrAt) > SUBLINK_PWR_STALE_MS) return 0;
@@ -310,6 +330,18 @@ void printStatus(Stream &io)
         io.printf("  pwr          : 오래됨 (%lus 전) — telemetry 에서 생략\n",
                   (unsigned long)((millis() - s_pwrAt) / 1000));
     io.printf("  pwr stats    : frames %lu, bad %lu\n", (unsigned long)s_pwrFrames, (unsigned long)s_pwrBad);
+    if (!s_gnssAt) {
+        io.println("  gnss         : 받은 적 없음");
+    } else {
+        const unsigned long ago = (unsigned long)((millis() - s_gnssAt) / 1000);
+        if (s_gnss.fix())
+            io.printf("  gnss         : fix %.6f, %.6f 위성 %u HDOP %u.%u (%lus 전)\n", s_gnss.latE7 / 1e7,
+                      s_gnss.lonE7 / 1e7, (unsigned)s_gnss.sat, (unsigned)(s_gnss.hdopX10 / 10),
+                      (unsigned)(s_gnss.hdopX10 % 10), ago);
+        else
+            io.printf("  gnss         : fix 없음 (위성 %u, %lus 전)\n", (unsigned)s_gnss.sat, ago);
+    }
+    io.printf("  gnss stats   : frames %lu, bad %lu\n", (unsigned long)s_gnssFrames, (unsigned long)s_gnssBad);
 }
 
 bool tryConsole(const String &cmd, const String &arg, Stream &io)

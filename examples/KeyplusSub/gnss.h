@@ -1,6 +1,6 @@
 /**
  * @file      gnss.h
- * @brief     MAX-M10S GNSS — 서브 (작업서 S7 1단계)
+ * @brief     MAX-M10S GNSS — 서브 (작업서 S7 1·2단계)
  *
  * UART1(RX15 · TX16, GNSS_BAUD 8N1 — 벤치 모듈은 38400). 모듈 설정(NMEA 1초 주기)을 그대로 받아 TinyGPSPlus 로 해석한다.
  * 모듈에 아무 명령도 보내지 않는다 — 설정 변경(UBX)은 필요해질 때 한다.
@@ -10,7 +10,8 @@
  * fix 판정: 위치가 유효하고 마지막 갱신이 GNSS_FIX_STALE_MS 안일 때. TinyGPSPlus 의 isValid() 는
  *   한 번 잡으면 계속 true 라 나이를 함께 본다.
  *
- * 다음 단계: GNSS 프레임 → 메인 g_lastFix · 시각 소스, 메인 모뎀 GNSS 경로 제거.
+ * 2단계: GNSS 프레임(KpGnss, GNSS_PUB_MS 주기 + fix 전이 시 즉시) → 메인 g_lastFix · 시각 소스(Clk SRC_GPS).
+ *   링크가 내려가 있으면 버린다 — 위치는 최신값만 의미가 있다(POWER·AIR 와 같다).
  *
  * 콘솔: gnss (fix·위성·통계) | gnss raw (NMEA 원문 출력, 토글) | gnss scan (속도 찾기 — 약 10초 막힘)
  */

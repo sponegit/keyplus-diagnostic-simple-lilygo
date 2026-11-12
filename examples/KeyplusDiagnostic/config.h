@@ -16,7 +16,8 @@
 //   현재 = 2단계 GPS. 유심 불필요 단계만 활성화한다.
 // ===========================================================================
 // v2: 위치는 서브보드의 외장 MAX-M10S 가 맡는다 → 모뎀 내장 GNSS 미사용(부팅 시 확실히 끈다).
-//     링크로 fix 를 받는 경로는 작업서 S7 에서 들어온다. 그때까지 위치 없음(ts 는 모뎀 시각).
+//     fix 는 링크 GNSS 프레임(작업서 S7 2단계, KpGnss)으로 받는다 — FEATURE_GPS=0 + FEATURE_SUBLINK=1
+//     이면 KeyplusDiagnostic.ino 의 pollSubGnss 가 g_lastFix·시각 기준(Clk SRC_GPS)을 채운다.
 #define FEATURE_GPS         0   // 모뎀 내장 GNSS — v2 에선 끔
 #define FEATURE_OBD2        1   // 6단계: CAN/OBD2 PID (외장 트랜시버 SN65HVD230, GPIO21/22) [활성]
 // v2: 차키 GPIO 는 서브보드(GPIO4~9)에 있다. 메인 carkey 는 KEY_CMD 를 보내는 대리 모듈(작업서 S4).
@@ -577,6 +578,9 @@
 #define SUBLINK_AIR_STALE_MS        (15000UL)
 // 서브 POWER 프레임(1초 주기, 작업서 S6) 유효 시간 — 넘으면 telemetry 에 pwr 를 싣지 않는다(AIR 와 같은 이유).
 #define SUBLINK_PWR_STALE_MS        (15000UL)
+// 서브 GNSS 프레임(1초 주기, 작업서 S7) 유효 시간 — 넘으면 "지금 측위 중"이 아니다(g_gpsFixNow=false).
+// 서브의 fix 판정(GNSS_FIX_STALE_MS 3초)과 같은 값이다. 좌표 캐시(g_lastFix)는 그대로 둔다(내장 GPS 와 같은 규약).
+#define SUBLINK_GNSS_STALE_MS       (3000UL)
 
 // --- 시동 판정 (ign.h) — 차량 전압 기준, OBD 회전수로 보정 ---------------------
 // 시동 ON(알터네이터 가동) 13V 이상 / OFF 12V대. 크랭킹 강하(1~2초)·전장 부하 흔들림은 지연이 거른다.

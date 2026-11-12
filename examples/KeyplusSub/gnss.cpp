@@ -4,13 +4,19 @@
  */
 #include "gnss.h"
 #include "config.h"
+#include "link.h"
 
+#include <KpGnss.h>
+#include <KpLink.h>
 #include <TinyGPS++.h>
 
 namespace Gnss {
 
 static HardwareSerial s_uart(1);
 static TinyGPSPlus    s_gps;
+
+static uint32_t s_pubAt     = 0;      // 마지막 GNSS 프레임 시도 시각
+static uint32_t s_pubSent   = 0, s_pubSkip = 0;
 
 static uint32_t s_powerAt   = 0;      // 레일을 켠 시각 — 첫 fix 소요 시간 기준
 static uint32_t s_firstFix  = 0;      // 레일 켠 뒤 첫 fix 까지(ms). 0 = 아직
@@ -50,6 +56,31 @@ static void rawByte(char c)
     }
 }
 
+// UTC 가 있고 신선한가. date·time 도 isValid() 가 한 번 서면 계속 true 라 나이를 함께 본다.
+// u-blox 는 위성 시각을 받기 전에도 RTC 값을 내보낼 수 있다 — 연도로 한 번 더 거른다.
+static bool timeFresh()
+{
+    return s_gps.date.isValid() && s_gps.time.isValid() && s_gps.date.year() >= 2024 &&
+           s_gps.time.age() < GNSS_FIX_STALE_MS;
+}
+
+static void publish(uint32_t now, bool force)
+{
+    if (!force && s_pubAt && (uint32_t)(now - s_pubAt) < GNSS_PUB_MS) return;
+    s_pubAt = now;
+    const bool tOk = timeFresh();
+    const KpGnss::Values v = KpGnss::make(
+        fix(), s_gps.location.lat(), s_gps.location.lng(), (float)s_gps.altitude.meters(),
+        (float)s_gps.speed.kmph(), (float)s_gps.hdop.hdop(), s_gps.satellites.value(),
+        tOk ? s_gps.date.year() : 0, s_gps.date.month(), s_gps.date.day(), s_gps.time.hour(),
+        s_gps.time.minute(), s_gps.time.second());
+    uint8_t buf[KPGNSS_PAYLOAD_LEN];
+    const size_t n = KpGnss::encode(v, buf, sizeof(buf));
+    // 링크가 내려가 있으면 버린다 — 위치는 최신값만 의미가 있다(작업서 §3.3).
+    if (Link::sendFrame(KpLink::GNSS, buf, (uint16_t)n)) s_pubSent++;
+    else                                                s_pubSkip++;
+}
+
 void update()
 {
     while (s_uart.available() > 0) {
@@ -59,6 +90,8 @@ void update()
         if (s_raw) rawByte(c);
     }
     const bool now = fix();
+    // fix 전이는 주기를 기다리지 않고 바로 알린다(메인 ts·좌표 선택이 이 비트를 따른다).
+    publish(millis(), now != s_hadFix);
     if (now != s_hadFix) {
         s_hadFix = now;
         if (now) {
@@ -152,6 +185,8 @@ void printStatus(Stream &io)
     io.printf("  stats        : bytes %lu, 문장 %lu, fix 문장 %lu, 체크섬 오류 %lu\n",
               (unsigned long)s_gps.charsProcessed(), (unsigned long)s_gps.passedChecksum(),
               (unsigned long)s_gps.sentencesWithFix(), (unsigned long)s_gps.failedChecksum());
+    io.printf("  GNSS 발행    : 보냄 %lu, 못 보냄(링크 다운) %lu, 주기 %lus\n", (unsigned long)s_pubSent,
+              (unsigned long)s_pubSkip, (unsigned long)(GNSS_PUB_MS / 1000));
 }
 
 } // namespace Gnss

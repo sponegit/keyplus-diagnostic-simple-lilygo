@@ -94,6 +94,9 @@ static GpsFix g_lastFix;
 static bool g_gpsFixNow = false;
 #endif
 
+// v2 위치 출처 — 모뎀 내장 GNSS 를 끄고 서브 외장 GNSS 를 링크로 받는 빌드(작업서 S7 2단계).
+#define USE_SUB_GNSS (!FEATURE_GPS && FEATURE_SUBLINK && FEATURE_LTE)
+
 #if FEATURE_GPS
 // GNSS 재활성화 보류 플래그 — 지금 GNSS 가 꺼져 있다(또는 꺼졌다고 봐야 한다)는 뜻.
 // 서 있는 동안 GPS 폴을 통째로 건너뛴다: getGPS/getGPSraw 가 응답 없이 타임아웃만
@@ -761,12 +764,59 @@ static void printDeviceInfo(TinyGsm &modem, const char *modemName)
 // 주기 상태 한 줄 — INFO 레벨의 기본 출력.
 // 모듈별 폴 덤프를 DEBUG로 내린 대신, 이 한 줄만 보고 "지금 정상인가"를 판단할 수 있게 한다.
 // ---------------------------------------------------------------------------
+#if USE_SUB_GNSS
+// 서브 GNSS 최신 프레임 → g_lastFix · g_gpsFixNow · 시각 기준. 매 틱 부른다 — AT 왕복이 없고
+// 링크가 받아 둔 값을 옮길 뿐이다. 내장 GPS 의 pollGps 와 같은 규약을 지킨다:
+//   · g_lastFix 는 측위를 놓쳐도 마지막 좌표를 유지한다(telemetry·오프라인 레코드가 계속 싣는다)
+//   · g_gpsFixNow 는 "지금 측위 중"이다 — 프레임이 SUBLINK_GNSS_STALE_MS 넘게 없으면 false
+static uint32_t g_subGnssSeenAt = 0;   // 마지막으로 반영한 프레임의 수신 시각(같은 프레임 재반영 방지)
+
+static void pollSubGnss(uint32_t now)
+{
+    KpGnss::Values v;
+    uint32_t       at    = 0;
+    const bool     have  = Sublink::gnssSample(v, at);
+    const bool     fresh = have && (uint32_t)(now - at) <= SUBLINK_GNSS_STALE_MS;
+    const bool     got   = fresh && v.fix();
+
+    if (got != g_gpsFixNow) {
+        if (got) LOGI(SerialMon, "[GPS] 측위 획득 — 서브 GNSS (%u위성, HDOP %u.%u)\n", (unsigned)v.sat,
+                      (unsigned)(v.hdopX10 / 10), (unsigned)(v.hdopX10 % 10));
+        else     LOGI(SerialMon, "[GPS] 측위 상실 — %s, 마지막 좌표 유지\n",
+                      fresh ? "서브 fix 없음" : "서브 GNSS 프레임 끊김");
+        g_gpsFixNow = got;
+    }
+    if (!got || at == g_subGnssSeenAt) return;
+    g_subGnssSeenAt = at;
+
+    GpsFix f;
+    memset(&f, 0, sizeof(f));
+    f.valid    = true;
+    f.fixMode  = 3;                        // TinyGPSPlus 는 2D/3D 를 구분해 주지 않는다 — 위치 유효만 뜻한다
+    f.lat      = (float)(v.latE7 / 1e7);
+    f.lon      = (float)(v.lonE7 / 1e7);
+    f.speed    = v.spdX10 / 10.0f;
+    f.alt      = v.altDm / 10.0f;
+    f.accuracy = v.hdopX10 / 10.0f;        // HDOP 그대로(내장 GPS 경로와 같은 의미)
+    f.vsat     = v.sat;
+    f.usat     = v.sat;
+    // ⚠️ 시각이 유효하지 않으면 연도를 0 으로 둔다. 지난 시각을 남겨 두면 publishTelemetry 가
+    //    "측위 중 + year≥2020" 으로 보고 그 시각을 ts 로 써서 ts 가 얼어붙는다(0.2.10 의 PK 붕괴).
+    if (v.timeOk()) {
+        f.year = v.year; f.month = v.month; f.day = v.day;
+        f.hour = v.hour; f.minute = v.minute; f.second = v.second;
+        Clk::noteCivil(f.year, f.month, f.day, f.hour, f.minute, f.second, Clk::SRC_GPS);
+    }
+    g_lastFix = f;
+}
+#endif
+
 static void printStatusLine(bool connected, uint32_t seq, const char *pubResult)
 {
     if (!LOG_ON(Log::L_INFO)) return;
 
     char gpsBuf[24];
-#if FEATURE_GPS
+#if FEATURE_GPS || USE_SUB_GNSS
     // 측위 중이면 위성수, 놓쳤지만 캐시가 있으면 그 사실까지 구분해 보여준다
     // (telemetry에는 캐시 좌표가 실리므로 "왜 좌표가 안 변하나"를 여기서 알 수 있어야 한다).
     if (g_gpsFixNow)          snprintf(gpsBuf, sizeof(gpsBuf), "fix/%dsat", g_lastFix.vsat);
@@ -1802,6 +1852,9 @@ void loop()
     if (!g_dutyOff) gpsInterval = GPS_POLL_INTERVAL_MS;
 #endif
     if (now - g_lastGpsPoll >= gpsInterval) pollGps(now);
+#endif
+#if USE_SUB_GNSS
+    pollSubGnss(now);
 #endif
 
 #if FEATURE_LTE
