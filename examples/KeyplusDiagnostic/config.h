@@ -701,6 +701,21 @@
 // ⚠️ 주기 발행이 아니다 — 전이가 없으면 한 건도 나가지 않는다.
 #define STATUS_REPUB_GUARD_MS       (2000UL)   // 다음 실시간 telemetry 직전 금지 구간
 
+// --- 시동 연동 telemetry 주기 (위치 주기 1단계, 2026-11-12) ---------------------
+// 주행(시동 ON 또는 차속·회전수 > 0 — vehicleMoving) = Cfg::telemetryIntervalMs()(기본 30초),
+// 주차 = TELEMETRY_PARKED_MS. 주행↔주차 전이·저전압 판정 전이 순간에는 주기를 기다리지 않고 1건 낸다
+// (출발·주차 위치, 배터리 경고를 바로 남긴다).
+#define TELEMETRY_PARKED_MS         (300000UL)  // 5분
+// 주차 중 생존 신호 — status 토픽에 online 없이·retain 없이 낸다(Mqtt::publishHeartbeat).
+// 서버 온라인 판정은 last_seen_at 기준이고 창이 둘이다: device-gateway 스위퍼 180초,
+// partner-api 명령 접수 90초(DEVICE_ONLINE_WINDOW_S). 주차 telemetry 5분 사이에 이게 없으면
+// 주차 중인 단말이 오프라인으로 보여 원격 명령이 밀린다 → 90초보다 충분히 짧게.
+#define HEARTBEAT_MS                (60000UL)
+// 시동 OFF 인데 GNSS 속도가 이 이상으로 이만큼 이어지면 이동 중(견인·도난)으로 보고 주행 주기로 바꾼다.
+// GNSS 정지 상태 잡음(수 km/h)을 거르려고 둘 다 둔다.
+#define PARKED_MOVE_KMH             (10.0f)
+#define PARKED_MOVE_MS              (10000UL)
+
 // --- 백필 페이싱 (실시간 발행이 절대 우선) ----------------------------------
 #define BACKFILL_START_DELAY_MS     (15000UL)  // 접속 후 백필 시작까지
 #define BACKFILL_MIN_GAP_MS         (1000UL)   // 백필 발행 최소 간격(틱당 1건)

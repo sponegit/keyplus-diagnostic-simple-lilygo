@@ -268,6 +268,26 @@ bool publishStatus(TinyGsm &modem, const char *powerMode, bool ignitionOn,
     return ok;
 }
 
+bool publishHeartbeat(TinyGsm &modem, const char *powerMode, bool ignitionOn, Stream &log)
+{
+    if (!s_connected) return false;
+    if (!publishReady(modem, "heartbeat", log)) return false;
+
+    char buf[96];
+    int n = snprintf(buf, sizeof(buf), "{\"hb\":true,\"power_mode\":\"%s\",\"ignition_on\":%s}",
+                     powerMode, ignitionOn ? "true" : "false");
+    if (n <= 0 || n >= (int)sizeof(buf)) return false;
+
+    bool ok = modem.mqtt_publish(kClientIdx, s_topicStatus.c_str(), buf, /*qos=*/1,
+                                 /*timeout=*/60, /*retain=*/0);
+    notePublish();
+    if (!ok) s_connected = false;   // 발행 실패 = 세션 끊김 → 다음 루프서 재접속
+    // 1분마다라 평소엔 DEBUG. 실패만 WARN.
+    if (ok) LOGD(log, "[MQTT] heartbeat published\n");
+    else    LOGW(log, "[MQTT] heartbeat FAILED\n");
+    return ok;
+}
+
 bool begin(TinyGsm &modem, Stream &log)
 {
     // device_id(런타임)로 토픽/클라이언트ID 조립. 매 접속 갱신(값 동일하면 무해).

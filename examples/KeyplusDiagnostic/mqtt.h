@@ -127,6 +127,17 @@ int  lastConnErr(TinyGsm &modem);
 bool publishStatus(TinyGsm &modem, const char *powerMode, bool ignitionOn,
                    bool sub, Stream &log);
 
+/**
+ * 주차 중 생존 신호 — status 토픽 `{"hb":true,"power_mode":..,"ignition_on":..}` (QoS 1, retain 0).
+ * 서버 ingestStatus 가 last_seen_at 을 갱신한다(HEARTBEAT_MS, config.h).
+ *
+ * ⚠️ online 을 싣지 않는다. 서버는 online:true 를 "재접속"으로 읽어 last_online_at 을 덮고
+ *    pending flush 를 예약한다 — 1분마다 그러면 재구독 진단(admin sub_stale)이 오판한다.
+ * ⚠️ retain 0 — 브로커의 retained status(접속 시 online:true)를 덮지 않는다.
+ * ⚠️ 호출측이 publishGapElapsed() 로 직전 발행과의 간격을 확보한 뒤 부를 것.
+ */
+bool publishHeartbeat(TinyGsm &modem, const char *powerMode, bool ignitionOn, Stream &log);
+
 // telemetry 1회 발행 (QoS 1). withMeta=true면 최초 발행용 하드웨어 메타(imei/mac/fw) 포함.
 // fix가 유효하면 gps 좌표를 싣고, obd.valid면 지원 PID를 obd 오브젝트로 동봉(6단계).
 //

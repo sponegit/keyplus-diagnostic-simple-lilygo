@@ -52,6 +52,9 @@ size_t pwrJson(char *out, size_t cap);
 // 신선도는 호출자가 본다(시동 판정 ign.cpp 는 새 표본이 올 때만 반영한다).
 bool pwrSample(uint16_t &mv, uint32_t &atMs);
 
+// 서브 저전압 판정(KpPower::Uv 0/1/2). 받은 적 없거나 SUBLINK_PWR_STALE_MS 지났으면 false.
+bool pwrUv(uint8_t &uv);
+
 // 서브 GNSS(작업서 S7 2단계) 최신 프레임과 받은 시각(millis). 받은 적 없으면 false.
 // 신선도는 호출자가 본다(SUBLINK_GNSS_STALE_MS — 링크가 끊겼는데 마지막 fix 를 "지금"으로 쓰면 안 된다).
 bool gnssSample(KpGnss::Values &v, uint32_t &atMs);

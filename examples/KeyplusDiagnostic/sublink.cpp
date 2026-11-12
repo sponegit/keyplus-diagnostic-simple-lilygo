@@ -281,6 +281,13 @@ bool pwrSample(uint16_t &mv, uint32_t &atMs)
     return true;
 }
 
+bool pwrUv(uint8_t &uv)
+{
+    if (!s_pwrAt || (uint32_t)(millis() - s_pwrAt) > SUBLINK_PWR_STALE_MS) return false;
+    uv = s_pwr.uv;
+    return true;
+}
+
 bool gnssSample(KpGnss::Values &v, uint32_t &atMs)
 {
     if (!s_gnssAt) return false;

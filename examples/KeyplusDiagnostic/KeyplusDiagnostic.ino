@@ -601,6 +601,72 @@ static bool vehicleMoving(const Obd2::Data &d)
 #endif
 }
 
+#if FEATURE_LTE
+// ── 시동 연동 telemetry 주기 (위치 주기 1단계, config.h TELEMETRY_PARKED_MS) ──────────
+// 주행 = Cfg::telemetryIntervalMs()(기본 30초), 주차 = TELEMETRY_PARKED_MS(5분).
+// 주차 중에는 HEARTBEAT_MS 마다 생존 신호(Mqtt::publishHeartbeat)로 서버 온라인 판정을 유지한다.
+static bool     g_driveMode    = true;   // 첫 판정 전에는 주행 쪽 — 부팅 직후 발행을 늦추지 않는다
+static bool     g_driveInit    = false;
+static uint32_t g_gpsMoveSince = 0;      // 시동 OFF 중 GNSS 속도가 PARKED_MOVE_KMH 이상이 된 시각
+static int      g_prevUv       = -1;     // 직전 서브 저전압 판정(-1 = 아직 모름)
+static uint32_t g_lastAliveAt  = 0;      // 서버 last_seen_at 을 갱신한 마지막 발행(telemetry·status·heartbeat)
+
+static uint32_t teleIntervalMs() { return g_driveMode ? Cfg::telemetryIntervalMs() : TELEMETRY_PARKED_MS; }
+
+// 다음 실시간 telemetry 를 "지금"으로 당긴다. 접속 직후 5초 보호(첫 발행 지연)는 지킨다.
+static void pullTelemetryForward(uint32_t now)
+{
+    uint32_t target = now;
+    if (g_connectedAt && (int32_t)(now - g_connectedAt) < 5000) target = g_connectedAt + 5000;
+    if ((int32_t)(target - g_nextPubAt) < 0) g_nextPubAt = target;
+}
+
+// 매 틱 — 주행/주차 판정과 즉시 발행 사유(전이·저전압 전이)를 본다. AT 왕복 없음.
+static void updateTeleMode(uint32_t now)
+{
+    // 시동 OFF 인데 움직인다(견인·도난) — GNSS 속도가 PARKED_MOVE_MS 동안 PARKED_MOVE_KMH 이상.
+    bool gpsMove = false;
+    if (g_gpsFixNow && g_lastFix.valid && g_lastFix.speed >= PARKED_MOVE_KMH) {
+        if (!g_gpsMoveSince) g_gpsMoveSince = now ? now : 1;
+        gpsMove = (uint32_t)(now - g_gpsMoveSince) >= PARKED_MOVE_MS;
+    } else {
+        g_gpsMoveSince = 0;
+    }
+    const bool drive = vehicleMoving(g_obd) || gpsMove;
+    if (!g_driveInit || drive != g_driveMode) {
+        const bool first = !g_driveInit;
+        g_driveInit = true;
+        g_driveMode = drive;
+        LOGI(SerialMon, "[TELE] %s — telemetry %lus 주기%s\n", drive ? "주행" : "주차",
+             (unsigned long)(teleIntervalMs() / 1000UL),
+             (drive && gpsMove && !Ign::on()) ? " (시동 OFF 이동 — GNSS 속도)" : "");
+        // 전이 순간 1건 — 출발·주차 위치를 주기와 상관없이 남긴다. 첫 판정은 전이가 아니다.
+        if (!first) pullTelemetryForward(now);
+    }
+#if FEATURE_SUBLINK
+    // 저전압 판정이 바뀌면 바로 1건 — 주차 5분 주기를 기다리지 않고 pwr.uv 를 서버로 보낸다.
+    uint8_t uv;
+    if (Sublink::pwrUv(uv)) {
+        if (g_prevUv >= 0 && uv != (uint8_t)g_prevUv) {
+            LOGI(SerialMon, "[TELE] 저전압 판정 %d → %u — telemetry 즉시\n", g_prevUv, (unsigned)uv);
+            pullTelemetryForward(now);
+        }
+        g_prevUv = uv;
+    }
+#endif
+}
+
+// 주차 중 생존 신호를 낼 때인가. 발행 체인의 다른 가드(간격·telemetry 직전 금지)와 같은 규칙.
+static bool heartbeatGateOpen(uint32_t now)
+{
+    if (g_driveMode) return false;   // 주행 중엔 30초 telemetry 가 생존 신호를 겸한다
+    if ((int32_t)(now - g_lastAliveAt) < (int32_t)HEARTBEAT_MS) return false;
+    if (!Mqtt::publishGapElapsed(now, PUBLISH_MIN_GAP_MS)) return false;
+    if ((int32_t)(g_nextPubAt - now) < (int32_t)STATUS_REPUB_GUARD_MS) return false;
+    return true;
+}
+#endif
+
 #if FEATURE_OBD2
 // 전체 PID 폴 1회 — 주기 폴(오프라인)과 발행 직전 폴이 같이 쓴다.
 // 무응답이면 링크 끊김으로 보고 재확립 경로로 넘긴다.
@@ -1470,8 +1536,10 @@ static void statusServer(Stream &io)
         io.printf("  %-14s: %lds 후 (간격 %lus)\n", "구독 재시도",
                   (long)(left > 0 ? left / 1000 : 0), (unsigned long)(g_subRetryDelay / 1000UL));
     }
-    io.printf("  %-14s: %lums (keepalive %ds)\n", "발행 주기",
-              (unsigned long)Cfg::telemetryIntervalMs(), Cfg::keepaliveS());
+    io.printf("  %-14s: %lums — %s (주행 %lums / 주차 %lums, 주차 생존신호 %lus, keepalive %ds)\n",
+              "발행 주기", (unsigned long)teleIntervalMs(), g_driveMode ? "주행" : "주차",
+              (unsigned long)Cfg::telemetryIntervalMs(), (unsigned long)TELEMETRY_PARKED_MS,
+              (unsigned long)(HEARTBEAT_MS / 1000UL), Cfg::keepaliveS());
     io.printf("  %-14s: %lu\n", "발행 seq", (unsigned long)g_seq);
     if (connected) {
         int32_t remain = (int32_t)(g_nextPubAt - millis());
@@ -1856,6 +1924,10 @@ void loop()
 #if USE_SUB_GNSS
     pollSubGnss(now);
 #endif
+#if FEATURE_LTE
+    // 위치·시동·저전압이 갱신된 뒤에 본다 — 주행/주차 주기와 즉시 발행 사유.
+    updateTeleMode(now);
+#endif
 
 #if FEATURE_LTE
     // MQTT 콜백/keepalive 펌핑 (매 틱). publish 후 +CMQTTPUB ACK URC를 비운다.
@@ -1937,6 +2009,7 @@ void loop()
     if (connected && !g_wasConnected) {
         g_nextPubAt = now + 5000;
         g_connectedAt = now;   // 백필 시작 지연의 기준 — 접속 직후는 발행이 몰린다
+        g_lastAliveAt = now;   // 접속 시 status(online) 가 방금 나갔다 — 생존 신호를 그 직후에 겹치지 않는다
         // 접속 직후는 status online·구독·첫 telemetry 가 몰린다 — 프로브 시계를 여기서
         // 다시 세워 그 구간에 AT 를 끼워넣지 않는다(R1).
         g_lastProbeAt     = now;
@@ -2153,7 +2226,8 @@ void loop()
         // 접속됨: telemetry 주기 발행(오버플로우 안전 비교). 발행 성공 시 다음 주기 예약,
         // 실패 시 isConnected가 false로 바뀌어 다음 루프에서 재접속 경로를 탄다.
         // 주기는 config_update로 런타임 변경 가능(Cfg::telemetryIntervalMs).
-        g_nextPubAt = now + Cfg::telemetryIntervalMs();
+        // 주차 중이면 TELEMETRY_PARKED_MS — 주행 주기는 그대로 Cfg 를 따른다(updateTeleMode).
+        g_nextPubAt = now + teleIntervalMs();
 #if FEATURE_GPS
         // 발행 직전 좌표 갱신 — 주기 폴에만 의존하면 실을 fix가 최대 폴 주기만큼 묵는다
         // (주행 중 10초 = 시속 100km에서 약 280m 오차). 폴 시각도 갱신되므로 중복 폴 없음.
@@ -2204,6 +2278,7 @@ void loop()
             if (pubOk) {
                 if (withMeta) g_metaSent = true;
                 g_seq++;
+                g_lastAliveAt = now;
             }
         }
 #if FEATURE_FAST_SAMPLE
@@ -2224,9 +2299,17 @@ void loop()
         if (Mqtt::publishStatus(modem, statusPowerMode(), g_stPrevIgn, sub, SerialMon)) {
             g_stPending   = false;
             g_stSubNotify = false;
+            g_lastAliveAt = now;
         }
         // 발행 실패는 세션 끊김이다(publishStatus 가 s_connected 를 내린다) — 플래그를
         // 그대로 두면 재접속 후 다시 나간다. 단 sub 는 재구독 시 어차피 다시 세워진다.
+    }
+    else if (heartbeatGateOpen(now)) {
+        // ── 주차 중 생존 신호 (HEARTBEAT_MS) ─────────────────────────────────
+        // 주차 telemetry(5분) 사이에 서버 last_seen_at 을 유지한다(partner-api 명령 접수 창 90초).
+        // 실패해도 시각은 갱신한다 — 실패 = 세션 끊김이고 재접속 경로가 따로 돈다(헛돌기 방지).
+        Mqtt::publishHeartbeat(modem, statusPowerMode(), g_stPrevIgn, SerialMon);
+        g_lastAliveAt = now;
     }
 #if FEATURE_FAST_SAMPLE
     else if (g_nextFastAt != 0 && (int32_t)(now - g_nextFastAt) >= 0
