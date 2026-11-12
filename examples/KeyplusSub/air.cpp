@@ -218,6 +218,9 @@ static uint8_t  s_scdFailRun  = 0;
 static uint16_t s_scdPresSent = 0;   // 마지막으로 보낸 기압(hPa). 0 = 보낸 적 없음
 static uint32_t s_scdPresAt   = 0;
 static uint8_t  s_scdSkip     = 0;   // 레일을 켠 뒤 버릴 남은 값 수
+static bool     s_scdRunning  = false;   // 주기 측정 중 — 주차 듀티가 쉬면 멈춘다(Guard::airAwake)
+static uint32_t s_scdStopAt   = 0;       // 마지막 stop 시각 — 데이터시트: stop 후 500ms 명령 금지
+static uint32_t s_scdDutyStops = 0;
 
 static bool scdCmd(uint16_t cmd)
 {
@@ -263,6 +266,7 @@ static bool scdProbe()
     if (scdReadWords(SCD_CMD_SERIAL, sn, 3) != 0) return false;
     if (!scdCmd(SCD_CMD_START)) return false;
     s_scdFound    = true;
+    s_scdRunning  = true;   // 쉬는 중이면 다음 주기 scdCycle 이 바로 멈춘다
     s_scdFailRun  = 0;
     s_scdPresSent = 0;
     Serial.printf("[AIR] SCD41 발견 0x%02X — 시리얼 %04X%04X%04X, 첫 값은 약 5초 뒤\n",
@@ -300,6 +304,29 @@ static void scdCycle(uint32_t now)
         s_scdProbeAt = now;
         scdProbe();
         return;   // 찾았어도 방금 시작했다 — 첫 값은 5초 뒤
+    }
+    // 주차 공기질 듀티 — 쉬면 주기 측정만 멈춘다(3.3V 레일은 SGP41 때문에 켜 둔다). 깨우면 다시 시작하고
+    // 레일 복귀 때와 같이 첫 AIR_SCD_SKIP 값을 버린다 → 첫 값까지 약 20초(5초 × (1 + 3)).
+    if (!Guard::airAwake()) {
+        s_scdOk = false;
+        if (s_scdRunning) {
+            if (scdCmd(SCD_CMD_STOP)) {
+                s_scdRunning = false;
+                s_scdStopAt  = now;
+                s_scdDutyStops++;
+            } else {
+                scdFail(false);
+            }
+        }
+        return;
+    }
+    if (!s_scdRunning) {
+        if ((uint32_t)(now - s_scdStopAt) < 600) return;   // stop 직후 500ms 금지
+        if (!scdCmd(SCD_CMD_START)) { scdFail(false); return; }
+        s_scdRunning  = true;
+        s_scdSkip     = AIR_SCD_SKIP;
+        s_scdPresSent = 0;   // 기압을 다시 알린다
+        return;              // 첫 값은 5초 뒤
     }
     scdPressure(now);
     uint16_t ready;
@@ -476,7 +503,7 @@ static bool s_railWasOn = false;
 static void railOff()
 {
     s_bmpAddr  = 0;     s_bmpOk = false;
-    s_scdFound = false; s_scdOk = false;
+    s_scdFound = false; s_scdOk = false; s_scdRunning = false;
     s_sgpFound = false; s_sgpOk = false;
     s_sgpCond  = 0;
 }
@@ -532,7 +559,8 @@ static void printValues(Stream &io)
         io.printf("[AIR] SCD41  %uppm CO2  (%.1f°C %.0f%%RH, %lus 전)\n", (unsigned)s_co2, s_scdTempC, s_scdRh,
                   (unsigned long)((millis() - s_scdAt) / 1000));
     else
-        io.printf("[AIR] SCD41  %s\n", s_scdFound ? "첫 측정 대기(5초 주기)" : "없음 (0x62 응답 없음)");
+        io.printf("[AIR] SCD41  %s\n", !s_scdFound ? "없음 (0x62 응답 없음)" :
+                                       !s_scdRunning ? "멈춤 (주차 듀티)" : "첫 측정 대기(5초 주기)");
     if (s_sgpOk && s_vocIndex > 0)
         io.printf("[AIR] SGP41  VOC %ld  NOx %ld  (raw %u/%u)\n", (long)s_vocIndex, (long)s_noxIndex,
                   (unsigned)s_srawVoc, (unsigned)s_srawNox);
@@ -647,9 +675,9 @@ void printStatus(Stream &io)
         io.printf("  SCD41        : %uppm %.1f°C %.0f%%RH (%lus 전)\n", (unsigned)s_co2, s_scdTempC, s_scdRh,
                   (unsigned long)((millis() - s_scdAt) / 1000));
     else
-        io.printf("  SCD41        : %s\n", s_scdFound ? "첫 측정 대기" : "없음");
-    io.printf("  SCD41 stats  : ok %lu, nack %lu, crc %lu\n", (unsigned long)s_scdReads,
-              (unsigned long)s_scdNack, (unsigned long)s_scdCrc);
+        io.printf("  SCD41        : %s\n", !s_scdFound ? "없음" : !s_scdRunning ? "멈춤 (주차 듀티)" : "첫 측정 대기");
+    io.printf("  SCD41 stats  : ok %lu, nack %lu, crc %lu, 듀티 멈춤 %lu\n", (unsigned long)s_scdReads,
+              (unsigned long)s_scdNack, (unsigned long)s_scdCrc, (unsigned long)s_scdDutyStops);
     if (s_scdPresSent) io.printf("  SCD41 기압   : %uhPa 적용\n", (unsigned)s_scdPresSent);
     else               io.println("  SCD41 기압   : 미적용(BMP280 값 대기) — 해발 0m 기본값으로 계산");
     if (s_sgpOk)

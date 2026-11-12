@@ -29,6 +29,8 @@ static bool               s_logMuted          = false;   // 서브 OTA 중 로�
 static KpAir::Values      s_air               = {};      // 마지막 AIR — 최신값만 의미
 static uint32_t           s_airAt             = 0;       // 받은 시각. 0 = 받은 적 없음
 static uint32_t           s_airFrames = 0, s_airBad = 0;
+static KpAir::Window      s_airWin            = {};      // telemetry 창 집계(airTake 가 비운다)
+static uint32_t           s_airTakes = 0, s_airTakeEmpty = 0;
 static KpPower::Values    s_pwr               = {};      // 마지막 POWER — 최신값만 의미
 static uint32_t           s_pwrAt             = 0;       // 받은 시각. 0 = 받은 적 없음
 static uint32_t           s_pwrFrames = 0, s_pwrBad = 0;
@@ -173,6 +175,7 @@ static void onFrame(const KpLink::Frame &f, void *)
             s_airAt = millis();
             if (!s_airAt) s_airAt = 1;   // 0 은 "받은 적 없음"
             s_airFrames++;
+            KpAir::add(s_airWin, s_air);
         } else {
             s_airBad++;
         }
@@ -273,6 +276,16 @@ size_t airJson(char *out, size_t cap)
     return KpAir::formatJson(s_air, out, cap);
 }
 
+bool airTake(KpAir::Values &out)
+{
+    const bool fresh = s_airAt && (uint32_t)(millis() - s_airAt) <= SUBLINK_AIR_STALE_MS;
+    bool ok = KpAir::take(s_airWin, &out);   // 묵었어도 비운다 — 다음 창에 섞이지 않게
+    if (!fresh) { out = {}; ok = false; }
+    if (ok) s_airTakes++;
+    else    s_airTakeEmpty++;
+    return ok;
+}
+
 bool pwrSample(uint16_t &mv, uint32_t &atMs)
 {
     if (!s_pwrAt) return false;
@@ -327,6 +340,8 @@ void printStatus(Stream &io)
         io.printf("  air          : 오래됨·값 없음 (%lus 전) — telemetry 에서 생략\n",
                   (unsigned long)((millis() - s_airAt) / 1000));
     io.printf("  air stats    : frames %lu, bad %lu\n", (unsigned long)s_airFrames, (unsigned long)s_airBad);
+    io.printf("  air 창       : 지금 %u프레임 모음 · 가져감 %lu (빈 창 %lu) — telemetry 는 창 평균 + co_max·pm25_max\n",
+              (unsigned)s_airWin.n, (unsigned long)s_airTakes, (unsigned long)s_airTakeEmpty);
     char pj[KPPOWER_JSON_MAX];
     if (!s_pwrAt)
         io.println("  pwr          : 받은 적 없음");

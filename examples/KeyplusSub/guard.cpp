@@ -7,6 +7,8 @@
 #include "pms.h"
 #include "co.h"
 
+#include <KpVehicle.h>
+
 namespace Guard {
 
 static KpAir::Guard s_state    = KpAir::Guard::NORMAL;
@@ -19,6 +21,13 @@ static float        s_simT     = 0;
 static float        s_lastT    = NAN;
 static uint32_t     s_changeAt = 0;
 static uint32_t     s_trips    = 0;
+static bool         s_coOn     = false;   // ZE15-CO 5V 레일 — 듀티 대상 아님(작업서 S8 "주차 중에도 ON")
+static bool         s_5vOn     = false;   // PMS5003 5V 레일 — 듀티 대상
+static bool         s_idle     = false;   // 주차 공기질 듀티 — 쉬는 중(메인 AIR_IDLE)
+static uint32_t     s_idleAt   = 0;       // 마지막으로 바뀐 시각
+static uint32_t     s_wakes    = 0;       // 듀티로 깨운 횟수
+static KpVehicle::Values s_veh = {};
+static uint32_t     s_vehAt    = 0;       // 마지막 VEHICLE 수신. 0 = 받은 적 없음
 
 static const char *stateName(KpAir::Guard s)
 {
@@ -29,20 +38,56 @@ static const char *stateName(KpAir::Guard s)
     }
 }
 
-static void applyRails(bool on)
+// 레일 셋을 따로 둔다 — 가드·저전압은 셋 다 끄고, 주차 듀티는 PMS5003 5V 만 끈다.
+static void applyRails(bool on3v3, bool onCo, bool onPms)
 {
-    if (on == s_railOn) return;
-    s_railOn = on;
-    const uint8_t lvl = on ? HIGH : LOW;
-    digitalWrite(PIN_RAIL_SENSOR_3V3, lvl);
-    digitalWrite(PIN_RAIL_PMS_5V, lvl);
-    digitalWrite(PIN_RAIL_CO_5V, lvl);
-    Pms::setPower(on);
-    Co::setPower(on);
+    if (on3v3 != s_railOn) {
+        s_railOn = on3v3;
+        digitalWrite(PIN_RAIL_SENSOR_3V3, on3v3 ? HIGH : LOW);
+    }
+    if (onCo != s_coOn) {
+        s_coOn = onCo;
+        digitalWrite(PIN_RAIL_CO_5V, onCo ? HIGH : LOW);
+        Co::setPower(onCo);
+    }
+    if (onPms != s_5vOn) {
+        s_5vOn = onPms;
+        digitalWrite(PIN_RAIL_PMS_5V, onPms ? HIGH : LOW);
+        Pms::setPower(onPms);
+    }
 }
 
-// 레일은 온도가 정상이고 저전압이 아닐 때만 켠다. 첫 판단 전에는 끈 채로 둔다.
-static void refresh() { applyRails(s_known && s_state == KpAir::Guard::NORMAL && !s_pwrBlock); }
+// 레일은 온도가 정상이고 저전압이 아닐 때만 켠다. 첫 판단 전에는 끈 채로 둔다. PMS 는 듀티가 쉬면 끈다.
+static void refresh()
+{
+    const bool base = s_known && s_state == KpAir::Guard::NORMAL && !s_pwrBlock;
+    applyRails(base, base, base && !s_idle);
+}
+
+// 메인 AIR_IDLE 을 따른다. 받기 전·끊기면 깨어 있는다 — 옛 메인·링크 끊김에도 측정을 잃지 않게.
+static void updateDuty(uint32_t now)
+{
+    const bool fresh = s_vehAt && (uint32_t)(now - s_vehAt) <= VEHICLE_STALE_MS;
+    const bool idle  = fresh && s_veh.airIdle();
+    if (idle == s_idle) return;
+    s_idle   = idle;
+    s_idleAt = now;
+    if (!idle) s_wakes++;
+    Serial.printf("[GUARD] 공기질 듀티 %s\n",
+                  idle ? "쉼 — PMS5003 5V 끔, SCD41 멈춤 (주차, 메인 AIR_IDLE)"
+                       : fresh ? "깨움 — 주행이거나 주차 telemetry 앞 측정(메인)"
+                               : "깨움 — 메인 VEHICLE 끊김(안전 쪽)");
+    refresh();
+}
+
+void onVehicle(const uint8_t *payload, size_t len)
+{
+    KpVehicle::Values v;
+    if (!KpVehicle::decode(payload, len, &v)) return;
+    s_veh   = v;
+    s_vehAt = millis();
+    if (!s_vehAt) s_vehAt = 1;   // 0 은 "받은 적 없음"
+}
 
 static void enter(KpAir::Guard next, float t, uint32_t now)
 {
@@ -65,12 +110,15 @@ void begin()
 {
     // 핀 방향·LOW 는 setup 이 이미 잡았다(외부 풀다운과 같은 상태). 여기서는 상태만 맞춘다.
     s_railOn = false;
+    s_coOn   = false;
+    s_5vOn   = false;
     Pms::setPower(false);
     Co::setPower(false);
 }
 
 void update(uint32_t now, bool valid, float tempC)
 {
+    updateDuty(now);
 #if !GUARD_TEMP_ENABLE
     // 온도 차단 꺼짐 — 첫 호출에서 바로 "정상"으로 확정하고 레일을 켠다(SHT41 첫 값을 기다리지 않는다).
     // SHT41 유무는 계속 본다: LED 센서 고장 표시(noSensor)와 상태 출력용 온도.
@@ -133,6 +181,8 @@ bool         powerBlocked() { return s_pwrBlock; }
 bool         known()     { return s_known; }
 bool         noSensor()  { return s_noSensor; }
 bool         sensorsOn() { return s_railOn; }
+bool         airAwake()  { return s_5vOn; }
+bool         dutyIdle()  { return s_idle; }
 KpAir::Guard state()     { return s_state; }
 
 bool tryConsole(const char *line)
@@ -173,12 +223,22 @@ void printStatus(Stream &io)
               s_noSensor ? " · ⚠️ SHT41 없음(감시 불가)" : "", s_pwrBlock ? " · 저전압 차단(pwr)" : "",
               s_railOn ? "켬" : "끔",
               (unsigned long)((millis() - s_changeAt) / 1000));
+    {
+        const uint32_t now = millis();
+        if (!s_vehAt)
+            io.println("  공기질 듀티  : 깨어 있음 (메인 VEHICLE 받기 전)");
+        else
+            io.printf("  공기질 듀티  : %s (%lus 전 바뀜), PMS 5V %s, 깨운 횟수 %lu — VEHICLE %lus 전 AIR_IDLE=%d\n",
+                      s_idle ? "쉼" : "깨어 있음", (unsigned long)((now - s_idleAt) / 1000), s_5vOn ? "켬" : "끔",
+                      (unsigned long)s_wakes, (unsigned long)((now - s_vehAt) / 1000), s_veh.airIdle() ? 1 : 0);
+    }
     io.printf("  온도         : %.1f°C%s\n", s_lastT, s_simOn ? " (가짜 — guard sim off 로 해제)" : "");
     io.printf("  기준         : >%.0f 차단 / <%.0f 복귀, <%.0f 차단 / >%.0f 복귀\n", GUARD_HOT_OFF_C,
               GUARD_HOT_ON_C, GUARD_COLD_OFF_C, GUARD_COLD_ON_C);
     // 출력 전용 핀은 digitalRead 가 실제 레벨을 못 읽는다(입력 버퍼 꺼짐) — 쓴 값을 보여 준다.
-    io.printf("  GPIO         : %d·%d·%d = %s, 차단 횟수 %lu\n", PIN_RAIL_PMS_5V, PIN_RAIL_SENSOR_3V3,
-              PIN_RAIL_CO_5V, s_railOn ? "HIGH" : "LOW", (unsigned long)s_trips);
+    io.printf("  GPIO         : 3V3 %d = %s · CO %d = %s · PMS %d = %s, 차단 횟수 %lu\n", PIN_RAIL_SENSOR_3V3,
+              s_railOn ? "HIGH" : "LOW", PIN_RAIL_CO_5V, s_coOn ? "HIGH" : "LOW", PIN_RAIL_PMS_5V,
+              s_5vOn ? "HIGH" : "LOW", (unsigned long)s_trips);
 }
 
 } // namespace Guard

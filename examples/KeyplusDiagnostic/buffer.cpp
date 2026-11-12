@@ -4,11 +4,15 @@
  *
  * 섹터 레이아웃 (4096B):
  *   ┌────────────────────────────────────────────┐
- *   │ 헤더 8B │ 레코드 56B × 73 = 4,088B         │  → 4,096B 정확히 채운다(패딩 0)
+ *   │ 헤더 8B │ 레코드 84B × 48 = 4,032B │ 56B 빔 │
  *   └────────────────────────────────────────────┘
- *   헤더: magic u32 (0x4B504246 "KPBF") + sector_seq u32 (단조 증가)
+ *   헤더: magic u32 (0x4B504232 "KPB2") + sector_seq u32 (단조 증가)
  *
- * 절대 인덱스: abs = sector_seq × 73 + slot. sector_seq 가 링 수명 전체에 걸쳐 단조
+ * ⚠️ 레코드 형식이 바뀌면 magic 도 바꾼다. 옛 형식 섹터("KPBF", 56B × 73)는 무효로 보고 버린다 —
+ *    슬롯 크기가 달라 abs 축이 맞지 않는다. 2026-11-12 air 블록 추가 때 바뀌었고, 그 시점 v2 단말은
+ *    벤치뿐이라 옛 백로그를 옮기지 않는다(begin 이 버린 섹터 수를 경고로 남긴다).
+ *
+ * 절대 인덱스: abs = sector_seq × 48 + slot. sector_seq 가 링 수명 전체에 걸쳐 단조
  * 증가하므로 abs 는 "몇 번째로 적재된 레코드인가"와 같고, 쓰기/읽기 커서를 이 한 축으로
  * 비교할 수 있다(물리 섹터 번호는 s_seqOf[] 역인덱스로 찾는다).
  */
@@ -23,7 +27,8 @@
 
 namespace Buf {
 
-static const uint32_t kMagic = 0x4B504246UL;   // "KPBF"
+static const uint32_t kMagic    = 0x4B504232UL;   // "KPB2" — 84B 레코드(air 포함)
+static const uint32_t kMagicOld = 0x4B504246UL;   // "KPBF" — 56B 레코드(2026-11-12 이전). 읽지 않고 버린다
 
 struct SectorHeader {
     uint32_t magic;
@@ -165,12 +170,19 @@ bool begin(Stream &log)
     // ── 섹터 헤더 스캔 → head/tail 복원 (NVS 불필요, 전원 단절에도 위치가 복원된다) ──
     uint32_t maxSeq = 0;
     int      headPhys = -1;
+    uint32_t oldFmt = 0;
     for (uint32_t i = 0; i < s_sectorCount; i++) {
         SectorHeader h = {0, 0};
         if (esp_partition_read(s_part, sectorOffset(i), &h, sizeof(h)) != ESP_OK) continue;
+        if (h.magic == kMagicOld) oldFmt++;
         if (h.magic != kMagic || h.seq == 0 || h.seq == 0xFFFFFFFFUL) { s_seqOf[i] = 0; continue; }
         s_seqOf[i] = h.seq;
         if (h.seq > maxSeq) { maxSeq = h.seq; headPhys = (int)i; }
+    }
+
+    if (oldFmt) {
+        LOGW(log, "[BUF] 옛 레코드 형식(56B, air 없음) 섹터 %lu개 — 읽지 않고 버린다(미전송분 유실)\n",
+             (unsigned long)oldFmt);
     }
 
     if (headPhys < 0) {
@@ -213,7 +225,7 @@ uint32_t count()
 
 bool pushSample(const GpsFix &fix, bool fixFresh, const Obd2::Data &obd,
                 uint32_t seq, const Fast::Aggregate &agg, bool parkedWindow,
-                int rssi, int reg, Stream &log)
+                const KpAir::Values &air, int rssi, int reg, Stream &log)
 {
     if (!s_part) return false;
 
@@ -266,6 +278,22 @@ bool pushSample(const GpsFix &fix, bool fixFresh, const Obd2::Data &obd,
     r.agg_ev_n         = agg.ev_n;
     r.agg_n            = agg.n;
 
+    // 공기질 창 집계 28B. mask==0(서브 없음·링크 끊김·빈 창)이면 전부 0 → 백필에서 air 를 생략한다.
+    r.air_mask     = air.mask;
+    r.air_t10      = air.t10;
+    r.air_rh10     = air.rh10;
+    r.air_p10      = air.p10;
+    r.air_co2      = air.co2;
+    r.air_voc      = air.voc;
+    r.air_nox      = air.nox;
+    r.air_pm1      = air.pm1;
+    r.air_pm25     = air.pm25;
+    r.air_pm10     = air.pm10;
+    r.air_co10     = air.co10;
+    r.air_co10_max = air.co10_max;
+    r.air_pm25_max = air.pm25_max;
+    r.air_guard    = air.guard;
+
     r.crc16 = crc16((const uint8_t *)&r, sizeof(Record) - 2);
 
     // ── 쓰기 위치 확보 ──────────────────────────────────────────────────────
@@ -306,10 +334,30 @@ bool pushSample(const GpsFix &fix, bool fixFresh, const Obd2::Data &obd,
 
     s_writeAbs++;
     s_cStored++;
-    LOGD(log, "[BUF] 적재 #%lu ts=%lu tsrc=%d agg_n=%u (백로그 %lu)\n",
+    LOGD(log, "[BUF] 적재 #%lu ts=%lu tsrc=%d agg_n=%u air=0x%03X (백로그 %lu)\n",
          (unsigned long)s_cStored, (unsigned long)r.ts, (int)(r.flags & F_TSRC_MASK),
-         r.agg_n, (unsigned long)count());
+         r.agg_n, (unsigned)r.air_mask, (unsigned long)count());
     return true;
+}
+
+KpAir::Values airOf(const Record &r)
+{
+    KpAir::Values v = {};
+    v.mask     = r.air_mask;
+    v.t10      = r.air_t10;
+    v.rh10     = r.air_rh10;
+    v.p10      = r.air_p10;
+    v.co2      = r.air_co2;
+    v.voc      = r.air_voc;
+    v.nox      = r.air_nox;
+    v.pm1      = r.air_pm1;
+    v.pm25     = r.air_pm25;
+    v.pm10     = r.air_pm10;
+    v.co10     = r.air_co10;
+    v.co10_max = r.air_co10_max;
+    v.pm25_max = r.air_pm25_max;
+    v.guard    = r.air_guard;
+    return v;
 }
 
 bool peek(Record &out, Stream &log)

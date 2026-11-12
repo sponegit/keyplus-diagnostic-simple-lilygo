@@ -614,6 +614,8 @@ static int      g_prevUv       = -1;     // 직전 서브 저전압 판정(-1 = 
 static uint32_t g_lastAliveAt  = 0;      // 서버 last_seen_at 을 갱신한 마지막 발행(telemetry·status·heartbeat)
 static bool     g_gnssWant     = true;   // 서브 GNSS 를 켜 둘 것인가(VEHICLE GNSS_ON, 3단계)
 static bool     g_gnssPrevFix  = false;  // 직전 틱 g_gpsFixNow — 주차 중 깨운 GNSS 의 첫 fix 엣지
+static bool     g_airWant      = true;   // 서브 공기질 듀티를 깨워 둘 것인가(VEHICLE AIR_IDLE 의 반대, 2026-11-12)
+static uint32_t g_airWakeAt    = 0;      // 주차 중 마지막으로 깨운 시각 — 깨운 뒤 AIR_READY_MS 는 PMS·SCD41 안정화
 
 static uint32_t teleIntervalMs() { return g_driveMode ? Cfg::telemetryIntervalMs() : TELEMETRY_PARKED_MS; }
 
@@ -658,6 +660,30 @@ static void updateTeleMode(uint32_t now)
         g_prevUv = uv;
     }
 #endif
+#if FEATURE_SUBLINK
+    // ── 서브 공기질 주차 듀티 (2026-11-12) — VEHICLE 프레임 AIR_IDLE 로 서브에 전한다 ──
+    // 주행 = 항상 깨움. 주차 = 다음 표본(접속 중이면 주차 telemetry, 미접속이면 오프라인 적재)이
+    // AIR_WAKE_LEAD_MS 안일 때만 깨움 → PMS5003 5V 와 SCD41 이 그 직전에만 돈다(CO·SHT41·SGP41 은 상시).
+    // ⚠️ GNSS 와 달리 미접속 때도 오프라인 적재 시각에 맞춘다 — 지하주차장처럼 며칠씩 음영이면
+    //    센서를 계속 켜 두는 쪽이 배터리를 더 먹는다. 적재 시각이 0·과거면(곧 적재) 깨운다.
+    {
+#if FEATURE_OFFLINE_BUF
+        const uint32_t sampleAt = Mqtt::isConnected(modem) ? g_nextPubAt : g_nextLogAt;
+#else
+        const uint32_t sampleAt = g_nextPubAt;
+#endif
+        const bool airWant = g_driveMode || sampleAt == 0 ||
+                             (int32_t)(sampleAt - now) <= (int32_t)AIR_WAKE_LEAD_MS;
+        if (airWant != g_airWant) {
+            g_airWant = airWant;
+            if (airWant) g_airWakeAt = now ? now : 1;
+            if (!g_driveMode)
+                LOGI(SerialMon, "[AIR] 서브 공기질 %s — %s\n", airWant ? "깨움 요청" : "쉼 요청",
+                     airWant ? "주차 표본 앞 측정" : "주차 중 표본 남김");
+        }
+        if (g_driveMode) g_airWakeAt = 0;   // 주행 중엔 계속 켜져 있다 — 안정화 대기 없음
+    }
+#endif
 #if USE_SUB_GNSS
     // ── 서브 GNSS 주차 듀티 (위치 주기 3단계) — VEHICLE 프레임의 GNSS_ON 으로 서브에 전한다 ──
     // 주행 = 항상 켬. 주차 = 다음 주차 telemetry 가 GNSS_WAKE_LEAD_MS 안일 때만 켬.
@@ -671,10 +697,15 @@ static void updateTeleMode(uint32_t now)
     }
     // 주차 중 깨운 GNSS 가 fix 를 얻으면 그 위치로 주차 telemetry 를 바로 낸다 — 발행 뒤 다음 주기가
     // 5분 뒤로 밀려 want 가 꺼지고, 서브가 GNSS 를 끈다. fix 를 못 얻으면 원래 시각에 위치 없이 나간다.
+    // ⚠️ 공기질 듀티(2026-11-12)도 같은 telemetry 에 실려야 한다 — 깨운 공기질이 안정되기 전(AIR_READY_MS)으로는
+    //    당기지 않는다. 아직 안 깨웠으면 깨울 예정 시각(다음 telemetry − AIR_WAKE_LEAD_MS) 기준이다.
     if (!g_driveMode && want && g_gpsFixNow && !g_gnssPrevFix) {
         uint32_t target = now + GNSS_FIX_SETTLE_MS;
+        const uint32_t airReady = (g_airWant && g_airWakeAt ? g_airWakeAt : g_nextPubAt - AIR_WAKE_LEAD_MS)
+                                  + AIR_READY_MS;
+        if ((int32_t)(airReady - target) > 0) target = airReady;
         if ((int32_t)(target - g_nextPubAt) < 0) {
-            LOGI(SerialMon, "[GNSS] 주차 중 측위 — %lus 뒤 telemetry\n", (unsigned long)(GNSS_FIX_SETTLE_MS / 1000UL));
+            LOGI(SerialMon, "[GNSS] 주차 중 측위 — %lus 뒤 telemetry\n", (unsigned long)((target - now) / 1000UL));
             pullTelemetryForward(target);
         }
     }
@@ -682,14 +713,19 @@ static void updateTeleMode(uint32_t now)
 #endif
 }
 
-#if USE_SUB_GNSS
-// VEHICLE 프레임 — 바뀌면 즉시, 아니면 VEHICLE_PUB_MS 마다(서브는 15초 못 받으면 GNSS 를 켜 둔다).
+#if FEATURE_SUBLINK
+// VEHICLE 프레임 — 바뀌면 즉시, 아니면 VEHICLE_PUB_MS 마다(서브는 15초 못 받으면 GNSS·공기질을 켜 둔다).
 // 링크가 내려가 있으면 보내지 못하고 다음 틱에 다시 시도한다(sendFrame 이 바로 false).
 static void sendVehicle(uint32_t now)
 {
     static uint8_t  s_lastFlags = 0xFF;
     static uint32_t s_lastAt    = 0;
-    const KpVehicle::Values v = KpVehicle::make(Ign::on(), g_driveMode, g_gnssWant);
+#if USE_SUB_GNSS
+    const bool gnss = g_gnssWant;
+#else
+    const bool gnss = true;   // 내장 GPS 빌드 — 서브 GNSS 는 쓰지 않지만 끄라고 할 이유도 없다
+#endif
+    const KpVehicle::Values v = KpVehicle::make(Ign::on(), g_driveMode, gnss, /*airIdle=*/!g_airWant);
     if (v.flags == s_lastFlags && (uint32_t)(now - s_lastAt) < VEHICLE_PUB_MS) return;
     uint8_t buf[KPVEHICLE_PAYLOAD_LEN];
     const size_t n = KpVehicle::encode(v, buf, sizeof(buf));
@@ -1971,8 +2007,8 @@ void loop()
 #if FEATURE_LTE
     // 위치·시동·저전압이 갱신된 뒤에 본다 — 주행/주차 주기와 즉시 발행 사유.
     updateTeleMode(now);
-#if USE_SUB_GNSS
-    sendVehicle(now);   // 시동·주행·GNSS 요청을 서브에 (3단계)
+#if FEATURE_SUBLINK
+    sendVehicle(now);   // 시동·주행·GNSS 요청·공기질 듀티를 서브에 (3단계 · 2026-11-12)
 #endif
 #endif
 
@@ -2143,7 +2179,7 @@ void loop()
     if (!connected) {
 #if FEATURE_OFFLINE_BUF
         // ── 오프라인 적재 ────────────────────────────────────────────────────
-        // 주행 30초 / 정차 120초. 정차 창이 길수록 주차 보관 시간이 늘어난다(3.2일).
+        // 주행 30초 / 정차 120초. 정차 창이 길수록 주차 보관 시간이 늘어난다(2.1일, 84B 레코드).
         if (Buf::available() && (g_nextLogAt == 0 || (int32_t)(now - g_nextLogAt) >= 0)) {
             const bool moving = vehicleMoving(g_obd);
             g_nextLogAt = now + (moving ? OFFLINE_LOG_MS_DRIVING : OFFLINE_LOG_MS_PARKED);
@@ -2164,8 +2200,12 @@ void loop()
             //    조용히 빠진다(fast.h 헤더 주석).
             agg = Fast::takeAggregate();
 #endif
+            KpAir::Values air = {};
+#if FEATURE_SUBLINK
+            Sublink::airTake(air);   // 이 적재 창의 공기질 평균·최대(없으면 mask 0 → 백필에서 생략)
+#endif
             Buf::pushSample(g_lastFix, g_gpsFixNow, g_obd, g_seq, agg,
-                            /*parkedWindow=*/!moving,
+                            /*parkedWindow=*/!moving, air,
                             Mqtt::lastRssi(), Mqtt::lastReg(), SerialMon);
         }
 #endif
@@ -2305,7 +2345,7 @@ void loop()
         // (device_id, ts) PK 에 부딪혀 사라지거나 격리될 뿐이다(2026-11-11, 17시간 유실).
         // → 실시간 발행을 보류하고 오프라인 경로와 똑같이 링에 적재한다. 레코드는 ts=0 +
         //   up_s 로 들어가고, 시각을 얻으면 resolveTs 가 같은 부팅 안에서 복원해 백필로 나간다.
-        //   (백필 레코드에는 pwr·air 가 없다 — NTP 재시도로 이 구간을 1~2분으로 줄인다.)
+        //   (백필 레코드에는 pwr 가 없다 — NTP 재시도로 이 구간을 1~2분으로 줄인다. air 는 2026-11-12 부터 실린다.)
         const bool clockOk = Mqtt::ensureClock(modem, g_lastFix, g_gpsFixNow);
         bool pubOk = false;
 #if FEATURE_OFFLINE_BUF
@@ -2314,8 +2354,12 @@ void loop()
 #if FEATURE_FAST_SAMPLE
             agg = Fast::takeAggregate();
 #endif
+            KpAir::Values air = {};
+#if FEATURE_SUBLINK
+            Sublink::airTake(air);
+#endif
             Buf::pushSample(g_lastFix, g_gpsFixNow, g_obd, g_seq, agg,
-                            /*parkedWindow=*/!vehicleMoving(g_obd),
+                            /*parkedWindow=*/!vehicleMoving(g_obd), air,
                             Mqtt::lastRssi(), Mqtt::lastReg(), SerialMon);
             if (++g_rtNoClock % 10 == 1) {
                 LOGW(SerialMon, "[CLK] 시각 미확보 — 실시간 발행 보류, 링 적재(누적 %lu건, 백로그 %lu건)\n",

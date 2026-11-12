@@ -426,8 +426,8 @@ bool publishTelemetry(TinyGsm &modem, const GpsFix &fix, bool fixFresh, const Ob
     if (ts) { s_lastTs = ts; s_lastTsUp = up_s; }
 
     // 계약 스키마(§3)대로 손 조립. gps는 fix일 때만 좌표 포함.
-    // 크기: v1 최대(meta·obd 전부·VIN) ≈ 500B + air 최대 KPAIR_JSON_MAX(160) + pwr 48 + 여유.
-    char buf[832];
+    // 크기: v1 최대(meta·obd 전부·VIN) ≈ 500B + air 최대 KPAIR_JSON_MAX(192) + pwr 48 + 여유.
+    char buf[864];
     int n = snprintf(buf, sizeof(buf),
         "{\"ts\":%u,\"seq\":%u,\"gps\":{\"fix\":%s",
         ts, seq, fix.valid ? "true" : "false");
@@ -470,10 +470,12 @@ bool publishTelemetry(TinyGsm &modem, const GpsFix &fix, bool fixFresh, const Ob
     }
 
 #if FEATURE_SUBLINK
-    // 서브 공기질(작업서 S8) — 최근에 받았고 담긴 값이 있을 때만. 항목별 생략은 서브가 한다.
+    // 서브 공기질(작업서 S8) — 이 창의 평균 + co_max·pm25_max(KpAir::Window). 창이 비었거나 링크가
+    // 끊겼으면 키째 생략. 항목별 생략은 서브가 한다. 창은 여기서 비운다(발행 실패해도 — 다음 창과 섞지 않는다).
     if (n > 0 && n < (int)sizeof(buf) - 8) {
+        KpAir::Values av;
         char air[KPAIR_JSON_MAX];
-        if (Sublink::airJson(air, sizeof(air)))
+        if (Sublink::airTake(av) && KpAir::formatJson(av, air, sizeof(air)))
             n += snprintf(buf + n, sizeof(buf) - n, ",\"air\":%s", air);
     }
     // 서브 전원(작업서 S6) — 차량 쪽 전압·장치 전류·저전압 판정. 위 sys.vbat_mv(모뎀 레일)와 다른 값이다.
@@ -545,7 +547,8 @@ bool publishBackfill(TinyGsm &modem, const Buf::Record &rec, Stream &log)
     const bool  hasFix = (rec.flags & Buf::F_GPS_FIX) != 0;
     const bool  hasPos = (rec.lat_e6 != 0 || rec.lon_e6 != 0);
 
-    char buf[640];
+    // 크기: 기존 최대 ≈ 600B + air 최대 KPAIR_JSON_MAX(192).
+    char buf[832];
     int n = snprintf(buf, sizeof(buf),
         "{\"ts\":%u,\"seq\":%u,\"gps\":{\"fix\":%s",
         rec.ts, (unsigned)rec.seq, hasFix ? "true" : "false");
@@ -589,6 +592,12 @@ bool publishBackfill(TinyGsm &modem, const Buf::Record &rec, Stream &log)
             (unsigned)rec.agg_rpm_max_x100 * 100,
             rec.agg_accel_x10 / 10.0, rec.agg_decel_x10 / 10.0,
             rec.agg_ev, rec.agg_ev_n);
+    }
+    // 공기질 창 집계(2026-11-12) — 실시간 telemetry air{} 와 같은 형식. 적재 때 창이 비었으면 생략.
+    if (rec.air_mask && n > 0 && n < (int)sizeof(buf) - 8) {
+        char air[KPAIR_JSON_MAX];
+        if (KpAir::formatJson(Buf::airOf(rec), air, sizeof(air)))
+            n += snprintf(buf + n, sizeof(buf) - n, ",\"air\":%s", air);
     }
     n += snprintf(buf + n, sizeof(buf) - n, "}");
 

@@ -130,7 +130,7 @@ bool get(uint16_t *pm1, uint16_t *pm25, uint16_t *pm10)
 void printValues(Stream &io)
 {
     if (s_off)
-        io.println("[AIR] PMS5003 꺼짐 (온도 가드 — guard)");
+        io.println("[AIR] PMS5003 꺼짐 (온도 가드·주차 듀티 — guard)");
     else if (s_sleeping)
         io.println("[AIR] PMS5003 슬립 중 (pms wake)");
     else if (s_ok)
@@ -148,7 +148,7 @@ bool tryConsole(const char *line)
         return true;
     }
     if (s_off && (!strcmp(line, "pms sleep") || !strcmp(line, "pms wake"))) {
-        Serial.println("[PMS] 레일이 꺼져 있다(온도 가드) — guard 로 확인");
+        Serial.println("[PMS] 레일이 꺼져 있다(온도 가드·주차 듀티) — guard 로 확인");
         return true;
     }
     if (!strcmp(line, "pms sleep")) {
@@ -167,7 +167,7 @@ bool tryConsole(const char *line)
 void printStatus(Stream &io)
 {
     io.println("[PMS] PMS5003");
-    io.printf("  state        : %s\n", s_off ? "꺼짐(가드)" : s_sleeping ? "슬립" : warming() ? "안정화 중" :
+    io.printf("  state        : %s\n", s_off ? "꺼짐(가드·주차 듀티)" : s_sleeping ? "슬립" : warming() ? "안정화 중" :
                                        s_ok ? "측정" : "수신 없음");
     if (s_ok)
         io.printf("  last         : PM2.5 %u µg/m³, 입자 0.3µm↑ %u · 2.5µm↑ %u /0.1L (%lums 전)\n",

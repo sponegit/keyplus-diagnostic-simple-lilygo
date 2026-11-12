@@ -20,6 +20,7 @@
 #pragma once
 
 #include <Arduino.h>
+#include <KpAir.h>
 #include <KpGnss.h>
 
 namespace Sublink {
@@ -41,9 +42,15 @@ bool sendFrame(uint8_t type, const uint8_t *payload, uint16_t len);
 void setBaud(uint32_t baud);
 void setLogMuted(bool muted);
 
-// 서브 공기질(AIR, 작업서 S8) telemetry 조각 — {"t":..,...} 를 out 에 쓰고 길이를 돌려준다.
-// 받은 지 SUBLINK_AIR_STALE_MS 가 지났거나 담긴 값이 없으면 0(호출자가 air 키째 생략).
+// 서브 공기질(AIR, 작업서 S8) 마지막 프레임 — {"t":..,...} 를 out 에 쓰고 길이를 돌려준다(콘솔용).
+// 받은 지 SUBLINK_AIR_STALE_MS 가 지났거나 담긴 값이 없으면 0.
 size_t airJson(char *out, size_t cap);
+
+// telemetry 창 집계(KpAir::Window) — 지난 airTake 이후 받은 AIR 의 항목별 평균 + CO·PM2.5 최대.
+// 가져가면 창이 비워진다. 실시간 telemetry 와 오프라인 적재가 창마다 한 번씩 부른다.
+// 창에 프레임이 없거나 마지막 프레임이 SUBLINK_AIR_STALE_MS 넘게 묵었으면 false(out.mask = 0) —
+// 링크가 끊긴 창에 옛 값을 지금 시각으로 싣지 않는다.
+bool airTake(KpAir::Values &out);
 
 // 서브 전원(POWER, 작업서 S6) telemetry 조각 — {"v":..,"i":..,"uv":..}. 오래됐거나 받은 적 없으면 0.
 size_t pwrJson(char *out, size_t cap);

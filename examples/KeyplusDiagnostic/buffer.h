@@ -17,8 +17,9 @@
  *    정한 128KB 가 상한이다. 그래도 섹터 수를 컴파일 상수로 박지 않고 `part->size` 에서
  *    매 부팅 계산한다 — 차후 파티션을 재설계해도 **같은 펌웨어가 두 종류 단말을 모두 지원**한다.
  *
- * 용량: 56B × 73레코드/섹터 × 32섹터 = 2,336건
- *       → 주행(30초 주기) 19.5시간 / 정차(120초 주기) 77.9시간(3.2일)
+ * 용량: 84B × 48레코드/섹터 × 32섹터 = 1,536건
+ *       → 주행(30초 주기) 12.8시간 / 정차(120초 주기) 51.2시간(2.1일)
+ *       (2026-11-12 air 블록 28B 추가로 56B → 84B. 이전 2,336건 = 19.5시간 / 3.2일)
  *
  * 계약(SSOT): packages/shared/src/protocol/telemetry.ts — 백필은 기존 telemetry 스키마
  *   그대로 발행하고 `sys.bf=1` + 과거 `ts` 만 다르다(**서버 변경 없음**).
@@ -27,14 +28,16 @@
 #pragma once
 
 #include <Arduino.h>
+#include "config.h"   // BUF_RECORD_SIZE
 #include "gps.h"
 #include "obd2.h"
 #include "fast.h"
+#include <KpAir.h>
 
 namespace Buf {
 
 /**
- * 오프라인 레코드 — 56바이트 고정, 리틀엔디언.
+ * 오프라인 레코드 — 84바이트 고정, 리틀엔디언.
  * 넓은 형부터 배치해 모든 필드가 자연 정렬된다(u32는 4정렬, u16은 2정렬).
  * esp_partition_write 도 4바이트 정렬을 요구하므로 섹터 헤더 8B + 56B×n 은 항상 4정렬이다.
  *
@@ -73,9 +76,25 @@ struct Record {
     uint8_t  agg_ev;        // 51  b0 급가속 b1 급감속 b2 과속 b3 공회전
     uint8_t  agg_ev_n;      // 52
     uint8_t  agg_n;         // 53  창에서 실제 수집된 1Hz 샘플 수(0 = agg 생략)
-    uint16_t crc16;         // 54  앞 54B CRC-16/CCITT
+    uint16_t air_mask;      // 54  ── 이하 공기질 창 집계 28B (KpAir::Values, Sublink::airTake). 0 = air 생략
+    int16_t  air_t10;       // 56  0.1 °C
+    uint16_t air_rh10;      // 58  0.1 %RH
+    uint16_t air_p10;       // 60  0.1 hPa
+    uint16_t air_co2;       // 62  ppm
+    uint16_t air_voc;       // 64  지수
+    uint16_t air_nox;       // 66  지수
+    uint16_t air_pm1;       // 68  µg/m³
+    uint16_t air_pm25;      // 70
+    uint16_t air_pm10;      // 72
+    uint16_t air_co10;      // 74  0.1 ppm
+    uint16_t air_co10_max;  // 76  MAX 비트일 때
+    uint16_t air_pm25_max;  // 78  MAX 비트일 때
+    uint8_t  air_guard;     // 80
+    uint8_t  rsv;           // 81  0
+    uint16_t crc16;         // 82  앞 82B CRC-16/CCITT
 };
-static_assert(sizeof(Record) == 56, "오프라인 레코드는 56B 고정이어야 한다(패딩 발생)");
+static_assert(sizeof(Record) == 84, "오프라인 레코드는 84B 고정이어야 한다(패딩 발생)");
+static_assert(sizeof(Record) == BUF_RECORD_SIZE, "config.h BUF_RECORD_SIZE 와 Record 가 다르다");
 
 // Record.flags 비트
 enum Flag : uint8_t {
@@ -102,10 +121,14 @@ bool available();          // begin 성공 여부
  * 현재 상태를 1건 적재. 오프라인 경로(미접속)에서만 부른다.
  * agg 는 Fast::takeAggregate() 결과 — agg.n==0 이면 백필에서 agg 오브젝트를 생략한다.
  * parkedWindow 는 이 창이 정차(120초) 창이었는지 — flags b4 로 저장돼 서버가 duration_s 를 채운다.
+ * air 는 Sublink::airTake() 결과(창 평균 + CO·PM2.5 최대) — mask==0 이면 백필에서 air 를 생략한다.
  */
 bool pushSample(const GpsFix &fix, bool fixFresh, const Obd2::Data &obd,
                 uint32_t seq, const Fast::Aggregate &agg, bool parkedWindow,
-                int rssi, int reg, Stream &log);
+                const KpAir::Values &air, int rssi, int reg, Stream &log);
+
+// 레코드의 air 블록 → KpAir::Values (백필 JSON 용). mask==0 이면 air 없음.
+KpAir::Values airOf(const Record &r);
 
 // 미전송 백로그 건수.
 uint32_t count();

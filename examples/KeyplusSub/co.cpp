@@ -126,7 +126,7 @@ bool fault() { return !s_off && s_fault; }
 void printValues(Stream &io)
 {
     if (s_off)
-        io.println("[AIR] ZE15-CO 꺼짐 (온도 가드 — guard)");
+        io.println("[AIR] ZE15-CO 꺼짐 (온도 가드·주차 듀티 — guard)");
     else if (s_ok)
         io.printf("[AIR] ZE15-CO %u.%u ppm%s\n", (unsigned)(s_co10 / 10), (unsigned)(s_co10 % 10),
                   warming() ? "  (예열 중)" : "");
@@ -219,7 +219,7 @@ bool tryConsole(const char *line)
 void printStatus(Stream &io)
 {
     io.println("[CO] ZE15-CO");
-    io.printf("  state        : %s\n", s_off ? "꺼짐(가드)" : warming() ? "예열 중" : s_ok ? "측정" :
+    io.printf("  state        : %s\n", s_off ? "꺼짐(가드·주차 듀티)" : warming() ? "예열 중" : s_ok ? "측정" :
                                        s_fault ? "고장 비트" : "수신 없음");
     if (s_ok)
         io.printf("  last         : %u.%u ppm, 범위 %u ppm (%lums 전)\n", (unsigned)(s_co10 / 10),

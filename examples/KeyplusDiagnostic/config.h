@@ -669,17 +669,17 @@
 #define NTP_RETRY_MS                (60000UL)
 
 // --- 오프라인 적재 ----------------------------------------------------------
-// 주행 30초 → 19.5시간 / 정차 120초 → 77.9시간(3.2일) 보관.
+// 주행 30초 → 12.8시간 / 정차 120초 → 51.2시간(2.1일) 보관(84B 레코드, 2026-11-12 air 포함).
 #define OFFLINE_LOG_MS_DRIVING      (30000UL)
 #define OFFLINE_LOG_MS_PARKED       (120000UL)
 
 // ⚠️ SPIFFS 로 마운트하지 않는다 — esp_partition_* raw 전용(buffer.h 헤더 주석).
 #define BUF_PARTITION_LABEL         "spiffs"
-#define BUF_RECORD_SIZE             (56)
+#define BUF_RECORD_SIZE             (84)        // 2026-11-12 air 블록 28B 추가(이전 56)
 #define BUF_SECTOR_SIZE             (4096)
 #define BUF_SECTOR_HEADER_SIZE      (8)         // magic u32 + sector_seq u32
-// (4096 − 8헤더) / 56 = 73. 실제로는 4096 − 8 = 4088 = 56×73 정확히 나누어떨어진다.
-#define BUF_RECS_PER_SECTOR         (73)
+// (4096 − 8헤더) / 84 = 48 (나머지 56B 는 비워 둔다).
+#define BUF_RECS_PER_SECTOR         (48)
 // 섹터 수는 런타임에 part->size 에서 계산한다(파티션 재설계 대비). 이 값은 정적 배열
 // 상한일 뿐이며, 현 파티션 표(128KB)에서는 32 가 나온다. 1,408KB 재설계안(352섹터)까지 수용.
 #define BUF_MAX_SECTORS             (352)
@@ -723,7 +723,18 @@
 // 선행 시간은 콜드 스타트 TTFF(모듈 백업 전원이 없으면 수십 초)를 덮도록 넉넉히 둔다.
 #define GNSS_WAKE_LEAD_MS           (120000UL)  // 주차 5분 중 최대 2분 켬
 #define GNSS_FIX_SETTLE_MS          (3000UL)    // 첫 fix 직후 정확도가 안정될 시간
-#define VEHICLE_PUB_MS              (5000UL)    // VEHICLE 주기 송신(바뀌면 즉시). 서브는 15초 못 받으면 켜 둔다
+#define VEHICLE_PUB_MS              (5000UL)
+
+// --- 서브 공기질 주차 듀티 (2026-11-12) — 메인이 VEHICLE AIR_IDLE 로 쉬게 하고 깨운다 -------------
+// 주행 중엔 항상 깨움. 주차 중엔 다음 표본(주차 telemetry, 미접속이면 오프라인 적재)이 AIR_WAKE_LEAD_MS
+// 안으로 다가오면 깨운다 → PMS5003(팬 ~100mA@5V)와 SCD41 이 5분 중 1분만 돈다(오프라인 2분 중 1분).
+// 깨운 뒤 PMS 30초 안정화·SCD41 첫 값 약 20초 → AIR_READY_MS 전에는 GNSS fix 로도
+// 주차 telemetry 를 당기지 않는다. SHT41·SGP41·BMP280 은 쉬지 않는다(KpVehicle.h).
+#define AIR_WAKE_LEAD_MS            (60000UL)
+#define AIR_READY_MS                (45000UL)
+#if (AIR_READY_MS >= AIR_WAKE_LEAD_MS)
+#error "AIR_READY_MS 는 AIR_WAKE_LEAD_MS 보다 짧아야 한다 — 표본 시각 전에 안정화가 끝나야 한다"
+#endif    // VEHICLE 주기 송신(바뀌면 즉시). 서브는 15초 못 받으면 켜 둔다
 
 // --- 백필 페이싱 (실시간 발행이 절대 우선) ----------------------------------
 #define BACKFILL_START_DELAY_MS     (15000UL)  // 접속 후 백필 시작까지

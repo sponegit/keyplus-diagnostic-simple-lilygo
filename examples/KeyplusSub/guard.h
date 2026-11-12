@@ -15,6 +15,12 @@
  * 운전 중 SHT41 이 응답하지 않으면 마지막 상태를 유지한다.
  * 저전압 경고·소프트 차단(pwr.cpp, 작업서 S6) 중에도 레일을 끈다 — 온도 판단과 별개의 사유로 겹쳐 둔다.
  *
+ * 주차 공기질 듀티(2026-11-12): 메인 VEHICLE 의 AIR_IDLE 이면 PMS5003 5V 레일(GPIO39)만 끈다.
+ *   ZE15-CO 5V 는 켜 둔다(작업서 S8 "주차 중에도 ON" — 전기화학 셀 예열 반복을 피하고 주차 중 CO 를 놓치지 않게).
+ *   3.3V 레일(SCD41·SGP41·BMP280)도 켜 둔다 — SGP41 지수 학습이 1초 연속 표본을 전제하고, SCD41 은
+ *   air.cpp 가 주기 측정만 멈춘다. VEHICLE 을 받기 전·VEHICLE_STALE_MS 넘게 못 받으면 쉬지 않는다(안전 쪽).
+ *   깨울 시점은 메인이 정한다(KpVehicle.h) — 메인이 다음 주차 telemetry AIR_WAKE_LEAD_MS 전에 AIR_IDLE 을 내린다.
+ *
  * 레일을 끄고 켤 때 센서 쪽 처리(재탐색·SGP41 컨디셔닝·SCD41 첫 값 버림·PMS 30초 안정화)는
  * air.cpp·pms.cpp 가 sensorsOn() 을 보고 한다.
  *
@@ -41,7 +47,12 @@ bool          powerBlocked();
 
 bool          known();       // 첫 판단을 내렸나
 bool          noSensor();    // 부팅 때 SHT41 이 없어 감시 없이 켰다(LED 센서 고장)
-bool          sensorsOn();   // 센서 레일이 켜져 있나
+bool          sensorsOn();   // 3.3V 센서 레일(SCD41·SGP41·BMP280)이 켜져 있나
+bool          airAwake();    // PMS5003 레일이 켜져 있고 SCD41 을 돌려도 되나 — 레일 ON + 듀티 깨어 있음
+bool          dutyIdle();    // 메인 AIR_IDLE 로 쉬는 중
+
+// 메인 VEHICLE 프레임(link.cpp onFrame) — 주차 공기질 듀티의 근거. 적용은 update() 에서.
+void          onVehicle(const uint8_t *payload, size_t len);
 KpAir::Guard  state();
 
 bool tryConsole(const char *line);

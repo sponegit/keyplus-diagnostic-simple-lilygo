@@ -71,7 +71,7 @@
 #define GNSS_FIX_STALE_MS           3000UL   // 위치 갱신이 이보다 오래되면 fix 없음(1초 주기 × 3)
 #define GNSS_RX_STALE_MS            3000UL   // 바이트가 이 시간 없으면 "끊김"
 #define GNSS_PUB_MS                 1000UL   // GNSS 프레임 주기(모듈 NMEA 1초 주기와 같다). fix 를 얻거나 잃으면 바로 보낸다
-#define VEHICLE_STALE_MS            15000UL  // 메인 VEHICLE(5초 주기)을 이만큼 못 받으면 GNSS 를 켜 둔다(안전 쪽)
+#define VEHICLE_STALE_MS            15000UL  // 메인 VEHICLE(5초 주기)을 이만큼 못 받으면 GNSS·공기질 듀티를 켜 둔다(안전 쪽)
 #define PIN_PMS_RX                  18       // PMS5003 — UART2
 #define PIN_PMS_TX                  21
 #define PIN_PMS_SET                 47       // HIGH·미연결 = 동작, LOW = 슬립
