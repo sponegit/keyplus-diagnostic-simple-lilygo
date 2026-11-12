@@ -2085,6 +2085,11 @@ void loop()
     // ⚠️ 접속 분기 **밖**이다 — 오프라인에서도 창 집계를 만들어야 하고, 접속 상태와 무관하다.
     //    CAN(TWAI)은 모뎀과 별개 버스라 이 폴이 모뎀에 주는 부담은 0 이다.
     //    Cfg::fastMs()==0 이면 즉시 반환한다(원격 비활성화).
+#if (FEATURE_GPS || FEATURE_LTE)
+    // 1Hz 샘플에 그 순간 위치를 싣는다(위치 주기 2단계). 측위 중일 때만 — 놓친 동안의 캐시 좌표를
+    // 싣으면 서버가 "그 초에 거기 있었다"로 읽는다(g_lastFix 는 마지막 값을 유지하는 캐시다).
+    Fast::notePosition(g_gpsFixNow && g_lastFix.valid, g_lastFix.lat, g_lastFix.lon);
+#endif
     Fast::tick(now, g_obd, SerialMon);
 #endif
 

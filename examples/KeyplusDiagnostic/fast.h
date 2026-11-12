@@ -39,6 +39,8 @@ struct Sample {
     uint16_t rpm;   // ⚠️ miss & MISS_RPM 이면 무의미
     uint8_t  thr;   // % — ⚠️ miss & MISS_THR 이면 무의미
     uint8_t  miss;  // 결측 비트(MissBit). 0 = 전 필드 실측
+    int32_t  lat_e6;   // 그 초의 GNSS 위치(도 × 1e6) — ⚠️ miss & MISS_POS 이면 무의미(위치 주기 2단계)
+    int32_t  lon_e6;
 };
 
 // Sample.miss 비트 — 해당 PID 가 이 초에 응답하지 않았다는 뜻.
@@ -46,7 +48,14 @@ struct Sample {
 enum MissBit : uint8_t {
     MISS_RPM = 1 << 0,
     MISS_THR = 1 << 1,
+    MISS_POS = 1 << 2,   // 그 초에 GNSS fix 가 없었다(notePosition 이 fix=false)
 };
+
+/**
+ * 지금 위치를 알린다 — loop 가 매 틱 tick() 앞에서 부른다(v2 서브 GNSS · 내장 GPS 공통).
+ * 샘플은 그 순간의 마지막 값을 싣는다(GNSS 1초 주기라 최대 약 1초 묵는다). fix=false 면 MISS_POS.
+ */
+void notePosition(bool fix, float lat, float lon);
 
 /**
  * 창 집계 — 오프라인 레코드의 agg_* 8바이트로 그대로 들어간다(buffer.h Record 참조).

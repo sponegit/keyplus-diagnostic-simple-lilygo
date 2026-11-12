@@ -730,10 +730,11 @@
 #define FAST_SAMPLE_MS              (1000UL)   // 1Hz — fast_ms 활성화 시 권장값
 #define CFG_FAST_MS_MIN             (1000UL)   // 1Hz 보다 빠르게는 올리지 않는다(폴 듀티·발행량)
 #define CFG_FAST_MS_MAX             (10000UL)  // 0.1Hz — 이보다 느리면 고빈도의 의미가 없다
-#define FAST_WINDOW_MAX             (64)       // 창 최대 원본 샘플 수 (RAM 384B)
+#define FAST_WINDOW_MAX             (64)       // 창 최대 원본 샘플 수 (RAM 1KB — 샘플 16B, 위치 포함)
 #define FAST_PUBLISH_MIN_N          (2)        // 이 미만이면 발행 생략
 #define FAST_PUBLISH_DELAY_MS       (1000UL)   // 실시간 telemetry 발행 후 이만큼 뒤 발행
-#define FAST_PAYLOAD_BUF            (2048)     // n=64 에서 약 1.2KB (모뎀 상한 10,240B)
+// n=30 위치 포함 약 1.0KB, n=64 위치 포함 약 2.5KB (모뎀 상한 10,240B). publishFast 의 static 버퍼.
+#define FAST_PAYLOAD_BUF            (4096)
 #define FAST_MISS_ABORT             (2)        // 연속 무응답 시 고빈도 폴 중단
 // 슬롯 유실(폴 실패·차속 미응답) 시 재시도 간격(0.3.9). 격자를 **당기기만** 하므로
 // 다음 격자를 넘지 않고, 실패해도 원래 격자로 복귀한다. 반올림 초가 흔들리지 않도록

@@ -13,6 +13,7 @@
 #include "cfg.h"
 #include "clk.h"
 #include "log.h"
+#include <stdarg.h>
 #if FEATURE_SUBLINK
 #include <KpAir.h>
 #include <KpPower.h>
@@ -603,6 +604,20 @@ bool publishBackfill(TinyGsm &modem, const Buf::Record &rec, Stream &log)
     return ok;
 }
 
+// 고정 버퍼에 이어 쓰기 — 넘친 뒤에는 더 쓰지 않는다. 반환 = 새 길이(넘쳤으면 cap 이상).
+// ⚠️ 종전에는 `p += snprintf(buf + p, sizeof(buf) - p, …)` 를 그대로 이어 붙여, 한 번 넘친 뒤의
+//    호출이 `sizeof(buf) - p`(음수 → size_t 로 거대값)로 버퍼 밖에 썼다. 위치를 실어 창이
+//    커지면서(n=64 약 2.5KB) 닿을 수 있는 경로가 됐다.
+static int appendf(char *buf, size_t cap, int p, const char *fmt, ...)
+{
+    if (p < 0 || (size_t)p >= cap) return p;
+    va_list ap;
+    va_start(ap, fmt);
+    const int w = vsnprintf(buf + p, cap - (size_t)p, fmt, ap);
+    va_end(ap);
+    return w < 0 ? (int)cap : p + w;
+}
+
 bool publishFast(TinyGsm &modem, const Fast::Sample *win, int n, uint32_t t0, Stream &log)
 {
     if (!s_connected || !win || n <= 0) return false;
@@ -614,43 +629,58 @@ bool publishFast(TinyGsm &modem, const Fast::Sample *win, int n, uint32_t t0, St
     }
 
     // 페이로드는 평탄(flat) 형태다 — 단말이 snprintf 로 손조립하므로 중첩을 피한다.
-    // n=30 기준 약 545B, n=64 기준 약 1.2KB (모뎀 +CMQTTPAYLOAD 상한 10,240B).
-    char buf[FAST_PAYLOAD_BUF];
-    int  p = snprintf(buf, sizeof(buf), "{\"t0\":%u,\"dt\":%u,\"n\":%d",
-                      t0, (unsigned)(Cfg::fastMs() / 1000UL), n);
+    // n=30 기준 위치 없이 약 545B · 위치 포함 약 1.0KB, n=64 위치 포함 약 2.5KB (모뎀 상한 10,240B).
+    // static — loop 태스크 스택(8KB)에 4KB 를 올리지 않는다. publishFast 는 loop 에서만 불린다.
+    static char buf[FAST_PAYLOAD_BUF];
+    const size_t cap = sizeof(buf);
+    int p = appendf(buf, cap, 0, "{\"t0\":%u,\"dt\":%u,\"n\":%d",
+                    t0, (unsigned)(Cfg::fastMs() / 1000UL), n);
 
     // o = t0 기준 초 오프셋. loop 가 MQTT publish(~0.5초)나 전체 OBD 폴로 초를 건너뛰므로
     // 고정 격자를 가정하면 시계열이 조용히 어긋난다 → 오프셋을 명시적으로 싣는다.
-    p += snprintf(buf + p, sizeof(buf) - p, ",\"o\":[");
-    for (int i = 0; i < n && p < (int)sizeof(buf); i++)
-        p += snprintf(buf + p, sizeof(buf) - p, "%s%u", i ? "," : "", win[i].off);
+    p = appendf(buf, cap, p, ",\"o\":[");
+    for (int i = 0; i < n; i++) p = appendf(buf, cap, p, "%s%u", i ? "," : "", win[i].off);
 
-    p += snprintf(buf + p, sizeof(buf) - p, "],\"spd\":[");
-    for (int i = 0; i < n && p < (int)sizeof(buf); i++)
-        p += snprintf(buf + p, sizeof(buf) - p, "%s%u", i ? "," : "", win[i].spd);
+    p = appendf(buf, cap, p, "],\"spd\":[");
+    for (int i = 0; i < n; i++) p = appendf(buf, cap, p, "%s%u", i ? "," : "", win[i].spd);
 
     // ⚠️ ECU 가 그 초에 답하지 않은 PID 는 **null** 로 싣는다. 0 으로 채우면 서버가
     //    "엔진 정지"로 읽고 DB 에 실측처럼 굳는다(0.3.8 까지의 동작 — 시속 48km 주행
     //    중 rpm 0 인 행이 실제로 남았다). 배열 길이는 그대로 o 와 같다.
-    p += snprintf(buf + p, sizeof(buf) - p, "],\"rpm\":[");
-    for (int i = 0; i < n && p < (int)sizeof(buf); i++) {
-        if (win[i].miss & Fast::MISS_RPM)
-            p += snprintf(buf + p, sizeof(buf) - p, "%snull", i ? "," : "");
-        else
-            p += snprintf(buf + p, sizeof(buf) - p, "%s%u", i ? "," : "", win[i].rpm);
+    p = appendf(buf, cap, p, "],\"rpm\":[");
+    for (int i = 0; i < n; i++) {
+        if (win[i].miss & Fast::MISS_RPM) p = appendf(buf, cap, p, "%snull", i ? "," : "");
+        else                              p = appendf(buf, cap, p, "%s%u", i ? "," : "", win[i].rpm);
     }
 
-    p += snprintf(buf + p, sizeof(buf) - p, "],\"thr\":[");
-    for (int i = 0; i < n && p < (int)sizeof(buf); i++) {
-        if (win[i].miss & Fast::MISS_THR)
-            p += snprintf(buf + p, sizeof(buf) - p, "%snull", i ? "," : "");
-        else
-            p += snprintf(buf + p, sizeof(buf) - p, "%s%u", i ? "," : "", win[i].thr);
+    p = appendf(buf, cap, p, "],\"thr\":[");
+    for (int i = 0; i < n; i++) {
+        if (win[i].miss & Fast::MISS_THR) p = appendf(buf, cap, p, "%snull", i ? "," : "");
+        else                              p = appendf(buf, cap, p, "%s%u", i ? "," : "", win[i].thr);
+    }
+    p = appendf(buf, cap, p, "]");
+
+    // 위치(위치 주기 2단계, 서버 025) — 도 × 1e6 정수, fix 없던 초는 null. 길이는 o 와 같다.
+    // 창 안에 fix 가 한 번도 없으면 키째 생략한다(전부 null 배열 ~300B 를 아낀다 — 서버는 키 없음 = 위치 없음).
+    bool anyPos = false;
+    for (int i = 0; i < n && !anyPos; i++) anyPos = !(win[i].miss & Fast::MISS_POS);
+    if (anyPos) {
+        p = appendf(buf, cap, p, ",\"lat_e6\":[");
+        for (int i = 0; i < n; i++) {
+            if (win[i].miss & Fast::MISS_POS) p = appendf(buf, cap, p, "%snull", i ? "," : "");
+            else                              p = appendf(buf, cap, p, "%s%ld", i ? "," : "", (long)win[i].lat_e6);
+        }
+        p = appendf(buf, cap, p, "],\"lon_e6\":[");
+        for (int i = 0; i < n; i++) {
+            if (win[i].miss & Fast::MISS_POS) p = appendf(buf, cap, p, "%snull", i ? "," : "");
+            else                              p = appendf(buf, cap, p, "%s%ld", i ? "," : "", (long)win[i].lon_e6);
+        }
+        p = appendf(buf, cap, p, "]");
     }
 
-    p += snprintf(buf + p, sizeof(buf) - p, "]}");
+    p = appendf(buf, cap, p, "}");
 
-    if (p <= 0 || p >= (int)sizeof(buf)) {
+    if (p <= 0 || (size_t)p >= cap) {
         // 잘린 JSON 을 보내면 서버가 배치 전체를 버린다 — 보내지 않는다.
         LOGE(log, "[FAST] 창 페이로드 오버플로(n=%d) — 발행 생략\n", n);
         return false;
@@ -659,7 +689,8 @@ bool publishFast(TinyGsm &modem, const Fast::Sample *win, int n, uint32_t t0, St
     bool ok = modem.mqtt_publish(kClientIdx, s_topicFast.c_str(), buf, /*qos=*/1);
     notePublish();
     if (!ok) s_connected = false;
-    LOGD(log, "[FAST] 창 t0=%u n=%d %s (%d B)\n", t0, n, ok ? "published" : "FAILED", p);
+    LOGD(log, "[FAST] 창 t0=%u n=%d%s %s (%d B)\n", t0, n, anyPos ? " +위치" : "",
+         ok ? "published" : "FAILED", p);
     return ok;
 }
 

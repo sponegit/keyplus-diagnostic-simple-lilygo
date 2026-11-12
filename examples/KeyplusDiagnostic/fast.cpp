@@ -11,10 +11,23 @@
 namespace Fast {
 
 // ── 원본 창(온라인 발행 전용) ───────────────────────────────────────────────
-// miss 바이트는 rpm(uint16_t) 정렬이 남긴 꼬리 패딩에 들어가 크기가 그대로다.
-// config.h 의 "RAM 384B" 주석이 계속 맞는지 컴파일 타임에 못박는다 — 필드를 더 늘리면
+// 위치 2필드(int32 ×2, 위치 주기 2단계)가 붙어 16B(4바이트 정렬 패딩 2B 포함) — 64칸 = 1KB.
+// config.h 의 "RAM 1KB" 주석이 계속 맞는지 컴파일 타임에 못박는다 — 필드를 더 늘리면
 // 여기서 먼저 걸린다.
-static_assert(sizeof(Sample) == 6, "Sample 크기 변경 — config.h FAST_WINDOW_MAX 주석의 RAM 산정도 같이 고칠 것");
+static_assert(sizeof(Sample) == 16, "Sample 크기 변경 — config.h FAST_WINDOW_MAX 주석의 RAM 산정도 같이 고칠 것");
+
+// 마지막으로 알려진 위치(notePosition). 샘플을 찍는 순간 이 값을 싣는다.
+static bool    s_posFix = false;
+static int32_t s_latE6  = 0, s_lonE6 = 0;
+
+void notePosition(bool fix, float lat, float lon)
+{
+    s_posFix = fix;
+    if (fix) {
+        s_latE6 = (int32_t)lroundf(lat * 1e6f);
+        s_lonE6 = (int32_t)lroundf(lon * 1e6f);
+    }
+}
 static Sample   s_win[FAST_WINDOW_MAX];
 static int      s_n      = 0;
 static uint32_t s_t0Ms   = 0;   // 창 시작 millis (오프셋 기준)
@@ -198,7 +211,9 @@ void tick(uint32_t now, const Obd2::Data &obd, Stream &log)
         s_win[s_n].spd  = spd;
         s_win[s_n].rpm  = rpm;
         s_win[s_n].thr  = thr;
-        s_win[s_n].miss = miss;
+        s_win[s_n].miss = miss | (s_posFix ? 0 : MISS_POS);
+        s_win[s_n].lat_e6 = s_posFix ? s_latE6 : 0;
+        s_win[s_n].lon_e6 = s_posFix ? s_lonE6 : 0;
         s_n++;
     }
 
