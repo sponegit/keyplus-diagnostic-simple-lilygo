@@ -259,15 +259,29 @@ bool begin(TinyGsm &modem, Stream &log)
 
 bool ntpSync(TinyGsm &modem, Stream &log)
 {
-    // 래퍼 반환: 1 = +CNTP: 0(성공), 0 = 다른 결과 코드, -1 = 응답 없음(타임아웃).
+    // ⚠️ TinyGSM 의 NTPServerSync 를 쓰지 않는다. A76xx 구현은 "+CNTP:" 바로 다음 한 글자를
+    //    '0' 과 비교하는데, 모뎀은 "+CNTP: 0" 으로 콜론 뒤에 공백을 넣는다 → 성공해도 항상 0(실패)을
+    //    돌려준다(2026-11-12 콘솔 실측: AT+CNTP → OK → "+CNTP: 0"). 라이브러리는 건드리지 않고
+    //    같은 AT 를 여기서 직접 보내 결과 코드를 parseInt 로 읽는다(공백을 건너뛴다).
     // ⚠️ 성공 코드는 "요청이 처리됐다"이지 CCLK 가 맞았다는 보증이 아니다 — 호출측은
     //    Mqtt::noteTimeFromModem 으로 실제 시각이 유효해졌는지 확인한다.
-    int r = modem.NTPServerSync("pool.ntp.org", 0);
-    if (r == 1) {
+    modem.sendAT(GF("+CNTP=\"pool.ntp.org\",0"));          // 서버 + TZ=0(UTC)
+    if (modem.waitResponse(10000L) != 1) {
+        LOGW(log, "[LTE] NTP 서버 설정 실패 — %lus 뒤 재시도\n", (unsigned long)(NTP_RETRY_MS / 1000UL));
+        return false;
+    }
+    modem.sendAT(GF("+CNTP"));
+    if (modem.waitResponse(10000L, GF("+CNTP:")) != 1) {
+        LOGW(log, "[LTE] NTP 시계 동기 응답 없음 — %lus 뒤 재시도\n", (unsigned long)(NTP_RETRY_MS / 1000UL));
+        return false;
+    }
+    const int code = (int)modem.stream.parseInt();   // 0 = 성공. 그 밖은 모뎀 오류 코드
+    modem.waitResponse(100L);                        // 줄 끝 소진
+    if (code == 0) {
         LOGI(log, "[LTE] NTP 시계 동기 성공(UTC)\n");
         return true;
     }
-    LOGW(log, "[LTE] NTP 시계 동기 실패 (r=%d) — %lus 뒤 재시도\n", r,
+    LOGW(log, "[LTE] NTP 시계 동기 실패 (+CNTP: %d) — %lus 뒤 재시도\n", code,
          (unsigned long)(NTP_RETRY_MS / 1000UL));
     return false;
 }

@@ -9,6 +9,7 @@
 #include "carkey.h"
 #include "cfg.h"
 #include "mqtt.h"     // 발행 간격 가드(publishGapElapsed) + ack 발행 기록(notePublish)
+#include "clk.h"      // nowEpoch 폴백 — CCLK 무효 시 시각 기준(GPS 등)
 #if FEATURE_OTA
 #include "ota.h"
 #endif
@@ -113,15 +114,20 @@ static uint32_t civilToEpoch(int y, int m, int d, int hh, int mi, int ss)
     return (uint32_t)(days * 86400L + hh * 3600L + mi * 60L + ss);
 }
 
-// 모뎀 NITZ(CCLK) → UTC epoch. 실패/미동기 시 0.
+// 지금 UTC epoch — 모뎀 NITZ/NTP(CCLK) 우선, 무효면 Clk base(GPS·이전 CCLK 의 millis 외삽).
+// 둘 다 없으면 0(만료판정 스킵·ack ts=0).
+//
+// ⚠️ 종전에는 CCLK 만 봤다. v2 실측(2026-11-12): 부팅 NTP 가 r=0 으로 실패하고 시각은 서브 GNSS
+//    로 얻었는데, 그러면 CCLK 는 부팅 내내 무효이고(시각 기준이 이미 있어 NTP 재요청도 돌지 않는다)
+//    이 함수가 계속 0 을 돌려 **명령 만료 판정이 통째로 꺼졌다** — 만료된 차키 명령도 실행된다.
 static uint32_t nowEpoch(TinyGsm &modem)
 {
     int y = 0, mo = 0, d = 0, h = 0, mi = 0, s = 0;
     float tz = 0;
-    if (!modem.getNetworkTime(&y, &mo, &d, &h, &mi, &s, &tz)) return 0;
     // 유효성 경계: NITZ/NTP 미동기 시 CCLK가 1970→(+2000)→2070 같은 엉뚱한 값이 됨.
-    // 그럴 땐 0을 반환해 ts=0(서버가 수신시각 스탬프)·만료판정 스킵으로 처리한다.
-    if (y < 2024 || y > 2060) return 0;
+    if (!modem.getNetworkTime(&y, &mo, &d, &h, &mi, &s, &tz) || y < 2024 || y > 2060) {
+        return Clk::now();
+    }
     uint32_t e = civilToEpoch(y, mo, d, h, mi, s);
     // CCLK 시각은 로컬(tz, 15분 단위) → UTC = local - tz*15min. (NTP를 TZ=0로 동기하면 tz=0)
     e -= (int32_t)tz * 15 * 60;

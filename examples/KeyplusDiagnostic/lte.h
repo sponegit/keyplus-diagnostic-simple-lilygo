@@ -37,7 +37,8 @@ bool begin(TinyGsm &modem, Stream &log);
 
 // 모뎀 시계 NTP 동기(UTC) 1회 요청 + 결과 로그. begin 이 부르고, 시각이 없으면 loop 가
 // NTP_RETRY_MS 간격으로 다시 부른다. 최대 약 20초 블로킹(AT+CNTP 응답 대기 두 번).
-// 래퍼가 성공 코드를 돌려줬으면 true — CCLK 유효성은 호출측이 따로 확인한다.
+// 모뎀이 "+CNTP: 0" 을 돌려줬으면 true — CCLK 유효성은 호출측이 따로 확인한다.
+// (TinyGSM NTPServerSync 는 A76xx 응답의 공백 때문에 성공도 실패로 돌려줘서 쓰지 않는다.)
 bool ntpSync(TinyGsm &modem, Stream &log);
 
 // 모뎀이 AT에 응답하는가. timeoutMs 안에 응답 없으면 false.
