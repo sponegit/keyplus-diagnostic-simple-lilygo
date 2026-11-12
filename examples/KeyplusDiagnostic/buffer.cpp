@@ -358,7 +358,11 @@ void pop()
     s_readAbs++;
     s_cUploaded++;
     // 레코드마다 NVS 에 쓰면 마모와 지연이 늘고 이득은 최대 31건의 중복 회피뿐이다.
-    if (++s_popsSinceSave >= BUF_CURSOR_SAVE_EVERY) saveCursor();
+    // ⚠️ 링을 다 비운 순간에도 저장한다. 32건 주기만 두면 백로그가 32건 미만에서 비었을 때
+    //    커서가 영영 저장되지 않아, 부팅할 때마다 같은 레코드를 처음부터 다시 보낸다
+    //    (실측 2026-11-12 vt-2607-0005-6jn: 08-11 레코드 24건이 매 부팅 재전송). 비우는 건
+    //    백필 한 차례에 한 번이라 마모는 무시할 만하다.
+    if (++s_popsSinceSave >= BUF_CURSOR_SAVE_EVERY || s_readAbs >= s_writeAbs) saveCursor();
 }
 
 TsFix resolveTs(Record &rec)

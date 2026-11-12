@@ -169,6 +169,11 @@ bool publishFast(TinyGsm &modem, const Fast::Sample *win, int n, uint32_t t0, St
 // 빈도를 제한한다(base 가 아예 없을 때만). 성공 시 true.
 bool noteTimeFromModem(TinyGsm &modem);
 
+// 실시간 telemetry 를 내기 전에 부른다 — 이번 부팅에 시각 기준(Clk base)이 있는가.
+// 없으면 측위 중 GPS UTC → 모뎀 CCLK 순으로 한 번 확보를 시도한다(base 가 있으면 AT 왕복 0).
+// false 면 ts 가 0 으로 나간다는 뜻이다 → 호출측은 발행을 보류하고 링에 적재한다.
+bool ensureClock(TinyGsm &modem, const GpsFix &fix, bool fixFresh);
+
 // MQTT 서비스(CMQTT) 완전 종료 — 모뎀 SSL 컨텍스트를 해제해 HTTP(S) 서비스와의 충돌을 막는다.
 // OTA 다운로드 진입 직전에 호출(어차피 OTA 성공 시 재부팅되므로 세션은 버린다).
 void stopService(TinyGsm &modem);

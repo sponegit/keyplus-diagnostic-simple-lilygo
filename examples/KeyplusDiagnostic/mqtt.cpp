@@ -157,7 +157,11 @@ static uint32_t civilToEpoch(int y, int m, int d, int hh, int mi, int ss)
 }
 
 // 모뎀 NITZ/NTP(CCLK) → UTC epoch. GPS fix 없을 때 telemetry ts 폴백용.
-// 미동기/무효 시 0(그럼 서버가 수신시각 스탬프). cmd.cpp nowEpoch와 동일 규약.
+// 미동기/무효 시 0. cmd.cpp nowEpoch와 동일 규약.
+// ⚠️ 서버는 ts=0 에 수신시각을 찍어 주지 않는다(종전 주석은 사실이 아니었다). PK 가
+//    (device_id, ts) 라 1970-01-01 한 행으로 붕괴해 조용히 사라졌고(2026-11-11, 17시간),
+//    서버는 이제 그런 기록을 telemetry_untimed 에 격리할 뿐이다. 그래서 시각이 없으면
+//    실시간 발행을 보류하고 링에 적재한다(loop — Mqtt::ensureClock 참고).
 static uint32_t modemEpoch(TinyGsm &modem)
 {
     int y = 0, mo = 0, d = 0, h = 0, mi = 0, s = 0;
@@ -383,6 +387,9 @@ bool publishTelemetry(TinyGsm &modem, const GpsFix &fix, bool fixFresh, const Ob
     } else {
         ts = modemEpoch(modem);   // 미측위(실내/음영/터널)여도 실시각 확보 → 서버 누적 정상화
         if (ts) Clk::note(ts, Clk::SRC_MODEM);
+        // CCLK 가 일시적으로 무효여도 이번 부팅에 한 번이라도 시각을 얻었으면 Clk base 의
+        // millis 외삽으로 답한다(드리프트 하루 ±1.7초). 종전에는 여기서 0 이 나갔다.
+        else  ts = Clk::now();
     }
     uint32_t up_s = millis() / 1000UL;
 
@@ -487,6 +494,17 @@ bool noteTimeFromModem(TinyGsm &modem)
     if (!e) return false;
     Clk::note(e, Clk::SRC_MODEM);
     return true;
+}
+
+bool ensureClock(TinyGsm &modem, const GpsFix &fix, bool fixFresh)
+{
+    if (Clk::source() != Clk::SRC_NONE) return true;
+    // publishTelemetry 와 같은 판정 — 지금 측위 중인 GPS UTC 가 권위다.
+    if (fixFresh && fix.valid && fix.year >= 2020) {
+        Clk::noteCivil(fix.year, fix.month, fix.day, fix.hour, fix.minute, fix.second, Clk::SRC_GPS);
+        if (Clk::source() != Clk::SRC_NONE) return true;
+    }
+    return noteTimeFromModem(modem);
 }
 
 bool publishBackfill(TinyGsm &modem, const Buf::Record &rec, Stream &log)

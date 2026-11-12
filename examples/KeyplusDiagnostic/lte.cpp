@@ -250,11 +250,26 @@ bool begin(TinyGsm &modem, Stream &log)
 
     // 모뎀 시계 UTC(TZ=0) NTP 동기 — cmd 만료판정/ack ts, telemetry ts용.
     // LG U+가 NITZ 시각을 안 줘서 CCLK가 기본값(1970→+2000=2070)이 되는 문제 보정.
-    // 데이터패스(PDP) 위에서 best-effort(실패해도 브링업은 성공 처리).
-    modem.NTPServerSync("pool.ntp.org", 0);
-    LOGD(log, "[LTE] NTP 시계 동기 시도(UTC)\n");
+    // 데이터패스(PDP) 위에서 best-effort(실패해도 브링업은 성공 처리). 실패하면 loop 가
+    // 시각을 얻을 때까지 NTP_RETRY_MS 간격으로 다시 부른다.
+    ntpSync(modem, log);
 
     return true;
+}
+
+bool ntpSync(TinyGsm &modem, Stream &log)
+{
+    // 래퍼 반환: 1 = +CNTP: 0(성공), 0 = 다른 결과 코드, -1 = 응답 없음(타임아웃).
+    // ⚠️ 성공 코드는 "요청이 처리됐다"이지 CCLK 가 맞았다는 보증이 아니다 — 호출측은
+    //    Mqtt::noteTimeFromModem 으로 실제 시각이 유효해졌는지 확인한다.
+    int r = modem.NTPServerSync("pool.ntp.org", 0);
+    if (r == 1) {
+        LOGI(log, "[LTE] NTP 시계 동기 성공(UTC)\n");
+        return true;
+    }
+    LOGW(log, "[LTE] NTP 시계 동기 실패 (r=%d) — %lus 뒤 재시도\n", r,
+         (unsigned long)(NTP_RETRY_MS / 1000UL));
+    return false;
 }
 
 bool isUp(TinyGsm &modem)

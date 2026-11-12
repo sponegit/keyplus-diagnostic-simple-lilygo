@@ -196,6 +196,13 @@ static uint32_t g_nextFastAt    = 0;
 #endif
 
 #if FEATURE_LTE
+// 시각 기준이 없을 때 다음 NTP 재요청 시각(NTP_RETRY_MS 간격). 시각을 얻으면 쓰이지 않는다.
+static uint32_t g_ntpRetryAt    = 0;
+// 시각 미확보로 실시간 발행을 보류하고 링에 적재한 횟수 — 로그 스로틀용.
+static uint32_t g_rtNoClock     = 0;
+#endif
+
+#if FEATURE_LTE
 // status 전이 재발행(F1/F3)을 지금 내도 되는가.
 //   ① 발행 대기 플래그가 서 있어야 한다(전이 없으면 한 건도 안 나간다 — 주기 발행 아님)
 //   ② 직전 발행과 PUBLISH_MIN_GAP_MS 이상 벌어져야 한다(발행 체인 공통 가드)
@@ -2115,11 +2122,36 @@ void loop()
 #else
         const int vbatMv = 0;
 #endif
-        bool pubOk = Mqtt::publishTelemetry(modem, g_lastFix, g_gpsFixNow, g_obd,
-                                            g_seq, withMeta, vbatMv, SerialMon);
-        if (pubOk) {
-            if (withMeta) g_metaSent = true;
-            g_seq++;
+        // 시각 기준 확인 — 없으면 ts 가 0 으로 나간다. 서버는 ts=0 에 시각을 찍어 주지 않고
+        // (device_id, ts) PK 에 부딪혀 사라지거나 격리될 뿐이다(2026-11-11, 17시간 유실).
+        // → 실시간 발행을 보류하고 오프라인 경로와 똑같이 링에 적재한다. 레코드는 ts=0 +
+        //   up_s 로 들어가고, 시각을 얻으면 resolveTs 가 같은 부팅 안에서 복원해 백필로 나간다.
+        //   (백필 레코드에는 pwr·air 가 없다 — NTP 재시도로 이 구간을 1~2분으로 줄인다.)
+        const bool clockOk = Mqtt::ensureClock(modem, g_lastFix, g_gpsFixNow);
+        bool pubOk = false;
+#if FEATURE_OFFLINE_BUF
+        if (!clockOk && Buf::available()) {
+            Fast::Aggregate agg;
+#if FEATURE_FAST_SAMPLE
+            agg = Fast::takeAggregate();
+#endif
+            Buf::pushSample(g_lastFix, g_gpsFixNow, g_obd, g_seq, agg,
+                            /*parkedWindow=*/!vehicleMoving(g_obd),
+                            Mqtt::lastRssi(), Mqtt::lastReg(), SerialMon);
+            if (++g_rtNoClock % 10 == 1) {
+                LOGW(SerialMon, "[CLK] 시각 미확보 — 실시간 발행 보류, 링 적재(누적 %lu건, 백로그 %lu건)\n",
+                     (unsigned long)g_rtNoClock, (unsigned long)Buf::count());
+            }
+        } else
+#endif
+        {
+            (void)clockOk;
+            pubOk = Mqtt::publishTelemetry(modem, g_lastFix, g_gpsFixNow, g_obd,
+                                           g_seq, withMeta, vbatMv, SerialMon);
+            if (pubOk) {
+                if (withMeta) g_metaSent = true;
+                g_seq++;
+            }
         }
 #if FEATURE_FAST_SAMPLE
         // 고빈도 창은 실시간 발행 직후 1초 뒤에 낸다 — 모뎀은 publish 를 1건씩만 처리하고
@@ -2127,7 +2159,8 @@ void loop()
         g_nextFastAt = now + FAST_PUBLISH_DELAY_MS;
 #endif
         // 주기 상태 한 줄 — 모듈별 폴 덤프를 DEBUG로 내린 대신 여기서 전체 상태를 요약한다.
-        printStatusLine(true, g_seq, pubOk ? "pub-ok" : "pub-FAIL");
+        // 보류(시각 미확보)는 발행을 시도하지 않았으므로 "-" 다(UART 앱 STAT_TAIL 3종 중 하나).
+        printStatusLine(true, g_seq, pubOk ? "pub-ok" : (clockOk ? "pub-FAIL" : "-"));
         g_lastStatAt = now;
     }
     else if (statusGateOpen(now)) {
@@ -2161,9 +2194,22 @@ void loop()
         // 누산기도 함께 버린다 — 온라인 구간 이벤트는 서버가 1Hz 원본으로 판정하므로
         // 무손실이다. 버리지 않으면 온라인이 길어질수록 누산기가 자라, 오프라인으로
         // 떨어진 직후 첫 레코드의 agg 가 "직전 창"이 아니라 "온라인 세션 전체"를 요약한다.
-        Fast::dropAggregate();
+        // ⚠️ 단 시각 미확보 중이면 버리지 않는다 — 그동안은 실시간 대신 링에 적재하고 있고
+        //    (위 telemetry 분기), 창(t0=0)도 발행되지 않으므로 누산기가 이 구간의 유일한 요약이다.
+        if (Clk::source() != Clk::SRC_NONE) Fast::dropAggregate();
     }
 #endif
+    else if (Clk::source() == Clk::SRC_NONE && (int32_t)(now - g_ntpRetryAt) >= 0
+             && Mqtt::publishGapElapsed(now, PUBLISH_MIN_GAP_MS)) {
+        // ── NTP 재요청 (시각 기준이 없을 때만) ───────────────────────────────
+        // 브링업(Lte::begin)의 1회 요청이 실패하면 LTE 가 끊기기 전까지 다시 묻지 않아,
+        // 그 부팅 내내 ts=0 이었다(2026-11-11, MQTT 17시간 유지). 백필보다 앞에 둔다 —
+        // 시각이 없으면 백필도 RETRY 로 멈춰 있으니 먼저 시각을 얻는 게 둘 다 푼다.
+        // AT+CNTP 응답 대기로 최대 약 20초 블로킹한다(keepalive 120초보다 충분히 짧다).
+        g_ntpRetryAt = now + NTP_RETRY_MS;
+        Lte::ntpSync(modem, SerialMon);
+        Mqtt::noteTimeFromModem(modem);
+    }
 #if FEATURE_OFFLINE_BUF
     else if (Buf::count() && backfillGateOpen(now)
              && Mqtt::publishGapElapsed(now, PUBLISH_MIN_GAP_MS)) {
@@ -2204,6 +2250,18 @@ void loop()
         }
     }
 #endif
+
+    // 시각 확보 순간을 한 줄 남긴다 — [STAT] 은 UART 앱이 닫힌 키 목록으로 파싱하므로
+    // 토큰을 늘리지 않고 전이 로그로 낸다. base 는 한 번 서면 NONE 으로 돌아가지 않아 부팅당 1줄.
+    {
+        static bool s_hadClock = false;
+        const Clk::Src src = Clk::source();
+        if (src != Clk::SRC_NONE && !s_hadClock) {
+            LOGI(SerialMon, "[CLK] 시각 확보 — src=%s epoch=%lu (부팅 후 %lus)\n",
+                 Clk::srcName(src), (unsigned long)Clk::now(), (unsigned long)(millis() / 1000UL));
+            s_hadClock = true;
+        }
+    }
 
     // 미접속이 길어지면 [STAT]가 아예 안 나와 멈춘 것처럼 보인다 → 유휴에도 주기적으로 남긴다.
     if (!connected && now - g_lastStatAt >= STATUS_LINE_IDLE_MS) {

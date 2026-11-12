@@ -35,6 +35,11 @@ namespace Lte {
 //    (최대 LTE_REG_TIMEOUT_MS)이 통째로 낭비이므로 즉시 false를 반환한다.
 bool begin(TinyGsm &modem, Stream &log);
 
+// 모뎀 시계 NTP 동기(UTC) 1회 요청 + 결과 로그. begin 이 부르고, 시각이 없으면 loop 가
+// NTP_RETRY_MS 간격으로 다시 부른다. 최대 약 20초 블로킹(AT+CNTP 응답 대기 두 번).
+// 래퍼가 성공 코드를 돌려줬으면 true — CCLK 유효성은 호출측이 따로 확인한다.
+bool ntpSync(TinyGsm &modem, Stream &log);
+
 // 모뎀이 AT에 응답하는가. timeoutMs 안에 응답 없으면 false.
 // 전원 부족으로 모뎀이 내부 리셋/불능이 된 상태를 빠르게 가려낸다
 // (그 경우 CSQ는 99, 등록 상태는 no-result로 나온다).
