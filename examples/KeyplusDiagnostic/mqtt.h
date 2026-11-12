@@ -151,8 +151,12 @@ bool publishHeartbeat(TinyGsm &modem, const char *powerMode, bool ignitionOn, St
 //   (agg 를 "샘플 없으면 통째 생략"하는 것과 같은 규약).
 //   지금껏 이 값은 [PWR] 로그로만 나가 UART 를 붙여야 볼 수 있었다 — 서버는 배터리를
 //   추가하고도 전압을 하나도 못 봤다(260805 점검: vehicle_state.voltage 전부 NULL).
+//
+// parked — 이 행을 낼 때의 주행/주차 판정(updateTeleMode g_driveMode 의 반대) → sys.pk 1/0 (2026-11-12).
+//   서버가 행 간격으로 주차를 추측하지 않게 한다. 주차로 바뀌는 순간의 1건은 pk=1 이지만
+//   air 는 직전 주행 창(30초) 평균이다. 백필은 레코드 flags F_PARKED_WIN 으로 같은 키를 낸다.
 bool publishTelemetry(TinyGsm &modem, const GpsFix &fix, bool fixFresh, const Obd2::Data &obd,
-                      uint32_t seq, bool withMeta, int vbatMv, Stream &log);
+                      uint32_t seq, bool withMeta, int vbatMv, bool parked, Stream &log);
 
 /**
  * 백필 1건 발행 — **기존 telemetry 토픽·스키마 그대로**, ts 만 과거 시각이다.

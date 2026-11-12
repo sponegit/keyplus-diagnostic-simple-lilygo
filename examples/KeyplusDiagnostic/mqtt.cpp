@@ -378,7 +378,7 @@ void stopService(TinyGsm &modem)
 }
 
 bool publishTelemetry(TinyGsm &modem, const GpsFix &fix, bool fixFresh, const Obd2::Data &obd,
-                      uint32_t seq, bool withMeta, int vbatMv, Stream &log)
+                      uint32_t seq, bool withMeta, int vbatMv, bool parked, Stream &log)
 {
     // ⚠️ 반드시 첫 줄이다. 아래 getSignalQuality/getRegistrationStatus 도 AT 왕복이라
     //    죽은 모뎀에서는 여기서부터 타임아웃을 태우기 시작한다.
@@ -438,8 +438,8 @@ bool publishTelemetry(TinyGsm &modem, const GpsFix &fix, bool fixFresh, const Ob
             fix.lat, fix.lon, fix.speed, fix.vsat);
     }
     n += snprintf(buf + n, sizeof(buf) - n,
-        "},\"net\":{\"rssi\":%d,\"reg\":%d},\"sys\":{\"up_s\":%u",
-        rssi, reg, up_s);
+        "},\"net\":{\"rssi\":%d,\"reg\":%d},\"sys\":{\"up_s\":%u,\"pk\":%d",
+        rssi, reg, up_s, parked ? 1 : 0);
 
     // vbat — 있을 때만. 0 은 "미상"이지 "0V"가 아니다(ADC 미구성 / FEATURE_PWR_MONITOR off).
     // 0 을 실어 보내면 서버가 관측값으로 받아 방전 그래프가 바닥을 찍는다.
@@ -562,8 +562,8 @@ bool publishBackfill(TinyGsm &modem, const Buf::Record &rec, Stream &log)
     // sys.bf=1 이 백필 표시자다. ingest 가 sys 를 통째로 data JSONB 에 넣으므로
     // 게이트웨이 코드 변경 없이 저장된다.
     n += snprintf(buf + n, sizeof(buf) - n,
-        "},\"net\":{\"rssi\":%d,\"reg\":%d},\"sys\":{\"up_s\":%u,\"bf\":1}",
-        (int)rec.rssi, (int)rec.reg, rec.up_s);
+        "},\"net\":{\"rssi\":%d,\"reg\":%d},\"sys\":{\"up_s\":%u,\"bf\":1,\"pk\":%d}",
+        (int)rec.rssi, (int)rec.reg, rec.up_s, parked ? 1 : 0);   // pk = 적재 창이 정차 창(F_PARKED_WIN)
 
     if (rec.obd_flags) {
         n += snprintf(buf + n, sizeof(buf) - n, ",\"obd\":{");

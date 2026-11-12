@@ -2370,7 +2370,7 @@ void loop()
         {
             (void)clockOk;
             pubOk = Mqtt::publishTelemetry(modem, g_lastFix, g_gpsFixNow, g_obd,
-                                           g_seq, withMeta, vbatMv, SerialMon);
+                                           g_seq, withMeta, vbatMv, /*parked=*/!g_driveMode, SerialMon);
             if (pubOk) {
                 if (withMeta) g_metaSent = true;
                 g_seq++;
