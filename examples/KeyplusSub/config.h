@@ -101,6 +101,9 @@
 #define UV_GAP_MS                   5000UL   // 측정이 이보다 오래 끊기면 진행 중 타이머를 버린다
 
 // 온도 가드 (HARDWARE §5.1) — SHT41 온도로 센서 레일(39·40·41)을 끊는다. 히스테리시스 5°C.
+// 0 = 온도 차단을 쓰지 않는다(2026-11-12 결정 — 우선 뺀다). 레일은 부팅 직후 켜고, 저전압
+//     경고·차단(pwr.cpp) 때만 끈다. telemetry air.guard 도 싣지 않는다. 1 로 되돌리면 아래 임계가 살아난다.
+#define GUARD_TEMP_ENABLE           0
 #define GUARD_HOT_OFF_C             50.0f    // 넘으면 차단 (SGP41·ZE15-CO 상한 55°C − 마진)
 #define GUARD_HOT_ON_C              45.0f    // 내려오면 복귀
 #define GUARD_COLD_OFF_C            (-5.0f)  // 밑돌면 차단 (SCD41·PMS5003·ZE15-CO 하한 −10°C + 마진)

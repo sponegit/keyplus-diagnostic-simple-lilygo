@@ -462,7 +462,7 @@ static void collect(KpAir::Values &v, uint32_t now)
     }
     if (Pms::get(&v.pm1, &v.pm25, &v.pm10)) v.mask |= KpAir::PM;
     if (Co::get(&v.co10))                    v.mask |= KpAir::CO;
-    if (Guard::known()) {
+    if (GUARD_TEMP_ENABLE && Guard::known()) {   // 온도 가드를 끄면 guard 키째 생략(config.h)
         v.mask |= KpAir::GUARD;
         v.guard = (uint8_t)Guard::state();
     }

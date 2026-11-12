@@ -71,6 +71,25 @@ void begin()
 
 void update(uint32_t now, bool valid, float tempC)
 {
+#if !GUARD_TEMP_ENABLE
+    // 온도 차단 꺼짐 — 첫 호출에서 바로 "정상"으로 확정하고 레일을 켠다(SHT41 첫 값을 기다리지 않는다).
+    // SHT41 유무는 계속 본다: LED 센서 고장 표시(noSensor)와 상태 출력용 온도.
+    if (valid) {
+        s_noSensor = false;
+        s_lastT    = tempC;
+    } else if (now >= GUARD_BOOT_WAIT_MS && isnan(s_lastT)) {
+        s_noSensor = true;
+    }
+    if (!s_known) {
+        s_known    = true;
+        s_state    = KpAir::Guard::NORMAL;
+        s_changeAt = now;
+        Serial.printf("[GUARD] 온도 가드 꺼짐(GUARD_TEMP_ENABLE=0) — 센서 레일 %s\n",
+                      s_pwrBlock ? "꺼 둠 (저전압 — pwr)" : "켬");
+        refresh();
+    }
+    return;
+#endif
     if (s_simOn) {
         valid = true;
         tempC = s_simT;
@@ -128,6 +147,10 @@ bool tryConsole(const char *line)
         return true;
     }
     if (!strncmp(line, "guard sim ", 10)) {
+#if !GUARD_TEMP_ENABLE
+        Serial.println("[GUARD] 온도 가드가 꺼져 있다(GUARD_TEMP_ENABLE=0) — 가짜 온도는 판단에 쓰이지 않는다");
+        return true;
+#endif
         char *end;
         const float t = strtof(line + 10, &end);
         if (end == line + 10) {
@@ -144,7 +167,8 @@ bool tryConsole(const char *line)
 
 void printStatus(Stream &io)
 {
-    io.println("[GUARD] 온도 가드");
+    io.println(GUARD_TEMP_ENABLE ? "[GUARD] 온도 가드"
+                                 : "[GUARD] 온도 가드 — 꺼짐(GUARD_TEMP_ENABLE=0): 레일은 저전압 때만 끈다");
     io.printf("  state        : %s%s%s, 레일 %s (%lus 전 바뀜)\n", s_known ? stateName(s_state) : "판단 전",
               s_noSensor ? " · ⚠️ SHT41 없음(감시 불가)" : "", s_pwrBlock ? " · 저전압 차단(pwr)" : "",
               s_railOn ? "켬" : "끔",
