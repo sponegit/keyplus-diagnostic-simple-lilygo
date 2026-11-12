@@ -26,6 +26,8 @@ static bool     s_hasVin    = false;
 static int      s_vinTries  = 0;   // VIN 재시도 횟수(미지원 차량 무한요청 방지)
 static int      s_vinSkip   = 0;   // VIN 재시도 페이싱 — 남은 스킵 폴 수
 // 마지막으로 rpm(0x0C)을 실제로 읽은 시각·값 — 전체 폴·고빈도 폴 공통(시동 판정 ign.cpp 가 쓴다)
+static uint32_t s_reprobeAt = 0;   // 엔진 ECU 재탐색 마지막 시각(OBD2_ENGINE_REPROBE_MS)
+static uint32_t s_reprobes  = 0, s_switches = 0;
 static uint32_t s_rpmAt     = 0;   // 0 = 읽은 적 없음
 static uint16_t s_rpmVal    = 0;
 
@@ -142,6 +144,7 @@ void end()
     s_vinTries = 0;
     s_ecuId  = 0;       // ECU 고정 해제 — 재확립 때 다시 정한다
     s_vinSkip = 0;
+    s_reprobeAt = 0;
     for (int i = 0; i < kPollCount; i++) s_extMiss[i] = 0;   // 확장 PID 래치 해제
 }
 
@@ -337,8 +340,10 @@ bool begin(Stream &log)
             LOGI(log, "[OBD2] 링크 확립 @%dkbps ECU=%03X 지원PID(01-20)=0x%08X\n",
                  s_bitrate, (unsigned)s_ecuId, s_supported);
             if (s_ecuId != 0x7E8) {
-                // 엔진 ECU 가 답하지 않았다 — rpm/차속 같은 항목이 없을 수 있다.
-                LOGW(log, "[OBD2] 엔진 ECU(7E8)가 응답하지 않음 — 항목이 제한될 수 있다\n");
+                // 엔진 ECU 가 답하지 않았다 — rpm/차속 같은 항목이 없을 수 있다. read() 가 주기적으로 다시 찾는다.
+                LOGW(log, "[OBD2] 엔진 ECU(7E8)가 응답하지 않음 — 항목이 제한될 수 있다 (%lus 마다 다시 찾음)\n",
+                     (unsigned long)(OBD2_ENGINE_REPROBE_MS / 1000UL));
+                s_reprobeAt = millis();
             }
             if (!s_hasVin) readVin(log);   // VIN 1회 조회(ISO-TP), 캐시
             return true;
@@ -380,10 +385,40 @@ void linkInfo(LinkInfo &out)
     }
 }
 
+// 엔진 아닌 ECU 로 굳은 링크를 엔진(0x7E8)으로 갈아탄다. 지원 PID(0x00)를 고정 없이 다시 물어
+// 0x7E8 이 답하면 그 ECU·지원 마스크로 바꾸고 확장 PID 래치·VIN 재시도를 푼다. 못 찾으면 그대로 둔다.
+static void reprobeEngine(Stream &log)
+{
+    if (!s_ecuId || s_ecuId == 0x7E8) return;
+    const uint32_t now = millis();
+    if (s_reprobeAt && now - s_reprobeAt < OBD2_ENGINE_REPROBE_MS) return;
+    s_reprobeAt = now ? now : 1;
+    s_reprobes++;
+
+    const uint32_t keep = s_ecuId;
+    s_ecuId = 0;                       // requestPid 가 모든 응답을 보게
+    uint8_t  r[4];
+    uint32_t responder = 0;
+    const int n = requestPid(0x00, r, 4, OBD2_REQ_TIMEOUT_MS * 3, &responder, true);
+    if (n >= 4 && responder == 0x7E8) {
+        s_ecuId     = 0x7E8;
+        s_supported = ((uint32_t)r[0] << 24) | ((uint32_t)r[1] << 16) | ((uint32_t)r[2] << 8) | r[3];
+        for (int i = 0; i < kPollCount; i++) s_extMiss[i] = 0;   // 옛 ECU 기준 미지원 래치를 버린다
+        if (!s_hasVin) { s_vinTries = 0; s_vinSkip = 0; }        // 엔진 ECU 로 VIN 을 다시 묻는다
+        s_switches++;
+        LOGI(log, "[OBD2] 엔진 ECU 찾음 — %03X → 7E8 로 전환, 지원PID(01-20)=0x%08X\n",
+             (unsigned)keep, s_supported);
+        return;
+    }
+    s_ecuId = keep;
+    LOGD(log, "[OBD2] 엔진 ECU 재탐색 — 응답 없음(%03X 유지)\n", (unsigned)keep);
+}
+
 bool read(Data &out, Stream &log)
 {
     out = Data();
     if (!s_installed) return false;
+    reprobeEngine(log);   // 전체 폴(telemetry 주기)마다 — 실제 탐색은 OBD2_ENGINE_REPROBE_MS 간격
     out.supportedPid = s_supported;
 
     uint8_t r[6];
@@ -793,6 +828,10 @@ static void cmdStatus(Stream &io)
     if (s_installed && s_bitrate) io.printf(" (OBD 링크 @%dkbps)", s_bitrate);
     io.printf(" · 마지막 성공 속도 %s\n", s_lastGood ? (s_lastGood == 250 ? "250k" : "500k") : "없음");
     if (s_installed) printCounters(io);
+    if (s_ecuId)
+        io.printf("[CAN] OBD ECU %03X%s · 엔진 재탐색 %lu회 · 7E8 전환 %lu회\n", (unsigned)s_ecuId,
+                  s_ecuId == 0x7E8 ? " (엔진)" : " (엔진 아님 — 재탐색 중)", (unsigned long)s_reprobes,
+                  (unsigned long)s_switches);
     io.println("[CAN] 명령: can send <id> [b0…b7] [@250] · can sniff [초] [@250] · can self");
 }
 
