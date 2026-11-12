@@ -64,7 +64,9 @@ bool update(uint32_t now)
     uint16_t mv; uint32_t at;
     if (Sublink::pwrSample(mv, at) && (!s_vKnown || at != s_lastAt)) feedVolt(at, mv);
 #endif
-    const bool vFresh = s_vKnown && (uint32_t)(now - s_lastAt) <= SUBLINK_PWR_STALE_MS;
+    // ⚠️ 부호 있는 비교 — 표본 시각(at)은 now 를 잡은 뒤 같은 틱에 들어와 now 보다 늦을 수 있다.
+    //    (uint32_t) 로 빼면 그때 거대값이 돼 전압 근거가 순간 "끊김"으로 읽힌다(GNSS 와 같은 버그, 2026-11-12).
+    const bool vFresh = s_vKnown && (int32_t)(now - s_lastAt) <= (int32_t)SUBLINK_PWR_STALE_MS;
 
     uint16_t rpm = 0;
     bool rpmFresh = false;

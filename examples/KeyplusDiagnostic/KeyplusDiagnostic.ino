@@ -613,7 +613,7 @@ static uint32_t g_gpsMoveSince = 0;      // 시동 OFF 중 GNSS 속도가 PARKED
 static int      g_prevUv       = -1;     // 직전 서브 저전압 판정(-1 = 아직 모름)
 static uint32_t g_lastAliveAt  = 0;      // 서버 last_seen_at 을 갱신한 마지막 발행(telemetry·status·heartbeat)
 static bool     g_gnssWant     = true;   // 서브 GNSS 를 켜 둘 것인가(VEHICLE GNSS_ON, 3단계)
-static bool     g_gnssPrevFix  = false;  // 직전 틱 g_gpsFixNow — 주차 중 깨운 GNSS 의 첫 fix 엣지
+static uint32_t g_parkFixAt    = 0;      // 주차 중 깨운 GNSS 가 이번에 처음 fix 를 얻은 시각. 0 = 아직(끄면 0)
 static bool     g_airWant      = true;   // 서브 공기질 듀티를 깨워 둘 것인가(VEHICLE AIR_IDLE 의 반대, 2026-11-12)
 static uint32_t g_airWakeAt    = 0;      // 주차 중 마지막으로 깨운 시각 — 깨운 뒤 AIR_READY_MS 는 PMS·SCD41 안정화
 
@@ -695,21 +695,27 @@ static void updateTeleMode(uint32_t now)
             LOGI(SerialMon, "[GNSS] 서브 GNSS %s — %s\n", want ? "켬 요청" : "끔 요청",
                  want ? "주차 telemetry 앞 위치 확보" : "주차 중 위치 받음");
     }
-    // 주차 중 깨운 GNSS 가 fix 를 얻으면 그 위치로 주차 telemetry 를 바로 낸다 — 발행 뒤 다음 주기가
+    // 주차 중 깨운 GNSS 가 fix 를 얻으면 그 위치로 주차 telemetry 를 앞당긴다 — 발행 뒤 다음 주기가
     // 5분 뒤로 밀려 want 가 꺼지고, 서브가 GNSS 를 끈다. fix 를 못 얻으면 원래 시각에 위치 없이 나간다.
-    // ⚠️ 공기질 듀티(2026-11-12)도 같은 telemetry 에 실려야 한다 — 깨운 공기질이 안정되기 전(AIR_READY_MS)으로는
-    //    당기지 않는다. 아직 안 깨웠으면 깨울 예정 시각(다음 telemetry − AIR_WAKE_LEAD_MS) 기준이다.
-    if (!g_driveMode && want && g_gpsFixNow && !g_gnssPrevFix) {
-        uint32_t target = now + GNSS_FIX_SETTLE_MS;
-        const uint32_t airReady = (g_airWant && g_airWakeAt ? g_airWakeAt : g_nextPubAt - AIR_WAKE_LEAD_MS)
-                                  + AIR_READY_MS;
+    // ⚠️ 공기질 듀티(2026-11-12)도 같은 telemetry 에 실려야 한다 — 공기질을 깨운 뒤 AIR_READY_MS 전으로는
+    //    당기지 않는다. 공기질을 아직 안 깨웠으면 기다린다(깨우면 그때 당긴다).
+    // ⚠️ 목표 시각은 **고정된 두 시각**(첫 fix·공기질 깨움)에서만 구한다. g_nextPubAt 을 기준으로 삼으면
+    //    당길 때마다 기준이 같이 움직여 주기가 계속 줄어든다(2026-11-12 실측: 15초씩 당겨져 5분 → 3분 48초).
+    if (g_driveMode || !want) {
+        g_parkFixAt = 0;
+    } else if (g_gpsFixNow && !g_parkFixAt) {
+        g_parkFixAt = now ? now : 1;
+    }
+    if (!g_driveMode && g_parkFixAt && g_airWant && g_airWakeAt) {
+        uint32_t target = g_parkFixAt + GNSS_FIX_SETTLE_MS;
+        const uint32_t airReady = g_airWakeAt + AIR_READY_MS;
         if ((int32_t)(airReady - target) > 0) target = airReady;
         if ((int32_t)(target - g_nextPubAt) < 0) {
-            LOGI(SerialMon, "[GNSS] 주차 중 측위 — %lus 뒤 telemetry\n", (unsigned long)((target - now) / 1000UL));
+            LOGI(SerialMon, "[GNSS] 주차 중 측위 — %lds 뒤 telemetry (공기질 깨운 뒤 %lus)\n",
+                 (long)((int32_t)(target - now) / 1000), (unsigned long)(AIR_READY_MS / 1000UL));
             pullTelemetryForward(target);
         }
     }
-    g_gnssPrevFix = g_gpsFixNow;
 #endif
 }
 
@@ -922,7 +928,10 @@ static void pollSubGnss(uint32_t now)
     KpGnss::Values v;
     uint32_t       at    = 0;
     const bool     have  = Sublink::gnssSample(v, at);
-    const bool     fresh = have && (uint32_t)(now - at) <= SUBLINK_GNSS_STALE_MS;
+    // ⚠️ 부호 있는 비교다. now 는 loop 첫 줄에 잡고 프레임은 그 뒤 같은 틱 Sublink 처리에서 들어오므로
+    //    at 이 now 보다 몇 ms 늦을 수 있다 — (uint32_t)(now - at) 는 그때 거대값이 돼 "프레임 끊김"으로
+    //    읽혔다(2026-11-12 실측: 1초마다 측위 상실↔획득 2,507회, 주차 GNSS fix 엣지가 매초 생김).
+    const bool     fresh = have && (int32_t)(now - at) <= (int32_t)SUBLINK_GNSS_STALE_MS;
     const bool     got   = fresh && v.fix();
 
     if (got != g_gpsFixNow) {
